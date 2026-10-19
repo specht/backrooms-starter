@@ -822,11 +822,11 @@ export class LightBaker {
 
     // ob das direkte Licht fertig ist und schon Bounce-Licht gesammelt wird
     get bouncing() {
-        return this.directPasses >= DIRECT_PASSES;
+        return this.saved ? true : this.directPasses >= DIRECT_PASSES;
     }
 
     get done() {
-        return this.bounce > this.bounces;
+        return this.saved ? true : this.bounce > this.bounces;
     }
 
     // ein Schritt Arbeit: ein Durchgang direktes Licht oder ein Durchgang Sammeln
@@ -874,6 +874,7 @@ export class LightBaker {
 
     // Wie weit, von 0 bis 1, und was gerade passiert
     get progress() {
+        if (this.saved) return 1;
         return Math.min(1, (this.directPasses + (this.bounce - 1) * BOUNCE_PASSES + this.gatherPasses) / (DIRECT_PASSES + this.bounces * BOUNCE_PASSES));
     }
 
@@ -1008,10 +1009,68 @@ export class LightBaker {
         return light;
     }
 
-    get steady() { return this.directTarget.textures[0]; }
-    get flicker() { return this.directTarget.textures[1]; }
+    get steady() { return this.saved?.steady ?? this.directTarget.textures[0]; }
+    get flicker() { return this.saved?.flicker ?? this.directTarget.textures[1]; }
     // die letzte fertige Reflexion
-    get indirect() { return this.indirectTargets[1].texture; }
-    get intensity() { return this.directPasses > 0 ? 1 / this.directPasses : 0; }
-    get indirectIntensity() { return this.finishedPasses > 0 ? 1 / this.finishedPasses : 0; }
+    get indirect() { return this.saved?.indirect ?? this.indirectTargets[1].texture; }
+    // womit die Flächen die Werte der Lightmaps malnehmen: beim Backen eins
+    // durch die Zahl der Durchgänge, bei gespeichertem Licht dessen Maßstab
+    get intensity() {
+        if (this.saved) return this.saved.directMax;
+        return this.directPasses > 0 ? 1 / this.directPasses : 0;
+    }
+    get indirectIntensity() {
+        if (this.saved) return this.saved.indirectMax;
+        return this.finishedPasses > 0 ? 1 / this.finishedPasses : 0;
+    }
+    get occlusionScale() { return this.saved ? 1 : this.intensity; }
+    // gespeichertes Licht steht als Wurzel in den Texturen: die Flächen quadrieren
+    get squared() { return Boolean(this.saved); }
+
+    // Das fertige Licht als Zahlen, zum Speichern (lightstore.js): je Punkt
+    // RGBA, schon mit seiner Helligkeit verrechnet, wie die Flächen es zeigen.
+    readLight() {
+        const size = this.atlasSize;
+        const read = (renderTarget, index, scale) => {
+            const half = new Uint16Array(size * size * 4);
+            this.renderer.readRenderTargetPixels(renderTarget, 0, 0, size, size, half, undefined, index);
+            const values = new Float32Array(half.length);
+            for (let i = 0; i < half.length; i++) values[i] = THREE.DataUtils.fromHalfFloat(half[i]) * scale;
+            return values;
+        };
+        return {
+            size,
+            steady: read(this.directTarget, 0, this.intensity),
+            flicker: read(this.directTarget, 1, this.intensity),
+            indirect: read(this.indirectTargets[1], 0, this.indirectIntensity),
+        };
+    }
+
+    // Gespeichertes Licht statt Backen (aus lightstore.js decodeLight)
+    useSaved(light) {
+        const size = light.header.size;
+        if (size !== this.atlasSize) return false;
+        const texture = (bytes) => {
+            const t = new THREE.DataTexture(bytes, size, size, THREE.RGBAFormat, THREE.UnsignedByteType);
+            t.minFilter = THREE.LinearFilter;
+            t.magFilter = THREE.LinearFilter;
+            t.generateMipmaps = false;
+            t.needsUpdate = true;
+            return t;
+        };
+        this.dropSaved();
+        this.saved = {
+            steady: texture(light.steady), flicker: texture(light.flicker), indirect: texture(light.indirect),
+            directMax: light.header.directMax, indirectMax: light.header.indirectMax,
+        };
+        return true;
+    }
+
+    // Wieder selbst backen (Shift+L)
+    dropSaved() {
+        if (!this.saved) return;
+        for (const key of ['steady', 'flicker', 'indirect']) this.saved[key].dispose();
+        this.saved = null;
+        this.reset();
+    }
 }

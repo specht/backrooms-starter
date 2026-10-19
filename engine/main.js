@@ -11,6 +11,7 @@ import { buildGrid, LightBaker, lightRange } from './bake.js';
 import { wallpaperTexture, carpetTexture, ceilingTexture, lampTexture, plainTexture, marbleTexture } from './textures.js';
 import { Walker } from './controls.js';
 import { Automap } from './automap.js';
+import { fingerprint, encodeLight, findLight, writeCache, download, lightFileName } from './lightstore.js';
 
 const params = new URLSearchParams(location.search);
 const PASSES_PER_FRAME = 4;    // pro Bild, solange gebacken wird
@@ -46,9 +47,12 @@ function addControl(label, key, onClick, state = null) {
     dot.className = 'dot';
     const text = document.createElement('span');
     text.textContent = label;
-    const kbd = document.createElement('kbd');
-    kbd.textContent = key;
-    button.append(dot, text, kbd);
+    button.append(dot, text);
+    if (key) {
+        const kbd = document.createElement('kbd');
+        kbd.textContent = key;
+        button.append(kbd);
+    }
     button.addEventListener('click', onClick);
     controls.appendChild(button);
     return () => { if (state) button.classList.toggle('on', state()); };
@@ -65,9 +69,14 @@ async function fetchText(file) {
     return response.text();
 }
 
-// Eine Statue: auf die gewünschte Höhe gebracht, mitten aufs Feld gestellt
-async function loadStatue(thing, settings) {
-    const gltf = await new GLTFLoader().loadAsync(thing.model);
+// Eine Statue: auf die gewünschte Höhe gebracht, mitten aufs Feld gestellt.
+// bytes bekommt die Datei, für den Fingerabdruck des gespeicherten Lichts.
+async function loadStatue(thing, settings, bytes) {
+    const response = await fetch(thing.model);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const buffer = await response.arrayBuffer();
+    bytes.push(thing.model, buffer);
+    const gltf = await new GLTFLoader().parseAsync(buffer, thing.model.replace(/[^/]*$/, ''));
     const object = gltf.scene;
     // Unsichtbare Kollisionskörper, die manche Modelle mitbringen, gehören nicht ins Bild
     const colliders = [];
@@ -165,6 +174,43 @@ function showStatueLight(statues, parts) {
     });
 }
 
+// Die Ecken aller Statuen in fester Reihenfolge, für das gespeicherte Licht
+function statueLightMeshes(statues) {
+    const meshes = [];
+    for (const statue of statues) statue.traverse((mesh) => { if (mesh.isMesh && mesh.userData.direct) meshes.push(mesh); });
+    return meshes;
+}
+
+// Das gebackene Licht aller Statuen hintereinander, oder null, wenn es noch fehlt
+function collectStatueLight(statues) {
+    const meshes = statueLightMeshes(statues);
+    if (meshes.length === 0 || meshes.some((mesh) => !mesh.userData.bounced)) return null;
+    const total = meshes.reduce((sum, mesh) => sum + mesh.userData.direct.length, 0);
+    const direct = new Float32Array(total), bounced = new Float32Array(total);
+    let offset = 0;
+    for (const mesh of meshes) {
+        direct.set(mesh.userData.direct, offset);
+        bounced.set(mesh.userData.bounced, offset);
+        offset += mesh.userData.direct.length;
+    }
+    return { direct, bounced };
+}
+
+// Gespeichertes Licht wieder auf die Statuen verteilen; false, wenn es nicht passt
+function restoreStatueLight(statues, saved) {
+    const meshes = statueLightMeshes(statues);
+    const total = meshes.reduce((sum, mesh) => sum + mesh.userData.direct.length, 0);
+    if (total !== saved.direct.length) return false;
+    let offset = 0;
+    for (const mesh of meshes) {
+        const length = mesh.userData.direct.length;
+        mesh.userData.direct = saved.direct.slice(offset, offset + length);
+        mesh.userData.bounced = saved.bounced.slice(offset, offset + length);
+        offset += length;
+    }
+    return true;
+}
+
 // Nach dem Backen: das Licht für jede Ecke jeder Statue auf der Grafikkarte,
 // mit Schatten der Statue auf sich selbst, direktes und Bounce-Licht getrennt.
 function bounceStatues(statues, baker, parts) {
@@ -225,6 +271,8 @@ function surfaceMaterial(map, baker, uniforms) {
             uniform sampler2D indirectMap;     // Bounce-Licht: Licht, das von Flächen zurückgeworfen wurde
             uniform float intensity;
             uniform float indirectIntensity;
+            uniform float occlusionScale;
+            uniform bool squared;              // gespeichertes Licht steht als Wurzel in den Lightmaps
             uniform bool useTexture;           // die Tasten T, I, B und O
             uniform bool useDirect;
             uniform bool useBounce;
@@ -235,14 +283,22 @@ function surfaceMaterial(map, baker, uniforms) {
             varying vec2 vLightUv;
             void main() {
                 vec3 base = useTexture ? texture2D(map, vUv * mapScale).rgb : vec3(0.8);
-                vec4 f = texture2D(flickerMap, vLightUv) * flicker;
-                vec3 light = texture2D(steadyMap, vLightUv).rgb
+                vec4 steady = texture2D(steadyMap, vLightUv);
+                vec4 flickering = texture2D(flickerMap, vLightUv);
+                vec3 indirect = texture2D(indirectMap, vLightUv).rgb;
+                if (squared) {
+                    steady *= steady;
+                    flickering *= flickering;
+                    indirect *= indirect;
+                }
+                vec4 f = flickering * flicker;
+                vec3 light = steady.rgb
                     + f.x * channelColor[0] + f.y * channelColor[1] + f.z * channelColor[2] + f.w * channelColor[3];
                 vec3 direct = light * intensity;
                 // Bounce-Licht, in Ecken dunkler: wie offen die Stelle ist, steht im Alphakanal
-                float open = texture2D(steadyMap, vLightUv).a * intensity;
+                float open = steady.a * occlusionScale;
                 float occlusion = useOcclusion ? mix(1.0, open, 0.85) : 1.0;
-                vec3 bounced = texture2D(indirectMap, vLightUv).rgb * indirectIntensity * occlusion;
+                vec3 bounced = indirect * indirectIntensity * occlusion;
                 light = (useDirect ? direct : vec3(0.0)) + (useBounce ? bounced : vec3(0.0));
                 gl_FragColor = vec4(base * light, 1.0);
                 #include <tonemapping_fragment>
@@ -274,8 +330,15 @@ function layoutPrint(level) {
 
 async function start() {
     let level;
+    // Was gelesen wurde, kommt in den Fingerabdruck des gespeicherten Lichts
+    const sources = [];
+    const readSource = async (file) => {
+        const text = await fetchText(file);
+        sources.push(file, text);
+        return text;
+    };
     try {
-        level = await loadLevel(levelFile, fetchText);
+        level = await loadLevel(levelFile, readSource);
     } catch (error) {
         report(error.message, true);
         return;
@@ -328,12 +391,13 @@ async function start() {
     const missing = [];
     for (const thing of level.things.filter((t) => t.type === 'model')) {
         try {
-            const object = await loadStatue(thing, settings);
+            const object = await loadStatue(thing, settings, sources);
             statues.push(object);
             statueThings.push(thing);
             scene.add(object);
         } catch (error) {
             missing.push(`${thing.model} (${thing.char})`);
+            sources.push(`missing ${thing.model}`);
         }
     }
 
@@ -343,10 +407,26 @@ async function start() {
     const bounces = params.has('bounces') ? Number(params.get('bounces')) : settings.bounces;
     const baker = new LightBaker(renderer, level, geometry, voxels, lights, bounces);
 
+    // Gespeichertes Licht, wenn es zu genau diesem Level passt: Der
+    // Fingerabdruck nimmt alles, was gelesen wurde, dazu bounces und die
+    // Teile des Programms, die das Licht ausrechnen.
+    const engineFiles = ['level.js', 'geometry.js', 'bake.js'];
+    const engine = await Promise.all(engineFiles.map((file) => fetchText(new URL(`./${file}`, import.meta.url)).catch(() => file)));
+    const print = fingerprint([...sources, `bounces ${bounces}`, ...engine]);
+    const found = params.has('rebake') ? null : await findLight(levelFile, print);
+    let lightSource = null;      // woher das Licht kommt, wenn es nicht gebacken wird
+    let packedLight = null;      // das Licht zum Herunterladen (Save light)
+    if (found?.light && baker.useSaved(found.light)) {
+        lightSource = found.source;
+        packedLight = found.packed;
+    }
+
     // Für alle Flächen dieselben Werte: Helligkeit und Flackern
     const shared = {
         intensity: { value: 0 },
         indirectIntensity: { value: 0 },
+        occlusionScale: { value: 0 },
+        squared: { value: false },
         useTexture: { value: true },
         useDirect: { value: true },
         useBounce: { value: true },
@@ -414,6 +494,11 @@ async function start() {
         lightStatue(statue, lights, (room.ambient ?? settings.ambient) * 1.2);
         statue.traverse((mesh) => { if (mesh.isMesh) statueMeshes.push(mesh); });
     });
+    // Mit gespeichertem Licht haben die Statuen ihres schon
+    let statuesBounced = false;
+    if (lightSource) {
+        statuesBounced = found.light.statues ? restoreStatueLight(statues, found.light.statues) : statues.length === 0;
+    }
     showParts();
 
     const walker = new Walker(level, player, camera, renderer);
@@ -454,11 +539,26 @@ async function start() {
     const toggleAnaglyph = () => { useAnaglyph = !useAnaglyph; };
     const toggleAutomap = () => automap.toggle(camera);
     const rebake = () => { restart = true; };
+    // Save light: das Licht als Datei, die neben level.ini gehört
+    const saveLight = async () => {
+        if (!baker.done || !statuesBounced) {
+            report('The light is not baked yet.');
+            return;
+        }
+        if (!packedLight) await keepLight();
+        if (!packedLight) {
+            report('The light could not be packed (see the console).', true);
+            return;
+        }
+        download(levelFile, packedLight);
+        report(`Saved ${lightFileName(levelFile)}: put it next to ${levelFile}, then the level loads it instead of baking.`);
+    };
     const refreshers = [
         ...PARTS.map((part) => addControl(part.label, part.key.slice(3), () => togglePart(part), () => parts[part.name])),
         addControl('Anaglyph', '3', toggleAnaglyph, () => useAnaglyph),
         addControl('Automap', 'M', toggleAutomap, () => automap.active),
         addControl('Rebake light', '⇧L', rebake),
+        addControl('Save light', '', saveLight),
         addControl('Back to start', 'R', () => walker.toStart()),
     ];
     const refreshControls = () => { for (const refresh of refreshers) refresh(); };
@@ -499,9 +599,25 @@ async function start() {
     });
     const on = lights.map(() => false);
     baker.switchLights(on);
-    let sequenceStart = 0;   // L fängt mit dem Licht von vorn an
-    let statuesBounced = false;
+    let sequenceStart = 0;   // Shift+L fängt mit dem Licht von vorn an
     let restart = false;
+    let reported = false;    // ob gemeldet ist, woher das gespeicherte Licht kommt
+
+    // Fertig gebackenes Licht im Browser aufheben (lightstore.js): Beim
+    // nächsten Laden desselben Levels braucht es kein Backen.
+    let packing = null;
+    const keepLight = () => {
+        packing ??= (async () => {
+            try {
+                packedLight = await encodeLight(print, baker.readLight(), collectStatueLight(statues));
+                await writeCache(levelFile, print, packedLight);
+            } catch (error) {
+                console.warn('The baked light could not be kept:', error);
+            }
+            packing = null;
+        })();
+        return packing;
+    };
 
     // Wo du stehst und wohin du schaust, steht in der Adresse (?view=...):
     // Nach dem Neuladen geht es dort weiter. Erst eine halbe Sekunde, nachdem
@@ -530,6 +646,9 @@ async function start() {
         const now = clock.getElapsed();
         if (restart) {
             restart = false;
+            baker.dropSaved();
+            lightSource = null;
+            packedLight = null;
             sequenceStart = now;
             on.fill(false);
             baker.switchLights(on);
@@ -558,6 +677,15 @@ async function start() {
 
         if (t < DARK_SECONDS) {
             report('Darkness. Something is humming.');
+        } else if (lightSource) {
+            // gespeichertes Licht: Es wird hell, während die Leuchten angehen
+            bar.parentElement.classList.add('done');
+            if (!allOn) report(`The lamps are coming on: ${on.filter(Boolean).length} of ${lights.length}`);
+            else if (!reported) {
+                reported = true;
+                report(`Light loaded from ${lightSource === 'browser' ? 'this browser' : lightSource} · Shift+L bakes it again` +
+                    (missing.length ? ` · missing: ${missing.join(', ')}` : ''));
+            }
         } else if (!baker.done) {
             // Solange Leuchten angehen, nur direktes Licht: Abprallen lohnt erst, wenn alle an sind
             for (let i = 0; i < PASSES_PER_FRAME && !baker.done; i++) {
@@ -570,18 +698,30 @@ async function start() {
                 : !baker.done
                     ? `Baking light: ${baker.stage}`
                     : `Light baked in ${((performance.now() - startedAt) / 1000).toFixed(1)} s` +
+                      (found?.stale ? ` · ${found.source} belongs to an older version of the level` : '') +
                       (missing.length ? ` · missing: ${missing.join(', ')}` : ''));
             if (baker.done) bar.parentElement.classList.add('done');
         }
-        shared.intensity.value = baker.intensity;
-        shared.indirectIntensity.value = baker.indirectIntensity;
-        // fertig gebacken: die Statuen bekommen das Bounce-Licht vor ihren Flächen
+        // gespeichertes Licht wird mit den Leuchten hell, gebackenes ist es von selbst
+        const fade = lightSource ? shown : 1;
+        shared.intensity.value = baker.intensity * fade;
+        shared.indirectIntensity.value = baker.indirectIntensity * fade;
+        shared.occlusionScale.value = baker.occlusionScale;
+        shared.squared.value = baker.squared;
+        // fertig gebacken: die Statuen bekommen das Bounce-Licht vor ihren
+        // Flächen, und das Licht kommt in den Browser
         if (baker.done && !statuesBounced) {
             statuesBounced = true;
             bounceStatues(statues, baker, parts);
+            setTimeout(keepLight, 200);
         }
-        // die Lichtkarte der letzten fertigen Reflexion (sie wechselt mit jeder)
-        for (const material of surfaceMaterials) material.uniforms.indirectMap.value = baker.indirect;
+        // die Lightmaps: die letzte fertige Reflexion wechselt mit jeder,
+        // gespeichertes Licht ersetzt alle drei
+        for (const material of surfaceMaterials) {
+            material.uniforms.steadyMap.value = baker.steady;
+            material.uniforms.flickerMap.value = baker.flicker;
+            material.uniforms.indirectMap.value = baker.indirect;
+        }
 
         // Flackern: Licht und Leuchte eines Kanals im selben Takt
         const values = Array.from({ length: FLICKER_CHANNELS }, (_, k) => parts.flicker ? flickerValue(now, k + 1) : 1);

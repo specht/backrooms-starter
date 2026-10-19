@@ -19,8 +19,23 @@ Serve this folder with any static web server and open `index.html`:
 Opening `index.html` directly as a file does not work: the browser does not
 let a page load the room files from disk.
 
-After a change to a room, reload the page. The light is baked again on every
-load.
+After a change to a room, reload the page.
+
+## Saved light
+
+Baking takes a while, so the light is kept:
+
+- **In the browser:** once the light is baked, it is stored in this browser
+  (IndexedDB). Reloading the same level loads it instead of baking.
+- **As a file:** »Save light« downloads `level.light`. Put it next to
+  `level.ini`; when the level is served with it, for example as a static web
+  page or on a VR headset, the light is loaded from that file.
+
+Saved light belongs to exactly one version of the level: a fingerprint of
+`level.ini`, every room, every statue and the parts of `engine/` that bake
+the light says whether it still fits. Change one character and it no longer
+does; the light is then baked again (and `level.light` has to be saved again).
+Shift+L, or `?rebake` in the address, bakes the light again in any case.
 
 ## Keys
 
@@ -37,6 +52,7 @@ load.
 <tr><td>3</td><td>anaglyph for red-cyan glasses on/off</td></tr>
 <tr><td>M or Tab</td><td>automap: the whole building as a wireframe; drag to turn it, Shift+drag to move it, mouse wheel to zoom, Esc to close</td></tr>
 <tr><td>Shift+L</td><td>bake the light again</td></tr>
+<tr><td>»Save light«</td><td>download the baked light as <code>level.light</code> (see below)</td></tr>
 <tr><td>R</td><td>back to the start</td></tr>
 </table>
 
@@ -52,6 +68,7 @@ back to the same spot, as long as the floor plan has not changed.
 <tr><td><code>level.ini</code></td><td>the name of the level, the room you start in, light settings</td></tr>
 <tr><td><code>rooms/NAME.room</code></td><td>one file per room: its floor plan and what is in it</td></tr>
 <tr><td><code>statues/</code></td><td>3D models (GLB) for statues</td></tr>
+<tr><td><code>level.light</code></td><td>saved light, if you saved it (»Save light«)</td></tr>
 <tr><td><code>engine/</code></td><td>the program: reading the level, building it, baking the light, walking</td></tr>
 <tr><td><code>vendor/three/</code></td><td>three.js r185 (MIT licence)</td></tr>
 </table>
@@ -159,6 +176,7 @@ room's wallpaper).
 <tr><td><code>?show=light</code>, <code>direct</code>, <code>bounce</code></td><td>start with light only (no textures), or with only one part of it</td></tr>
 <tr><td><code>?bounces=0</code></td><td>bake with a different number of bounces</td></tr>
 <tr><td><code>?anaglyph</code>, <code>?automap</code></td><td>start with anaglyph or with the automap</td></tr>
+<tr><td><code>?rebake</code></td><td>bake the light even if saved light fits</td></tr>
 </table>
 
 ## Statues and licences
