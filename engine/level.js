@@ -28,8 +28,8 @@ const ROOM_DEFAULTS = {
     wallpaper: '#c9b458', // Tapete
     carpet: '#8c7a45',    // Teppich
     ceiling: '#d8d0a8',   // Deckenplatten
-    walls: 'wallpaper',   // Wände: wallpaper, marble oder plain (einfarbig in der Farbe von wallpaper)
-    floor: 'carpet',      // Boden: carpet, marble oder plain (einfarbig in der Farbe von carpet)
+    walls: 'wallpaper',   // Wände: wallpaper, marble, wood (Holz), tiles (Fliesen) oder plain (einfarbig), in der Farbe von wallpaper
+    floor: 'carpet',      // Boden: carpet, marble, wood, tiles oder plain, in der Farbe von carpet
     baseboard: 'auto',    // Sockelleiste: höhe, farbe, zum Beispiel 0.08, #5a4626; ohne: 8 cm, dunkler als die Wand; none: keine
     ambient: null,        // Umgebungslicht nur in diesem Raum, sonst das aus level.ini
     look: null,           // wohin du am @ schaust: north, east, south, west oder Grad (0 = Norden, 90 = Osten)
@@ -122,8 +122,8 @@ function parseRoom(id, source) {
     const settings = { ...ROOM_DEFAULTS, ...values(sections.find((s) => s.name === 'room')) };
     const heights = [settings.height].flat();
     if (heights.some((h) => !(h > 0.5 && h < 50))) throw new LevelError(file, null, `height = ${settings.height}: a ceiling is between 0.5 and 50 metres high.`);
-    if (!['wallpaper', 'marble', 'plain'].includes(settings.walls)) throw new LevelError(file, null, `walls = ${settings.walls} does not exist. Possible: wallpaper, marble, plain.`);
-    if (!['carpet', 'marble', 'plain'].includes(settings.floor)) throw new LevelError(file, null, `floor = ${settings.floor} does not exist. Possible: carpet, marble, plain.`);
+    if (!['wallpaper', 'marble', 'wood', 'tiles', 'plain'].includes(settings.walls)) throw new LevelError(file, null, `walls = ${settings.walls} does not exist. Possible: wallpaper, marble, wood, tiles, plain.`);
+    if (!['carpet', 'marble', 'wood', 'tiles', 'plain'].includes(settings.floor)) throw new LevelError(file, null, `floor = ${settings.floor} does not exist. Possible: carpet, marble, wood, tiles, plain.`);
     if (settings.baseboard === 'none') {
         settings.baseboard = null;
     } else {

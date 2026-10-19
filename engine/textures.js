@@ -200,3 +200,64 @@ export function marbleTexture(size = 512, meters = 1) {
     texture.repeat.set(1 / meters, 1 / meters);
     return texture;
 }
+
+// Eine Farbe wie #c9b458 als drei Zahlen von 0 bis 255
+function rgb(hex) {
+    const value = parseInt(String(hex).replace('#', ''), 16);
+    return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
+}
+
+// Holz: Bretter, 12,5 cm breit, an der Wand senkrecht, auf dem Boden längs.
+// Jedes Brett hat seinen eigenen Ton, eine Maserung aus feinen Linien, die
+// sich sanft hin und her biegen, und irgendwo eine Fuge quer, wo es endet.
+// Alles wiederholt sich genau nach einem Meter: nahtlos.
+export function woodTexture(base) {
+    return canvasTexture(512, (context, size) => {
+        const rng = random(57);
+        const [r, g, b] = rgb(base);
+        const boards = 8, width = size / boards;
+        const tones = Array.from({ length: boards }, () => 0.8 + rng() * 0.32);
+        const ends = Array.from({ length: boards }, () => Math.floor(rng() * size));
+        const phase = Array.from({ length: boards }, () => rng() * Math.PI * 2);
+        const image = context.createImageData(size, size);
+        for (let y = 0; y < size; y++) {
+            const t = (y / size) * Math.PI * 2;
+            for (let x = 0; x < size; x++) {
+                const board = Math.floor(x / width), u = x - board * width;
+                const bend = Math.sin(2 * t + phase[board]) * 3 + Math.sin(5 * t + 2 * phase[board]) * 1.2;
+                const grain = 0.5 + 0.5 * Math.sin((u + bend) * 0.9 + 5 * phase[board]);
+                let f = tones[board] * (0.9 + 0.12 * grain);
+                if (u < 1.5) f *= 0.55;                                        // Fuge zwischen zwei Brettern
+                if (Math.abs((((y - ends[board]) % size) + size) % size) < 1.5) f *= 0.6;   // Fuge quer
+                const i = (y * size + x) * 4;
+                image.data[i] = Math.min(255, r * f);
+                image.data[i + 1] = Math.min(255, g * f);
+                image.data[i + 2] = Math.min(255, b * f);
+                image.data[i + 3] = 255;
+            }
+        }
+        context.putImageData(image, 0, 0);
+    });
+}
+
+// Fliesen wie im Schwimmbad: 10 cm groß, jede in einem etwas anderen Ton,
+// dazwischen dunklere Fugen. Die Fuge am Rand der Textur ist halb so breit: Zwei Ränder
+// nebeneinander ergeben eine ganze, nahtlos.
+export function tileTexture(base) {
+    return canvasTexture(640, (context, size) => {
+        const rng = random(63);
+        const [r, g, b] = rgb(base);
+        const count = 10, tile = size / count, grout = 4;
+        context.fillStyle = `rgb(${r * 0.7}, ${g * 0.7}, ${b * 0.7})`;
+        context.fillRect(0, 0, size, size);
+        for (let j = 0; j < count; j++) {
+            for (let i = 0; i < count; i++) {
+                const f = 0.95 + rng() * 0.08;
+                context.fillStyle = `rgb(${Math.min(255, r * f)}, ${Math.min(255, g * f)}, ${Math.min(255, b * f)})`;
+                context.fillRect(i * tile + grout / 2, j * tile + grout / 2, tile - grout, tile - grout);
+            }
+        }
+        blotches(context, size, rng, 'rgb(40, 35, 20)', 3, 60, 0.05);
+    });
+}
+
