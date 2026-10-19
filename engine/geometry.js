@@ -50,8 +50,9 @@ export function buildGeometry(level) {
     const cell = settings.cell;
     const at = (x, z) => (x < 0 || z < 0 || x >= width || z >= depth ? 'void' : cells[z * width + x]);
     const roomOf = (x, z) => owner[z * width + x];
-    // Deckenhöhe an einer Ecke (in Feldern), so wie der Raum dieses Feldes sie will
+    // Decken- und Bodenhöhe an einer Ecke (in Feldern), so wie der Raum dieses Feldes sie will
     const ceiling = (x, z, room) => level.ceilingAt(x, z, room);
+    const floorAt = (x, z, room) => level.floorAt(x, z, room);
 
     const faces = [];
     // Auflösung der Lichtkarte: detail Punkte pro Meter (level.ini)
@@ -61,7 +62,8 @@ export function buildGeometry(level) {
     // Boden und Decke: pro Raum die größten Rechtecke aus Feldern, damit
     // die Lichtkarte über eine ganze Fläche durchgeht (keine Nähte an jedem
     // Feld). Unter einem Satteldach nur Streifen entlang des Firsts, denn
-    // die Decke knickt am First.
+    // die Decke knickt am First; auf einer Rampe Streifen quer zu ihr, denn
+    // der Boden knickt an ihren Enden. Beides: einzelne Felder.
     const rectangles = (room, onlyAlong) => {
         const used = new Set();
         const inRoom = (x, z) => at(x, z) === 'floor' && roomOf(x, z) === room && !used.has(z * width + x);
@@ -70,8 +72,8 @@ export function buildGeometry(level) {
             for (let x = 0; x < width; x++) {
                 if (!inRoom(x, z)) continue;
                 let w = 1, d = 1;
-                if (onlyAlong !== 'z') while (inRoom(x + w, z)) w += 1;
-                if (onlyAlong !== 'x') {
+                if (onlyAlong !== 'z' && onlyAlong !== 'cell') while (inRoom(x + w, z)) w += 1;
+                if (onlyAlong !== 'x' && onlyAlong !== 'cell') {
                     while (z + d < depth && [...Array(w).keys()].every((i) => inRoom(x + i, z + d))) d += 1;
                 }
                 for (let dz = 0; dz < d; dz++) for (let dx = 0; dx < w; dx++) used.add((z + dz) * width + x + dx);
@@ -84,12 +86,17 @@ export function buildGeometry(level) {
     level.rooms.forEach((room) => {
         const r = room.index;
         const h = (cx, cz) => ceiling(cx, cz, r);
+        const f = (cx, cz) => floorAt(cx, cz, r);
         const gable = room.settings.slope === 'gable' ? (room.width >= room.depth ? 'x' : 'z') : null;
-        for (const { x, z, w, d } of rectangles(r, null)) {
+        // eine Rampe nach Osten oder Westen ändert sich entlang x: Streifen entlang z
+        const ramp = room.settings.ramp ? (['east', 'west'].includes(room.settings.ramp.direction) ? 'z' : 'x') : null;
+        const both = gable && ramp && gable !== ramp ? 'cell' : gable ?? ramp;
+        for (const { x, z, w, d } of rectangles(r, ramp)) {
             const x0 = x * cell, x1 = (x + w) * cell, z0 = z * cell, z1 = (z + d) * cell;
-            add('floor', r, [[x0, 0, z1], [x1, 0, z1], [x1, 0, z0], [x0, 0, z0]], texels(w * cell), texels(d * cell));
+            add('floor', r, [[x0, f(x, z + d), z1], [x1, f(x + w, z + d), z1], [x1, f(x + w, z), z0], [x0, f(x, z), z0]],
+                texels(w * cell), texels(d * cell));
         }
-        for (const { x, z, w, d } of rectangles(r, gable)) {
+        for (const { x, z, w, d } of rectangles(r, both)) {
             const x0 = x * cell, x1 = (x + w) * cell, z0 = z * cell, z1 = (z + d) * cell;
             add('ceiling', r, [[x0, h(x, z), z0], [x1, h(x + w, z), z0], [x1, h(x + w, z + d), z1], [x0, h(x, z + d), z1]],
                 texels(w * cell), texels(d * cell));
@@ -122,6 +129,14 @@ export function buildGeometry(level) {
                     // darüber, von seiner unteren Kante bis zur eigenen Decke.
                     const [a, b] = wallEnds(direction, line, along, along + 1);
                     const other = roomOf(nx, nz);
+                    // Liegt sein Boden hier höher, sieht man eine Stufe hinauf
+                    const fa = floorAt(a[0], a[1], room), fb = floorAt(b[0], b[1], room);
+                    const ga = floorAt(a[0], a[1], other), gb = floorAt(b[0], b[1], other);
+                    if (ga > fa + 0.01 || gb > fb + 0.01) {
+                        add('wall', room, [[a[0] * cell, fa, a[1] * cell], [b[0] * cell, fb, b[1] * cell],
+                            [b[0] * cell, Math.max(gb, fb), b[1] * cell], [a[0] * cell, Math.max(ga, fa), a[1] * cell]],
+                            texels(cell), texels(Math.max(ga - fa, gb - fb, 0.2)));
+                    }
                     const ha = h(a[0], a[1]), hb = h(b[0], b[1]);
                     const la = ceiling(a[0], a[1], other), lb = ceiling(b[0], b[1], other);
                     if (la < ha - 0.01 || lb < hb - 0.01) {
@@ -137,12 +152,16 @@ export function buildGeometry(level) {
     for (const { room, direction, line, list } of pieces.values()) {
         list.sort((p, q) => p - q);
         const h = (cx, cz) => ceiling(cx, cz, room);
+        const f = (cx, cz) => floorAt(cx, cz, room);
         const point = (along) => (direction === 'north' || direction === 'south' ? [along, line] : [line, along]);
-        // gerade: die Höhe an jeder Feldgrenze dazwischen liegt auf der Linie von Anfang zu Ende
+        // gerade: die Höhe an jeder Feldgrenze dazwischen liegt auf der Linie von
+        // Anfang zu Ende, oben an der Decke und unten am Boden
         const straight = (from, to) => {
-            const ha = h(...point(from)), hb = h(...point(to));
-            for (let k = from + 1; k < to; k++) {
-                if (Math.abs(h(...point(k)) - (ha + (hb - ha) * (k - from) / (to - from))) > 1e-3) return false;
+            for (const height of [h, f]) {
+                const ha = height(...point(from)), hb = height(...point(to));
+                for (let k = from + 1; k < to; k++) {
+                    if (Math.abs(height(...point(k)) - (ha + (hb - ha) * (k - from) / (to - from))) > 1e-3) return false;
+                }
             }
             return true;
         };
@@ -152,10 +171,11 @@ export function buildGeometry(level) {
             while (end + 1 < list.length && list[end + 1] === list[end] + 1 && straight(list[start], list[end + 1] + 1)) end += 1;
             const [a, b] = wallEnds(direction, line, list[start], list[end] + 1);
             const ha = h(a[0], a[1]), hb = h(b[0], b[1]);
+            const fa0 = f(a[0], a[1]), fb0 = f(b[0], b[1]);
             const length = (list[end] + 1 - list[start]) * cell;
-            add('wall', room, [[a[0] * cell, 0, a[1] * cell], [b[0] * cell, 0, b[1] * cell],
+            add('wall', room, [[a[0] * cell, fa0, a[1] * cell], [b[0] * cell, fb0, b[1] * cell],
                 [b[0] * cell, hb, b[1] * cell], [a[0] * cell, ha, a[1] * cell]],
-                texels(length), texels(Math.max(ha, hb)));
+                texels(length), texels(Math.max(ha - fa0, hb - fb0)));
             // Sockelleiste: vorne und oben, 1,5 cm vor der Wand
             const board = level.rooms[room].settings.baseboard;
             if (board) {
@@ -194,8 +214,9 @@ export function buildGeometry(level) {
                     if (faceNormal(face).reduce((sum, v, i) => sum + v * want[i], 0) < 0) face = [face[0], face[3], face[2], face[1]];
                     faces.push({ kind: 'baseboard', color: board.color, room, corners: face, normal: faceNormal(face), w: texels(sw), h: texels(sh) });
                 };
-                put([[fa[0], 0, fa[1]], [fb[0], 0, fb[1]], [fb[0], y, fb[1]], [fa[0], y, fa[1]]], length + frontStart + frontEnd, y, n);
-                put([[ta[0], y, ta[1]], [tb[0], y, tb[1]], [tfb[0], y, tfb[1]], [tfa[0], y, tfa[1]]], length + topStart + topEnd, Math.max(depthOut, 0.2), [0, 1, 0]);
+                // die Leiste folgt dem Boden; über ihre kurzen Verlängerungen an den Ecken genügt die Höhe an ihren Enden
+                put([[fa[0], fa0, fa[1]], [fb[0], fb0, fb[1]], [fb[0], fb0 + y, fb[1]], [fa[0], fa0 + y, fa[1]]], length + frontStart + frontEnd, y, n);
+                put([[ta[0], fa0 + y, ta[1]], [tb[0], fb0 + y, tb[1]], [tfb[0], fb0 + y, tfb[1]], [tfa[0], fa0 + y, tfa[1]]], length + topStart + topEnd, Math.max(depthOut, 0.2), [0, 1, 0]);
             }
             start = end + 1;
         }
@@ -206,11 +227,11 @@ export function buildGeometry(level) {
         const [w, h, d] = block.size;
         const cx = (block.x + 0.5) * cell, cz = (block.z + 0.5) * cell;
         const x0 = cx - w / 2, x1 = cx + w / 2, z0 = cz - d / 2, z1 = cz + d / 2;
-        const y0 = block.base, y1 = block.base + h;
+        const y0 = block.floor + block.base, y1 = y0 + h;   // auf dem Boden seines Felds
         const room = roomOf(block.x, block.z);
         const put = (corners, sw, sh) => faces.push({ kind: 'block', color: block.color, material: block.material, room, corners, normal: faceNormal(corners), w: texels(sw), h: texels(sh) });
         put([[x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]], w, d);                 // oben
-        if (y0 > 0.001) put([[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]], w, d); // unten
+        if (block.base > 0.001) put([[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]], w, d); // unten
         put([[x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0]], w, h);                 // nach -z
         put([[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]], w, h);                 // nach +z
         put([[x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0]], d, h);                 // nach -x
@@ -299,5 +320,6 @@ export function buildGeometry(level) {
         meshes.push({ kind, room, color, material, geometry, bake });
     }
     const maxHeight = Math.max(...faces.map((f) => Math.max(...f.corners.map((c) => c[1]))));
-    return { meshes, atlasSize, faceCount: faces.length, maxHeight };
+    const minHeight = Math.min(...faces.map((f) => Math.min(...f.corners.map((c) => c[1]))));
+    return { meshes, atlasSize, faceCount: faces.length, maxHeight, minHeight };
 }

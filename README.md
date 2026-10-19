@@ -120,6 +120,10 @@ In `[map]`, every character is one metre:
 <tr><td>a digit</td><td>a door, described in a section <code>[digit]</code></td></tr>
 </table>
 
+How high a room lies follows from its doors: on a door, both floors are at
+the same height, starting from the room in `start`. A door where the floors
+cannot meet is reported.
+
 A door is one field that belongs to two rooms: `[1]` with `door = gang 1`
 means »this 1 is the same field as the 1 in `rooms/gang.room`«. One of the two
 rooms describing the door is enough. The rooms are laid next to each other at
@@ -131,7 +135,8 @@ field without a wall next to it, is reported with the file and the line.
 
 <table>
 <tr><td><code>name</code></td><td>shown in the automap</td></tr>
-<tr><td><code>height</code></td><td>ceiling height in metres (2.7); two numbers for a sloped ceiling: <code>height = 2.5, 4</code></td></tr>
+<tr><td><code>height</code></td><td>ceiling height above the floor in metres (2.7); two numbers for a sloped ceiling: <code>height = 2.5, 4</code></td></tr>
+<tr><td><code>ramp</code></td><td>a sloped floor: the direction it rises to and by how many metres, such as <code>ramp = east, 4</code>; it rises from the first field inside the wall to the last, the fields in the walls (doors) stay level</td></tr>
 <tr><td><code>slope</code></td><td><code>flat</code>, or the direction the ceiling rises to: <code>north</code>, <code>east</code>, <code>south</code>, <code>west</code>; <code>gable</code> is a pitched roof, highest in the middle, its ridge along the longer side of the room</td></tr>
 <tr><td><code>walls</code></td><td><code>wallpaper</code>, <code>marble</code>, <code>wood</code> (vertical boards), <code>tiles</code> (10 cm, as in a pool), <code>velvet</code> (vertical stripes, as in a cinema) or <code>plain</code>, in the colour of <code>wallpaper</code></td></tr>
 <tr><td><code>floor</code></td><td><code>carpet</code>, <code>marble</code>, <code>wood</code> (floorboards), <code>tiles</code> or <code>plain</code>, in the colour of <code>carpet</code></td></tr>

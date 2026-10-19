@@ -23,8 +23,9 @@ const LEVEL_DEFAULTS = {
 };
 
 const ROOM_DEFAULTS = {
-    height: 2.7,          // Deckenhöhe in Metern; zwei Zahlen für eine schräge Decke
+    height: 2.7,          // Deckenhöhe über dem Boden in Metern; zwei Zahlen für eine schräge Decke
     slope: 'flat',        // flat, north, east, south, west oder gable (Satteldach)
+    ramp: null,           // ein schräger Boden: Richtung und wie viele Meter er ansteigt, zum Beispiel east, 3
     wallpaper: '#c9b458', // Tapete
     carpet: '#8c7a45',    // Teppich
     ceiling: '#d8d0a8',   // Deckenplatten
@@ -70,6 +71,7 @@ const MODEL_DEFAULTS = {
 };
 
 const SLOPES = ['flat', 'north', 'east', 'south', 'west', 'gable'];
+const RAMPS = ['north', 'east', 'south', 'west'];
 
 export class LevelError extends Error {
     constructor(file, line, message) {
@@ -139,6 +141,13 @@ function parseRoom(id, source) {
     }
     if (!SLOPES.includes(settings.slope)) throw new LevelError(file, null, `slope = ${settings.slope} does not exist. Possible: ${SLOPES.join(', ')}.`);
     if (settings.slope !== 'flat' && heights.length !== 2) throw new LevelError(file, null, 'a sloped ceiling needs two heights: height = low, high');
+    if (settings.ramp !== null && settings.ramp !== undefined) {
+        const [direction, rise] = String(settings.ramp).split(',').map((part) => part.trim());
+        if (!RAMPS.includes(direction) || !(Math.abs(Number(rise)) <= 50)) {
+            throw new LevelError(file, null, `ramp = ${settings.ramp}: expected a direction (${RAMPS.join(', ')}) and how many metres the floor rises that way, for example ramp = east, 3.`);
+        }
+        settings.ramp = { direction, rise: Number(rise) };
+    }
 
     const map = sections.find((s) => s.name === 'map');
     if (!map) throw new LevelError(file, null, 'the floor plan is missing: a section [map].');
@@ -221,6 +230,24 @@ function makeThing(file, char, section, x, z) {
 }
 
 // Wie hoch die Decke eines Raums an einer Stelle ist (x, z in Feldern des Raums)
+// Wie hoch der Boden eines Raums an einer Stelle liegt, über seiner tiefsten
+// Stelle (x, z in Feldern des Raums). Eine Rampe steigt vom ersten Feld hinter
+// der Wand bis zum letzten vor der gegenüberliegenden; die Felder in den
+// Wänden (Türen) bleiben eben, damit der Boden dort genau auf den des
+// Nachbarraums trifft.
+function floorFunction(room) {
+    const ramp = room.settings.ramp;
+    if (!ramp) return () => 0;
+    const { width, depth } = room;
+    const along = (t, n) => ramp.rise * Math.min(1, Math.max(0, (t - 1) / Math.max(1, n - 2)));
+    switch (ramp.direction) {
+    case 'east': return (x) => along(x, width);
+    case 'west': return (x) => along(width - x, width);
+    case 'south': return (x, z) => along(z, depth);
+    default: return (x, z) => along(depth - z, depth);
+    }
+}
+
 function ceilingFunction(room) {
     const [low, high = low] = room.heights;
     const { width, depth } = room;
@@ -282,6 +309,11 @@ export async function loadLevel(levelFile, fetchText) {
     // Räume aneinanderlegen, vom Startraum aus: Tür auf Tür
     const startRoom = rooms.get(String(settings.start));
     startRoom.offset = { x: 0, z: 0 };
+    // Die Höhe jedes Raums: Auf einer Tür liegen beide Böden gleich hoch. Der
+    // Startraum liegt bei 0, jeder andere Raum so, dass es an seiner Tür passt.
+    for (const room of rooms.values()) room.floorRelative = floorFunction(room);
+    startRoom.elevation = 0;
+    const doorFloor = (room, door) => room.elevation + room.floorRelative(door.x + 0.5, door.z + 0.5);
     const placed = [startRoom];
     for (let i = 0; i < placed.length; i++) {
         const room = placed[i];
@@ -290,7 +322,11 @@ export async function loadLevel(levelFile, fetchText) {
             const z = room.offset.z + edge.da.z - edge.db.z;
             if (!edge.b.offset) {
                 edge.b.offset = { x, z };
+                edge.b.elevation = doorFloor(edge.a, edge.da) - edge.b.floorRelative(edge.db.x + 0.5, edge.db.z + 0.5);
                 placed.push(edge.b);
+            } else if (Math.abs(doorFloor(edge.a, edge.da) - doorFloor(edge.b, edge.db)) > 0.01) {
+                const source = edge.back ?? edge.a;
+                throw new LevelError(source.file, edge.line, `this door doesn't fit: the floors of ${edge.a.id} and ${edge.b.id} are at different heights there (${doorFloor(edge.a, edge.da).toFixed(2)} m and ${doorFloor(edge.b, edge.db).toFixed(2)} m). Other doors or ramps already set them.`);
             } else if (edge.b.offset.x !== x || edge.b.offset.z !== z) {
                 const source = edge.back ?? edge.a;
                 throw new LevelError(source.file, edge.line, `this door doesn't fit: other doors already place the rooms ${edge.a.id} and ${edge.b.id} differently.`);
@@ -310,7 +346,11 @@ export async function loadLevel(levelFile, fetchText) {
     const doorCells = new Set();
     roomList.forEach((room, index) => {
         room.index = index;
-        room.ceilingAt = ceilingFunction(room);
+        // Boden und Decke, in Metern über dem Boden des Startraums: Die Decke
+        // liegt height über dem Boden, so steigt sie mit einer Rampe mit.
+        const above = ceilingFunction(room);
+        room.floorAt = (x, z) => room.elevation + room.floorRelative(x, z);
+        room.ceilingAt = (x, z) => room.floorAt(x, z) + above(x, z);
         room.ox = room.offset.x - minX;
         room.oz = room.offset.z - minZ;
         for (const door of Object.values(room.doors)) doorCells.add((room.oz + door.z) * width + room.ox + door.x);
@@ -335,7 +375,10 @@ export async function loadLevel(levelFile, fetchText) {
     const things = [];
     let start = null;
     for (const room of roomList) {
-        for (const thing of room.things) things.push({ ...thing, x: thing.x + room.ox, z: thing.z + room.oz, room: room.index });
+        // floor: wie hoch der Boden unter einem Ding liegt, mitten auf seinem Feld
+        for (const thing of room.things) {
+            things.push({ ...thing, x: thing.x + room.ox, z: thing.z + room.oz, room: room.index, floor: room.floorAt(thing.x + 0.5, thing.z + 0.5) });
+        }
         if (room.start) {
             if (start) throw new LevelError(room.file, room.start.line, 'there is more than one @ in the level: you can only start in one place.');
             const look = room.settings.look;
@@ -352,6 +395,18 @@ export async function loadLevel(levelFile, fetchText) {
     const level = {
         settings, width, depth, cells, owner, rooms: roomList, things, start,
         // Deckenhöhe an einer Stelle der Welt (in Feldern), im Raum dieses Feldes
+        floorAt(x, z, roomIndex) {
+            const room = roomList[roomIndex];
+            return room.floorAt(x - room.ox, z - room.oz);
+        },
+        // der Boden an einer Stelle der Welt in Metern, im Raum, dem das Feld gehört
+        floorAtPoint(x, z) {
+            const cx = Math.floor(x / settings.cell), cz = Math.floor(z / settings.cell);
+            const index = owner[cz * width + cx];
+            if (index === undefined || index < 0) return 0;
+            const room = roomList[index];
+            return room.floorAt(x / settings.cell - room.ox, z / settings.cell - room.oz);
+        },
         ceilingAt(x, z, roomIndex) {
             const room = roomList[roomIndex];
             return room.ceilingAt(x - room.ox, z - room.oz);

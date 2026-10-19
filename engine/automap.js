@@ -1,29 +1,39 @@
 // Die Automap (M oder Tab): das ganze Bauwerk als Drahtgitter, schräg von oben.
-// Jeder Raum hat seine Farbe und seinen Namen, Leuchten sind gelbe Punkte,
+// Jeder Raum hat seinen Namen, Leuchten sind gelbe Punkte,
 // Statuen weiße, der Pfeil bist du. Ziehen mit der Maus dreht, das Mausrad
 // zoomt.
 import * as THREE from 'three';
 
-function roomColor(index) {
-    return new THREE.Color().setHSL((index * 0.618034) % 1, 0.75, 0.62);
+// Eine Farbe für alles auf der Karte, wie eine Blaupause auf Schwarz
+const LINE_COLOR = '#6fd3ff';
+function roomColor() {
+    return new THREE.Color(LINE_COLOR);
 }
 
+// Ein Raumname als Schild: helle, nicht fette Schrift, nur ein Hauch der
+// Farbe des Raums, darunter ein schmaler Strich in seiner Farbe. Groß gezeichnet
+// (120 px), damit er auch aus der Nähe scharf bleibt; in der Welt 0,8 m hoch.
 function label(text, color) {
+    const font = '500 120px system-ui, sans-serif';
     const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d');
-    context.font = 'bold 40px system-ui, sans-serif';
-    canvas.width = Math.ceil(context.measureText(text).width) + 24;
-    canvas.height = 60;
-    context.font = 'bold 40px system-ui, sans-serif';
-    context.fillStyle = 'rgba(0, 0, 0, 0.55)';
+    context.font = font;
+    canvas.width = Math.ceil(context.measureText(text).width) + 72;
+    canvas.height = 180;
+    context.font = font;
+    context.fillStyle = 'rgba(8, 8, 10, 0.6)';
     context.fillRect(0, 0, canvas.width, canvas.height);
-    context.fillStyle = `#${color.getHexString()}`;
+    const tint = color.clone().lerp(new THREE.Color('#ffffff'), 0.75);
+    context.fillStyle = `#${tint.getHexString()}`;
     context.textBaseline = 'middle';
-    context.fillText(text, 12, 31);
+    context.fillText(text, 36, 84);
+    context.fillStyle = `#${color.getHexString()}`;
+    context.fillRect(36, 150, canvas.width - 72, 6);
     const texture = new THREE.CanvasTexture(canvas);
     texture.colorSpace = THREE.SRGBColorSpace;
+    texture.anisotropy = 4;
     const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false, toneMapped: false }));
-    sprite.scale.set(canvas.width / 60, 1, 1);
+    sprite.scale.set(0.8 * canvas.width / canvas.height, 0.8, 1);
     sprite.renderOrder = 10;
     return sprite;
 }
@@ -47,16 +57,22 @@ export class Automap {
         this.roomsView = false;
         const cell = level.settings.cell;
 
+        // das Drahtgitter, in der Ansicht mit Räumen auch über den Räumen
+        this.lines = new THREE.Group();
+        this.model.add(this.lines);
         for (const { kind, room, geometry: mesh } of geometry.meshes) {
             const color = roomColor(room).multiplyScalar(kind === 'floor' ? 0.55 : 1);
             const material = new THREE.LineBasicMaterial({ color, toneMapped: false, transparent: true, opacity: kind === 'ceiling' ? 0.35 : 0.9 });
-            this.model.add(new THREE.LineSegments(new THREE.EdgesGeometry(mesh), material));
+            this.lines.add(new THREE.LineSegments(new THREE.EdgesGeometry(mesh), material));
         }
         // Raumnamen über der Mitte jedes Raums
         for (const room of level.rooms) {
             const x = (room.ox + room.width / 2) * cell, z = (room.oz + room.depth / 2) * cell;
             const sprite = label(room.settings.name ?? room.id, roomColor(room.index));
-            sprite.position.set(x, Math.max(...room.heights) + 1.2, z);
+            // über der höchsten Stelle seiner Decke, auch auf einer Rampe
+            const top = Math.max(...[[0, 0], [room.width, 0], [0, room.depth], [room.width, room.depth], [room.width / 2, room.depth / 2]]
+                .map(([cx, cz]) => room.ceilingAt(cx, cz)));
+            sprite.position.set(x, top + 1.2, z);
             this.overlay.add(sprite);
         }
         const dot = (color, size) => new THREE.Mesh(new THREE.SphereGeometry(size, 12, 8), new THREE.MeshBasicMaterial({ color, toneMapped: false }));
@@ -90,7 +106,7 @@ export class Automap {
         // ein Strahl von deinem Platz nach oben, durch alle Decken zu sehen
         const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 1, 8),
             new THREE.MeshBasicMaterial({ color: '#ff4060', transparent: true, opacity: 0.7, depthTest: false, toneMapped: false }));
-        const top = geometry.maxHeight + 2;
+        const top = geometry.maxHeight - geometry.minHeight + 2;   // vom tiefsten Boden bis über die höchste Decke
         beam.scale.y = top;
         beam.position.y = top / 2;
         beam.renderOrder = 5;
@@ -179,7 +195,7 @@ export class Automap {
     // Leuchten); mit roomsView zeichnet die Karte dann sie statt des
     // Drahtgitters, in VR bleibt es beim Drahtgitter.
     render({ anaglyph = null, vrCamera = null, rooms = null } = {}) {
-        this.youPivot.position.set(this.player.position.x, 0.05, this.player.position.z);
+        this.youPivot.position.set(this.player.position.x, this.player.position.y + 0.05, this.player.position.z);
         this.youPivot.rotation.y = this.player.rotation.y;
         if (vrCamera) {
             // Der Spieler steht nicht in dieser Szene: seine Lage selbst aktualisieren
@@ -232,11 +248,13 @@ export class Automap {
             scene = rooms.scene;
             for (const object of rooms.hide) object.visible = false;
             scene.add(this.overlay);
+            scene.add(this.lines);
         }
         const restore = () => {
             if (scene === this.scene) return;
             for (const object of rooms.hide) object.visible = true;
             this.model.add(this.overlay);
+            this.model.add(this.lines);
         };
         if (anaglyph) {
             // Das Bauwerk wie ein Modell auf dem Tisch: Augenabstand und

@@ -114,8 +114,8 @@ function placeStatue(object, thing, settings) {
     object.updateMatrixWorld(true);
     const placed = new THREE.Box3().setFromObject(object);
     const center = placed.getCenter(new THREE.Vector3());
-    // auf dem Boden oder auf ihrem Sockel (pedestal)
-    object.position.set((thing.x + 0.5) * settings.cell - center.x, (thing.base ?? 0) - placed.min.y, (thing.z + 0.5) * settings.cell - center.z);
+    // auf dem Boden ihres Felds oder auf ihrem Sockel (pedestal)
+    object.position.set((thing.x + 0.5) * settings.cell - center.x, (thing.floor ?? 0) + (thing.base ?? 0) - placed.min.y, (thing.z + 0.5) * settings.cell - center.z);
     object.updateMatrixWorld(true);
     return object;
 }
@@ -547,6 +547,7 @@ async function start() {
         player.position.set((view[0] + 0.5) * settings.cell, 0, (view[1] + 0.5) * settings.cell);
         walker.yaw = THREE.MathUtils.degToRad(view[2] ?? 0);
         walker.pitch = THREE.MathUtils.degToRad(view[3] ?? 0);
+        walker.stand();   // auf den Boden dort, auch auf einer Rampe
     }
 
     const automap = new Automap(level, geometry, lights, statues, player, renderer, () => walker.pitch);

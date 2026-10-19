@@ -46,9 +46,16 @@ export class Walker {
     toStart() {
         const { start, settings } = this.level;
         this.player.position.set((start.x + 0.5) * settings.cell, 0, (start.z + 0.5) * settings.cell);
+        this.stand();
         // Himmelsrichtung im Uhrzeigersinn, Drehung (yaw) gegen den Uhrzeigersinn
         this.yaw = -THREE.MathUtils.degToRad(start.heading ?? 0);
         this.pitch = 0;
+    }
+
+    // auf den Boden an der Stelle, wo du stehst: Auf einer Rampe geht es hinauf
+    stand() {
+        const p = this.player.position;
+        p.y = this.level.floorAtPoint(p.x, p.z);
     }
 
     solid(x, z) {
@@ -77,6 +84,7 @@ export class Walker {
         const p = this.player.position;
         if (this.free(p.x + dx, p.z)) p.x += dx;
         if (this.free(p.x, p.z + dz)) p.z += dz;
+        this.stand();
     }
 
     update(dt) {

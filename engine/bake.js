@@ -31,6 +31,7 @@ export function buildGrid(level, statues, maxHeight) {
     const cell = settings.cell;
     const info = new Float32Array(width * depth * 4);      // Art, Statue, Block
     const ceilings = new Float32Array(width * depth * 4);  // Deckenhöhe an den vier Ecken
+    const floors = new Float32Array(width * depth * 4);    // Bodenhöhe an den vier Ecken
     const blockMin = new Float32Array(width * depth * 4);
     const blockMax = new Float32Array(width * depth * 4);
     for (let z = 0; z < depth; z++) {
@@ -42,13 +43,16 @@ export function buildGrid(level, statues, maxHeight) {
             const room = owner[z * width + x];
             ceilings.set([level.ceilingAt(x, z, room), level.ceilingAt(x + 1, z, room),
                 level.ceilingAt(x, z + 1, room), level.ceilingAt(x + 1, z + 1, room)], i);
+            floors.set([level.floorAt(x, z, room), level.floorAt(x + 1, z, room),
+                level.floorAt(x, z + 1, room), level.floorAt(x + 1, z + 1, room)], i);
         }
     }
     // Ein Block gilt in jedem Feld, das er bedeckt (pro Feld einer)
     for (const block of level.things.filter((t) => t.type === 'block')) {
         const [w, h, d] = block.size;
         const cx = (block.x + 0.5) * cell, cz = (block.z + 0.5) * cell;
-        const min = [cx - w / 2, block.base, cz - d / 2], max = [cx + w / 2, block.base + h, cz + d / 2];
+        const y0 = block.floor + block.base;   // auf dem Boden seines Felds
+        const min = [cx - w / 2, y0, cz - d / 2], max = [cx + w / 2, y0 + h, cz + d / 2];
         for (let z = Math.floor(min[2] / cell); z < Math.ceil(max[2] / cell); z++) {
             for (let x = Math.floor(min[0] / cell); x < Math.ceil(max[0] / cell); x++) {
                 if (x < 0 || z < 0 || x >= width || z >= depth) continue;
@@ -115,7 +119,7 @@ export function buildGrid(level, statues, maxHeight) {
         return t;
     };
     return {
-        info: texture(info), ceilings: texture(ceilings), blockMin: texture(blockMin), blockMax: texture(blockMax),
+        info: texture(info), ceilings: texture(ceilings), floors: texture(floors), blockMin: texture(blockMin), blockMax: texture(blockMax),
         voxels, voxelCount: new THREE.Vector3(nx, ny, nz), voxelOrigin: origin, cells: new THREE.Vector2(width, depth), cell,
     };
 }
@@ -202,6 +206,8 @@ uniform vec3 gridOrigin;       // Ecke des Kastens um die Statuen
 uniform float voxel;
 uniform sampler2D cellInfo;    // r: 0 nichts, 1 Boden, 2 Wand; g: Statue; b: Block
 uniform sampler2D cellCeiling; // Deckenhöhe an den Ecken (x0z0, x1z0, x0z1, x1z1)
+uniform sampler2D cellFloor;   // Bodenhöhe an den Ecken, ebenso
+uniform float bottom;          // der tiefste Boden
 uniform sampler2D blockMin;
 uniform sampler2D blockMax;
 uniform vec2 cellCount;
@@ -295,11 +301,12 @@ float trace(vec3 a, vec3 dir, float maxLength) {
         float f1 = a.y + dir.y * tExit - mix(mix(h.x, h.y, q1.x), mix(h.z, h.w, q1.x), q1.y);
         if (f0 >= 0.0) hit = tEnter;
         else if (f1 > 0.0) hit = tEnter + (tExit - tEnter) * (-f0) / (f1 - f0);
-        // der Boden
-        if (dir.y < 0.0) {
-            float tFloor = -a.y / dir.y;
-            if (tFloor >= tEnter && tFloor <= tExit) hit = min(hit, tFloor);
-        }
+        // der Boden, auch schräg: Höhe über ihm am Anfang und am Ende des Stücks
+        vec4 g = texelFetch(cellFloor, cell, 0);
+        float g0 = a.y + dir.y * tEnter - mix(mix(g.x, g.y, q0.x), mix(g.z, g.w, q0.x), q0.y);
+        float g1 = a.y + dir.y * tExit - mix(mix(g.x, g.y, q1.x), mix(g.z, g.w, q1.x), q1.y);
+        if (g0 <= 0.0) hit = min(hit, tEnter);
+        else if (g1 < 0.0) hit = min(hit, tEnter + (tExit - tEnter) * g0 / (g0 - g1));
         // ein Block
         if (info.b > 0.5) {
             float tBox = boxHit(a, dir, texelFetch(blockMin, cell, 0).xyz, texelFetch(blockMax, cell, 0).xyz);
@@ -405,6 +412,7 @@ uniform sampler2D cells;      // das abgegebene Licht, Schicht für Schicht nebe
 uniform vec3 bounceCells;
 uniform float cellSize;
 uniform int perRow;           // so viele Schichten liegen in einer Reihe
+uniform float cellBottom;     // die unterste Schicht beginnt am tiefsten Boden
 `;
 
 const cellLightCode = /* glsl */ `
@@ -417,7 +425,7 @@ vec4 cellSum(ivec3 c) {
 // Das Licht an einer Stelle, zwischen den acht nächsten Zellen gemischt;
 // Zellen, in die nichts abgegeben wurde, zählen nicht mit.
 vec3 cellLight(vec3 q) {
-    vec3 g = q / cellSize - 0.5;
+    vec3 g = (q - vec3(0.0, cellBottom, 0.0)) / cellSize - 0.5;
     ivec3 base = ivec3(floor(g));
     vec3 f = g - vec3(base);
     vec3 sum = vec3(0.0);
@@ -451,7 +459,7 @@ void main() {
     for (int r = 0; r < ${RAYS}; r++) {
         vec3 dir = hemisphere(n);
         // Boden und oberste Decke begrenzen jeden Strahl
-        float bound = dir.y < -1e-4 ? -start.y / dir.y : dir.y > 1e-4 ? (top - start.y) / dir.y : 1e4;
+        float bound = dir.y < -1e-4 ? (bottom - start.y) / dir.y : dir.y > 1e-4 ? (top - start.y) / dir.y : 1e4;
         float t = trace(start, dir, min(bound, 24.0));
         if (t < 0.0) t = bound <= 24.0 ? bound : -1.0;
         if (t >= 0.0) light += cellLight(start + dir * max(t - 0.06, 0.0));
@@ -589,7 +597,7 @@ void main() {
     for (int r = 0; r < 4; r++) {
         if (wantDirect) break;
         vec3 dir = hemisphere(n);
-        float bound = dir.y < -1e-4 ? -start.y / dir.y : dir.y > 1e-4 ? (top - start.y) / dir.y : 1e4;
+        float bound = dir.y < -1e-4 ? (bottom - start.y) / dir.y : dir.y > 1e-4 ? (top - start.y) / dir.y : 1e4;
         float t = trace(start, dir, min(bound, 24.0));
         if (t < 0.0) t = bound <= 24.0 ? bound : -1.0;
         if (t >= 0.0) light += cellLight(start + dir * max(t - 0.06, 0.0)) * 0.25;
@@ -635,6 +643,7 @@ uniform int atlasSize;
 uniform vec3 bounceCells;
 uniform float cellSize;
 uniform int perRow;
+uniform float cellBottom;
 uniform vec2 flatSize;
 out vec3 vLight;
 void main() {
@@ -648,7 +657,7 @@ void main() {
     vec3 flickering = f.x * channelColor[0] + f.y * channelColor[1] + f.z * channelColor[2] + f.w * channelColor[3];
     vec3 light = (texelFetch(direct, t, 0).rgb + flickering) * directScale + texelFetch(indirect, t, 0).rgb * indirectScale;
     vLight = albedo * light;
-    ivec3 c = clamp(ivec3(floor((p.xyz + n * cellSize * 0.5) / cellSize)), ivec3(0), ivec3(bounceCells) - 1);
+    ivec3 c = clamp(ivec3(floor((p.xyz + n * cellSize * 0.5 - vec3(0.0, cellBottom, 0.0)) / cellSize)), ivec3(0), ivec3(bounceCells) - 1);
     vec2 slot = vec2(c.x + (c.z % perRow) * int(bounceCells.x), c.y + (c.z / perRow) * int(bounceCells.y)) + 0.5;
     gl_Position = vec4(slot / flatSize * 2.0 - 1.0, 0.0, 1.0);
     gl_PointSize = 1.0;
@@ -696,7 +705,7 @@ export class LightBaker {
 
         // das grobe Raster für das abgegebene Licht, Schicht für Schicht nebeneinander
         const cellCount = new THREE.Vector3(
-            Math.ceil(voxels.cells.x * voxels.cell / CELL), Math.ceil((geometry.maxHeight + 0.5) / CELL), Math.ceil(voxels.cells.y * voxels.cell / CELL));
+            Math.ceil(voxels.cells.x * voxels.cell / CELL), Math.ceil((geometry.maxHeight - geometry.minHeight + 0.5) / CELL), Math.ceil(voxels.cells.y * voxels.cell / CELL));
         const perRow = Math.max(1, Math.min(cellCount.z, Math.floor(8192 / cellCount.x)));
         const flatSize = new THREE.Vector2(cellCount.x * perRow, cellCount.y * Math.ceil(cellCount.z / perRow));
         this.cellTarget = target([flatSize.x, flatSize.y], { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
@@ -709,6 +718,8 @@ export class LightBaker {
             voxel: { value: VOXEL },
             cellInfo: { value: voxels.info },
             cellCeiling: { value: voxels.ceilings },
+            cellFloor: { value: voxels.floors },
+            bottom: { value: geometry.minHeight - 0.01 },
             blockMin: { value: voxels.blockMin },
             blockMax: { value: voxels.blockMax },
             cellCount: { value: voxels.cells },
@@ -736,6 +747,7 @@ export class LightBaker {
             bounceCells: { value: cellCount },
             cellSize: { value: CELL },
             perRow: { value: perRow },
+            cellBottom: { value: geometry.minHeight - 0.25 },
         };
         this.gatherMaterial = material(gatherShader, { cells: { value: this.cellTarget.texture }, ...cells }, additive);
         this.surfaceMaterial = material(surfaceShader, {});
