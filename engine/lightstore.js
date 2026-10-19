@@ -10,8 +10,14 @@
 //
 // Gespeichert wird jede Lightmap mit 8 Bit pro Kanal, als Wurzel des Werts
 // (so bleiben dunkle Stellen genau), und alles zusammen mit gzip gepackt.
+// Der Maßstab ist nicht der hellste Punkt, sondern der, über dem nur noch
+// 0,05 % der Punkte liegen: Eine Lampe direkt an der Wand macht dort einen
+// winzigen, sehr hellen Fleck, und am hellsten Punkt gemessen blieben für
+// alles andere nur wenige Stufen, die man als Streifen sähe. Ein wenig
+// Rauschen beim Runden (Dithering) macht übrige Stufen unsichtbar.
 
-const FORMAT = 'backrooms-light 1';
+const FORMAT = 'backrooms-light 2';
+const CLIP = 0.9995;
 const DATABASE = 'backrooms';
 const STORE = 'light';
 
@@ -36,21 +42,44 @@ export function lightFileName(levelFile) {
     return levelFile.replace(/\.[^./]*$/, '') + '.light';
 }
 
-// Werte von 0 bis max als Wurzel in 0 bis 255
+// Werte von 0 bis max als Wurzel in 0 bis 255, mit Rauschen gerundet
 function quantize(values, out, offset, stride, max) {
     const scale = max > 0 ? 1 / max : 0;
     for (let i = 0; i < values.length; i += 4) {
         for (let k = 0; k < stride; k++) {
             const v = Math.min(1, Math.max(0, values[i + k] * scale));
-            out[offset + i + k] = Math.round(Math.sqrt(v) * 255);
+            const dither = Math.random() + Math.random() - 1;   // -1 bis 1, meist nahe 0
+            out[offset + i + k] = Math.min(255, Math.max(0, Math.round(Math.sqrt(v) * 255 + dither * 0.5)));
         }
     }
 }
 
-function maximum(values, channels) {
-    let max = 0;
-    for (let i = 0; i < values.length; i += 4) {
-        for (let k = 0; k < channels; k++) if (values[i + k] > max) max = values[i + k];
+// Der Wert, über dem nur noch der Anteil 1 - CLIP aller Werte liegt (über
+// mehrere Lightmaps zusammen); gesucht über ein Histogramm
+function maximum(lists) {
+    let max = 0, count = 0;
+    for (const [values, channels] of lists) {
+        for (let i = 0; i < values.length; i += 4) {
+            for (let k = 0; k < channels; k++) if (values[i + k] > max) max = values[i + k];
+        }
+    }
+    if (max <= 0) return 0;
+    const BINS = 4096;
+    const histogram = new Uint32Array(BINS);
+    for (const [values, channels] of lists) {
+        for (let i = 0; i < values.length; i += 4) {
+            for (let k = 0; k < channels; k++) {
+                const v = values[i + k];
+                if (v <= 0) continue;
+                histogram[Math.min(BINS - 1, Math.floor(v / max * BINS))] += 1;
+                count += 1;
+            }
+        }
+    }
+    let seen = 0;
+    for (let bin = 0; bin < BINS; bin++) {
+        seen += histogram[bin];
+        if (seen >= count * CLIP) return max * (bin + 1) / BINS;
     }
     return max;
 }
@@ -73,8 +102,8 @@ export async function encodeLight(print, light, statues) {
     const texels = size * size * 4;
     // direktes Licht und Flackern teilen sich einen Maßstab, die Kontaktschatten
     // (Alphakanal) liegen ohnehin zwischen 0 und 1
-    const directMax = Math.max(maximum(light.steady, 3), maximum(light.flicker, 4));
-    const indirectMax = maximum(light.indirect, 3);
+    const directMax = maximum([[light.steady, 3], [light.flicker, 4]]);
+    const indirectMax = maximum([[light.indirect, 3]]);
     const header = {
         format: FORMAT, fingerprint: print, size, directMax, indirectMax,
         statueVertices: statues ? statues.direct.length / 3 : 0,
