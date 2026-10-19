@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+    <title>Level 0</title>
+    <link rel="stylesheet" href="engine/style.css">
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "./vendor/three/build/three.module.min.js",
+            "three/addons/": "./vendor/three/addons/"
+        }
+    }
+    </script>
+</head>
+<body>
+    <div id="info">
+        <strong id="title">Level 0</strong>
+        <span id="status">Loading the level …</span>
+        <span class="bar"><span id="progress"></span></span>
+        <div id="controls"></div>
+        <span class="help">Click into the picture to look around with the mouse · WASD to walk, Shift to run</span>
+    </div>
+    <script type="module" src="engine/main.js"></script>
+</body>
+</html>

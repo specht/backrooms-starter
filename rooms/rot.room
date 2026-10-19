@@ -1,0 +1,24 @@
+# Ein Raum in Rot. Das Licht reicht bis in den Gang hinaus.
+
+[room]
+baseboard = 0.08, #c8c0b0
+name = Rot
+height = 2.8
+wallpaper = #ddd6c8
+
+[map]
+#######
+#.....#
+1..R..#
+#..P..#
+#.....#
+#######
+
+[R]
+light = #ff2a1a
+power = 2.4
+size = 1.2, 1.2
+
+[P]
+block = 0.7, 1.0, 0.7
+color = #e9e2d4

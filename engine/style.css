@@ -1,0 +1,121 @@
+html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    background: #0b0a06;
+    font-family: system-ui, sans-serif;
+}
+
+canvas {
+    display: block;
+}
+
+#info {
+    position: fixed;
+    top: 1rem;
+    left: 1rem;
+    display: grid;
+    gap: 0.25rem;
+    max-width: 30rem;
+    padding: 0.7rem 0.9rem;
+    border-radius: 0.5rem;
+    color: #f4ecc8;
+    background: rgb(20 18 8 / 70%);
+    pointer-events: none;
+}
+
+#info .help {
+    font-size: 0.85rem;
+    opacity: 0.8;
+}
+
+#status.error {
+    color: #ffb4a8;
+    white-space: pre-line;
+}
+
+/* Fortschritt beim Backen des Lichts */
+#info .bar {
+    display: block;
+    height: 0.3rem;
+    border-radius: 0.15rem;
+    background: rgb(255 240 180 / 18%);
+    overflow: hidden;
+    transition: opacity 1.5s;
+}
+
+#info .bar.done {
+    opacity: 0;
+}
+
+#progress {
+    display: block;
+    width: 0;
+    height: 100%;
+    background: #f4dc78;
+}
+
+/* Schalter: ein Lämpchen, das grün leuchtet, wenn der Teil an ist, und die
+   Taste dazu. Knöpfe, die etwas tun (action), haben kein Lämpchen. */
+#controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-top: 0.3rem;
+    pointer-events: auto;
+}
+
+.flag {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.25rem 0.3rem 0.25rem 0.55rem;
+    border: 1px solid rgb(255 255 255 / 12%);
+    border-radius: 0.4rem;
+    color: rgb(244 236 200 / 55%);
+    background: rgb(255 255 255 / 5%);
+    font: inherit;
+    font-size: 0.85rem;
+    cursor: pointer;
+}
+
+.flag:hover {
+    border-color: rgb(255 255 255 / 30%);
+}
+
+.flag .dot {
+    width: 0.55rem;
+    height: 0.55rem;
+    border-radius: 50%;
+    background: #555349;
+}
+
+.flag.action .dot {
+    display: none;
+}
+
+.flag.on,
+.flag.action {
+    color: #f4ecc8;
+}
+
+.flag.on {
+    border-color: #6fbf73;
+    background: rgb(76 140 74 / 28%);
+}
+
+.flag.on .dot {
+    background: #8ce07a;
+    box-shadow: 0 0 0.35rem #8ce07a;
+}
+
+.flag kbd {
+    min-width: 1.1rem;
+    padding: 0.05rem 0.3rem;
+    border: 1px solid rgb(255 255 255 / 18%);
+    border-radius: 0.25rem;
+    color: #f4ecc8;
+    background: rgb(0 0 0 / 35%);
+    font: 600 0.75rem ui-monospace, monospace;
+    text-align: center;
+}

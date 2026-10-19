@@ -1,0 +1,26 @@
+# Eine dunkle Vorhalle. Eine Wand steht im Weg, dahinter ist es still.
+
+[room]
+baseboard = 0.1, #5a4626
+name = Vorhalle
+height = 3.2
+
+[map]
+####1####
+#.......#
+#..###..#
+#.......#
+#.....w.#
+#.W.....#
+#######2#
+
+[W]
+light = #ffd9a0
+power = 1.0
+
+[w]
+light = #ffd9a0
+power = 0.5
+
+[2]
+door = halle 1

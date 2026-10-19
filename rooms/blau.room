@@ -1,0 +1,25 @@
+# Niedrig und blau. Hier ist es still.
+
+[room]
+baseboard = 0.08, #b8bcc6
+name = Blau
+height = 2.2
+wallpaper = #d4d6dc
+carpet = #4a4e5a
+
+[map]
+#########
+#.......#
+#..B....#
+#.......1
+#....P..#
+#########
+
+[B]
+light = #2f5bff
+power = 2.6
+size = 1.2, 1.2
+
+[P]
+block = 0.5, 0.8, 0.5
+color = #c8ccd6

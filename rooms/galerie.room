@@ -1,0 +1,30 @@
+# Eine Galerie: Sockel in Reihen, jeder unter seinem eigenen Licht.
+# Auf keinem steht etwas. Noch nicht.
+
+[room]
+baseboard = 0.1, #4a4640
+name = Galerie
+height = 3.4
+walls = plain
+wallpaper = #9a958c
+carpet = #3e3a34
+
+[map]
+###########
+#.........#
+#.P..P..P.#
+#..l...l..#
+#.P.....P.#
+#..l...l..#
+#.P.....P.#
+#.........#
+#####1#####
+
+[P]
+block = 0.6, 1.0, 0.6
+color = #d6d0c4
+
+[l]
+light = #fff4e0
+power = 1.2
+size = 0.4, 0.4
