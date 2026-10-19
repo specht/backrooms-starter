@@ -244,7 +244,7 @@ export class Automap {
             const t = Math.min(1, (performance.now() - this.flight.start) / 1000);
             const ease = t * t * (3 - 2 * t);
             c.position.lerpVectors(this.flight.from, c.position, ease);
-            target.lerpVectors(this.flight.look, this.center, ease);
+            target.lerpVectors(this.flight.look, target, ease);   // zu demselben Ziel wie danach: kein Sprung
             if (t >= 1) this.flight = null;
         }
         c.lookAt(target);
