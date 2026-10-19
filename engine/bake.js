@@ -131,11 +131,27 @@ export function lightRange(light) {
 // Drei Texel pro Leuchte: Mitte und Breite, Farbe mal Stärke und Länge,
 // Flacker-Kanal (-1: ruhig) und Reichweite. Leuchten, die (noch) aus sind (on[i] === false),
 // haben die Stärke 0.
+// Die Farbe jedes Flacker-Kanals, auf die Helligkeit 1 gebracht: Die
+// Lightmap eines Kanals trägt nur, wie hell es ist; die Fläche färbt es mit
+// dieser Farbe. Teilen sich Leuchten verschiedener Farbe einen Kanal, gilt
+// die Farbe der letzten.
+const LUMA = [0.2126, 0.7152, 0.0722];
+export function channelColors(lights, count) {
+    const colors = Array.from({ length: count }, () => new THREE.Vector3(1, 1, 1));
+    for (const light of lights) {
+        if (light.channel < 0) continue;
+        const c = new THREE.Color(light.color);
+        const luma = c.r * LUMA[0] + c.g * LUMA[1] + c.b * LUMA[2];
+        colors[light.channel].set(c.r, c.g, c.b).divideScalar(Math.max(luma, 1e-3));
+    }
+    return colors;
+}
+
 export function lightTexture(lights, on = null, texture = null) {
     const count = Math.max(1, lights.length);
     const data = texture ? texture.image.data : new Float32Array(count * 3 * 4);
     lights.forEach((light, i) => {
-        const color = light.channel >= 0 ? new THREE.Color(1, 1, 1) : new THREE.Color(light.color);
+        const color = new THREE.Color(light.color);
         const power = on && !on[i] ? 0 : light.power * LIGHT_SCALE;
         data.set([light.position.x, light.position.y, light.position.z, light.size[0]], i * 12);
         data.set([color.r * power, color.g * power, color.b * power, light.size[1]], i * 12 + 4);
@@ -365,7 +381,7 @@ void main() {
         if (blocked(start, s)) continue;
         vec3 amount = b.rgb * atSurface * atLamp * (a.w * b.w) / (3.14159 * d2 + 0.05) * fade;
         if (channel < 0) light += amount;
-        else flickering[channel] += amount.r;
+        else flickering[channel] += dot(amount, vec3(0.2126, 0.7152, 0.0722));   // nur wie hell, die Farbe hat der Kanal
     }
 
     // Wie offen die Stelle ist: zwei kurze Strahlen (50 cm) in die Halbkugel.
@@ -610,6 +626,8 @@ uniform sampler2D surfacePosition;
 uniform sampler2D surfaceNormal;
 uniform sampler2D surfaceAlbedo;
 uniform sampler2D direct;
+uniform sampler2D flicker;           // das Licht der flackernden Leuchten, je Kanal wie hell
+uniform vec3 channelColor[4];
 uniform sampler2D indirect;
 uniform float directScale;
 uniform float indirectScale;
@@ -625,7 +643,10 @@ void main() {
     if (p.w < 0.5) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
     vec3 n = texelFetch(surfaceNormal, t, 0).xyz;
     vec3 albedo = texelFetch(surfaceAlbedo, t, 0).rgb;
-    vec3 light = texelFetch(direct, t, 0).rgb * directScale + texelFetch(indirect, t, 0).rgb * indirectScale;
+    // auch flackernde Leuchten werfen Licht zurück, so hell, als brennten sie ruhig
+    vec4 f = texelFetch(flicker, t, 0);
+    vec3 flickering = f.x * channelColor[0] + f.y * channelColor[1] + f.z * channelColor[2] + f.w * channelColor[3];
+    vec3 light = (texelFetch(direct, t, 0).rgb + flickering) * directScale + texelFetch(indirect, t, 0).rgb * indirectScale;
     vLight = albedo * light;
     ivec3 c = clamp(ivec3(floor((p.xyz + n * cellSize * 0.5) / cellSize)), ivec3(0), ivec3(bounceCells) - 1);
     vec2 slot = vec2(c.x + (c.z % perRow) * int(bounceCells.x), c.y + (c.z / perRow) * int(bounceCells.y)) + 0.5;
@@ -764,6 +785,8 @@ export class LightBaker {
                 surfaceNormal: { value: this.surfaceTarget.textures[1] },
                 surfaceAlbedo: { value: this.surfaceTarget.textures[2] },
                 direct: { value: this.directTarget.textures[0] },
+                flicker: { value: this.directTarget.textures[1] },
+                channelColor: { value: channelColors(lights, 4) },
                 indirect: { value: this.indirectTargets[1].texture },
                 directScale: { value: 0 },
                 indirectScale: { value: 0 },

@@ -7,7 +7,7 @@ import { AnaglyphEffect } from 'three/addons/effects/AnaglyphEffect.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { loadLevel } from './level.js';
 import { buildGeometry } from './geometry.js';
-import { buildGrid, LightBaker, lightRange } from './bake.js';
+import { buildGrid, LightBaker, lightRange, channelColors } from './bake.js';
 import { wallpaperTexture, carpetTexture, ceilingTexture, lampTexture, plainTexture, marbleTexture } from './textures.js';
 import { Walker } from './controls.js';
 import { Automap } from './automap.js';
@@ -380,10 +380,8 @@ async function start() {
     // Leuchten: in der Mitte ihres Feldes, knapp unter der Decke. Flackernde
     // bekommen reihum einen von vier Kanälen.
     let nextChannel = 0;
-    const channelColors = Array.from({ length: FLICKER_CHANNELS }, () => new THREE.Color(0, 0, 0));
     const lights = level.things.filter((t) => t.type === 'light').map((t) => {
         const channel = t.flicker > 0 ? nextChannel++ % FLICKER_CHANNELS : -1;
-        if (channel >= 0) channelColors[channel].set(t.color).multiplyScalar(t.power);
         // Die Leuchte liegt in der Ebene der Decke über ihr: Wie steil die in
         // x und z ansteigt, ergibt sich aus ihrer Höhe an den Rändern der
         // Leuchte (unter einem First steigt sie zu beiden Seiten gleich, dort
@@ -454,7 +452,7 @@ async function start() {
         useBounce: { value: true },
         useOcclusion: { value: true },
         flicker: { value: new THREE.Vector4(1, 1, 1, 1) },
-        channelColor: { value: channelColors.map((c) => new THREE.Vector3(c.r, c.g, c.b)) },
+        channelColor: { value: channelColors(lights, FLICKER_CHANNELS) },
     };
     // Welche Teile an sind. ?show=light, direct oder bounce: nur das Licht,
     // ohne Tapete und Teppich, und davon wahlweise nur ein Teil.
