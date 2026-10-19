@@ -110,17 +110,27 @@ canvas {
 }
 
 .flag kbd {
-    min-width: 1.1rem;
-    padding: 0.05rem 0.3rem;
+    /* eine Taste mit einem Zeichen ist ein Quadrat, längere (Shift+L) werden breiter */
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    height: 1.25rem;
+    min-width: 1.25rem;
+    padding: 0 0.3rem;
     border: 1px solid rgb(255 255 255 / 18%);
     border-radius: 0.25rem;
     color: #f4ecc8;
     background: rgb(0 0 0 / 35%);
-    font: 600 0.75rem ui-monospace, monospace;
-    text-align: center;
+    font: 600 0.75rem/1 ui-monospace, monospace;
 }
 
-/* H blendet den Kasten aus */
+/* zwei Tasten zusammen (Shift und R) rücken näher aneinander */
+.flag kbd + kbd {
+    margin-left: -0.25rem;
+}
+
+/* P blendet den Kasten aus */
 body.panel-hidden #info {
     display: none;
 }

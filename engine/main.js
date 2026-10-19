@@ -54,9 +54,10 @@ function addControl(label, key, onClick, state = null) {
     const text = document.createElement('span');
     text.textContent = label;
     button.append(dot, text);
-    if (key) {
+    // eine Taste je Kappe: 'Shift+R' wird zu Shift und R
+    for (const part of key ? key.split('+') : []) {
         const kbd = document.createElement('kbd');
-        kbd.textContent = key;
+        kbd.textContent = part;
         button.append(kbd);
     }
     button.addEventListener('click', onClick);
@@ -798,10 +799,10 @@ async function start() {
         ...PARTS.map((part) => addControl(part.label, part.key.slice(3), () => togglePart(part), () => parts[part.name])),
         addControl('Anaglyph', '3', toggleAnaglyph, () => useAnaglyph),
         addControl('Automap', 'M', toggleAutomap, () => automap.active),
-        addControl('Rebake light', '⇧L', rebake),
+        addControl('Rebake light', 'Shift+L', rebake),
         addControl('Save light', '', saveLight),
         addControl('Hide panel', 'P', () => togglePanel()),
-        addControl('Back to start', 'R', () => walker.toStart()),
+        addControl('Back to start', 'Shift+R', () => walker.toStart()),
     ];
     const refreshControls = () => {
         for (const refresh of refreshers) refresh();
@@ -817,7 +818,8 @@ async function start() {
         else if (part) togglePart(part);
         if (event.code === 'Digit3') toggleAnaglyph();
         if (event.code === 'KeyP') togglePanel();
-        if (event.code === 'KeyR') walker.toStart();
+        // mit Shift, damit man nicht aus Versehen den Weg verliert
+        if (event.code === 'KeyR' && event.shiftKey) walker.toStart();
         // V: in der Automap die Räume statt des Drahtgitters, und zurück
         if (event.code === 'KeyV' && automap.active) automap.roomsView = !automap.roomsView;
         if (event.code === 'KeyM' || event.code === 'Tab') {

@@ -63,7 +63,7 @@ Shift+L, or `?rebake` in the address, bakes the light again in any case.
 <tr><td>M or Tab</td><td>automap: the whole building as a wireframe; drag to turn it, Shift+drag to move it, mouse wheel to zoom, V shows the rooms themselves from above instead, Esc to close</td></tr>
 <tr><td>Shift+L</td><td>bake the light again</td></tr>
 <tr><td>»Save light«</td><td>download the baked light as <code>level.light</code> (see below)</td></tr>
-<tr><td>R</td><td>back to the start</td></tr>
+<tr><td>Shift+R</td><td>back to the start</td></tr>
 <tr><td>P</td><td>hide the panel at the top left, and show it again</td></tr>
 </table>
 
