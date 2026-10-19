@@ -139,7 +139,8 @@ export function lightTexture(lights, on = null, texture = null) {
         const power = on && !on[i] ? 0 : light.power * LIGHT_SCALE;
         data.set([light.position.x, light.position.y, light.position.z, light.size[0]], i * 12);
         data.set([color.r * power, color.g * power, color.b * power, light.size[1]], i * 12 + 4);
-        data.set([light.channel, lightRange(light), 0, 0], i * 12 + 8);
+        // wie steil die Decke über der Leuchte in x und z ansteigt: Sie liegt darin
+        data.set([light.channel, lightRange(light), light.tilt?.[0] ?? 0, light.tilt?.[1] ?? 0], i * 12 + 8);
     });
     texture ??= new THREE.DataTexture(data, count * 3, 1, THREE.RGBAFormat, THREE.FloatType);
     texture.needsUpdate = true;
@@ -203,6 +204,16 @@ uint pcg() {
     return (word >> 22u) ^ word;
 }
 float random() { return float(pcg()) / 4294967296.0; }
+
+// Eine Leuchte liegt in der Ebene der Decke über ihr. Der dritte Texel der
+// Leuchte (e) trägt in .b und .a, wie steil diese Decke in x und in z
+// ansteigt (0 und 0: waagerecht). lampPoint ist ein zufälliger Punkt auf der
+// Leuchte, lampNormal zeigt von ihr in den Raum.
+vec3 lampPoint(vec4 a, vec4 b, vec4 e) {
+    vec3 u = normalize(vec3(1.0, e.b, 0.0)), v = normalize(vec3(0.0, e.a, 1.0));
+    return a.xyz + u * ((random() - 0.5) * a.w) + v * ((random() - 0.5) * b.w);
+}
+vec3 lampNormal(vec4 e) { return normalize(vec3(e.b, -1.0, e.a)); }
 
 vec3 safeDirection(vec3 d) {
     return vec3(abs(d.x) < 1e-6 ? 1e-6 : d.x, abs(d.y) < 1e-6 ? 1e-6 : d.y, abs(d.z) < 1e-6 ? 1e-6 : d.z);
@@ -344,12 +355,12 @@ void main() {
         if (distance > range) continue;
         float fade = 1.0 - smoothstep(0.7 * range, range, distance);
         // ein zufälliger Punkt auf der Leuchte
-        vec3 s = a.xyz + vec3((random() - 0.5) * a.w, 0.0, (random() - 0.5) * b.w);
+        vec3 s = lampPoint(a, b, c);
         vec3 l = s - start;
         float d2 = dot(l, l);
         l /= sqrt(d2);
         float atSurface = dot(n, l);      // wie schräg das Licht auf die Fläche fällt
-        float atLamp = l.y;               // die Leuchte strahlt nach unten: am meisten senkrecht darunter
+        float atLamp = -dot(l, lampNormal(c));   // am meisten senkrecht vor der Leuchte
         if (atSurface <= 0.0 || atLamp <= 0.0) continue;
         if (blocked(start, s)) continue;
         vec3 amount = b.rgb * atSurface * atLamp * (a.w * b.w) / (3.14159 * d2 + 0.05) * fade;
@@ -548,11 +559,11 @@ void main() {
         float distance = length(a.xyz - start);
         if (distance > range) continue;
         float fade = 1.0 - smoothstep(0.7 * range, range, distance);
-        vec3 s = a.xyz + vec3((random() - 0.5) * a.w, 0.0, (random() - 0.5) * b.w);
+        vec3 s = lampPoint(a, b, e);
         vec3 l = s - start;
         float d2 = dot(l, l);
         l /= sqrt(d2);
-        float atSurface = dot(n, l), atLamp = l.y;
+        float atSurface = dot(n, l), atLamp = -dot(l, lampNormal(e));
         if (atSurface <= 0.0 || atLamp <= 0.0) continue;
         if (blocked(start, s)) continue;
         vec3 amount = b.rgb * atSurface * atLamp * (a.w * b.w) / (3.14159 * d2 + 0.05) * fade;

@@ -146,6 +146,8 @@ export class Automap {
         this.active = !this.active;
         document.body.classList.toggle('automap', this.active);
         if (!this.active) return;
+        // Die Maus freigeben: Auf der Karte zieht man mit ihr, statt sich umzusehen
+        if (document.pointerLockElement) document.exitPointerLock();
         this.follow = true;
         this.offset.set(0, 0, 0);
         this.center.set(this.player.position.x, 0, this.player.position.z);

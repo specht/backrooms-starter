@@ -34,6 +34,10 @@ const status = document.getElementById('status');
 const title = document.getElementById('title');
 const bar = document.getElementById('progress');
 const controls = document.getElementById('controls');
+const help = document.getElementById('help');
+// was die Maus und die Tasten gerade tun, unten im Kasten oben links
+const WALK_HELP = 'Click into the picture to look around with the mouse · WASD to walk, Shift to run';
+const AUTOMAP_HELP = 'Automap: drag to turn it, Shift+drag to move it, mouse wheel to zoom · WASD still walks · M or Esc closes it';
 
 // Ein Schalter mit Lämpchen (grün, wenn an) und seiner Taste. Ohne state
 // ist es ein Knopf, der etwas tut. Er nimmt keinen Fokus, damit die Tasten
@@ -116,9 +120,15 @@ function placeStatue(object, thing, settings) {
     return object;
 }
 
+// Wohin eine Leuchte strahlt: senkrecht aus der Ebene der Decke über ihr
+function lampNormal(light) {
+    return new THREE.Vector3(light.tilt?.[0] ?? 0, -1, light.tilt?.[1] ?? 0).normalize();
+}
+
 // Statuen bekommen ihr Licht nicht aus der Lichtkarte, sondern einmal
 // ausgerechnet für jede Ecke: Leuchten in der Nähe plus Umgebungslicht.
 function lightStatue(object, lights, ambient) {
+    const down = new Map(lights.map((light) => [light, lampNormal(light)]));
     const color = new THREE.Color();
     const p = new THREE.Vector3(), n = new THREE.Vector3(), l = new THREE.Vector3();
     object.traverse((mesh) => {
@@ -139,7 +149,7 @@ function lightStatue(object, lights, ambient) {
                 if (distance > range) continue;
                 const fade = 1 - THREE.MathUtils.smoothstep(distance, 0.7 * range, range);
                 l.normalize();
-                const amount = Math.max(n.dot(l), 0) * Math.max(l.y, 0) * 30 * light.power
+                const amount = Math.max(n.dot(l), 0) * Math.max(-l.dot(down.get(light)), 0) * 30 * light.power
                     * light.size[0] * light.size[1] / (Math.PI * d2 + 0.05) * fade;
                 color.set(light.color);
                 r += color.r * amount; g += color.g * amount; b += color.b * amount;
@@ -374,18 +384,27 @@ async function start() {
     const lights = level.things.filter((t) => t.type === 'light').map((t) => {
         const channel = t.flicker > 0 ? nextChannel++ % FLICKER_CHANNELS : -1;
         if (channel >= 0) channelColors[channel].set(t.color).multiplyScalar(t.power);
-        // unter der tiefsten Stelle der Decke über der ganzen Leuchte: Bei einer
-        // schrägen Decke läge sonst ein Teil der Leuchte über der Decke. Gemessen
-        // an neun Punkten der Leuchte und an den Ecken ihres Feldes (dazwischen
-        // verläuft die gezeichnete Decke gerade).
+        // Die Leuchte liegt in der Ebene der Decke über ihr: Wie steil die in
+        // x und z ansteigt, ergibt sich aus ihrer Höhe an den Rändern der
+        // Leuchte (unter einem First steigt sie zu beiden Seiten gleich, dort
+        // bleibt die Leuchte waagerecht). Dann hängt sie so tief, dass jeder
+        // ihrer Punkte unter der Decke liegt, gemessen an 25 Punkten der
+        // Leuchte und an den Ecken ihres Feldes (dazwischen verläuft die
+        // gezeichnete Decke gerade).
         const [w, d] = t.size;
-        const heights = [];
-        for (const fx of [-0.5, 0, 0.5]) for (const fz of [-0.5, 0, 0.5]) {
-            heights.push(level.ceilingAt(t.x + 0.5 + fx * w / settings.cell, t.z + 0.5 + fz * d / settings.cell, t.room));
+        const cell = settings.cell;
+        // mx, mz: Meter von der Mitte des Feldes
+        const ceiling = (mx, mz) => level.ceilingAt(t.x + 0.5 + mx / cell, t.z + 0.5 + mz / cell, t.room);
+        const tilt = [(ceiling(w / 2, 0) - ceiling(-w / 2, 0)) / w, (ceiling(0, d / 2) - ceiling(0, -d / 2)) / d];
+        const points = [];
+        for (const fx of [-0.5, -0.25, 0, 0.25, 0.5]) for (const fz of [-0.5, -0.25, 0, 0.25, 0.5]) points.push([fx * w, fz * d]);
+        for (const fx of [-0.5, 0.5]) for (const fz of [-0.5, 0.5]) points.push([fx * cell, fz * cell]);
+        let y = ceiling(0, 0) - 0.03;
+        for (const [mx, mz] of points) {
+            const lamp = y + tilt[0] * mx + tilt[1] * mz;
+            y -= Math.max(0, lamp - (ceiling(mx, mz) - 0.03));
         }
-        for (const dx of [0, 1]) for (const dz of [0, 1]) heights.push(level.ceilingAt(t.x + dx, t.z + dz, t.room));
-        const y = Math.min(...heights) - 0.03;
-        return { ...t, channel, position: new THREE.Vector3((t.x + 0.5) * settings.cell, y, (t.z + 0.5) * settings.cell) };
+        return { ...t, channel, tilt, position: new THREE.Vector3((t.x + 0.5) * cell, y, (t.z + 0.5) * cell) };
     });
 
     // Statuen laden; eine, die fehlt, wird gemeldet, das Level geht trotzdem
@@ -480,12 +499,14 @@ async function start() {
     const blueprint = new THREE.LineBasicMaterial({ color: '#fff4c4', transparent: true, opacity: 0.85, toneMapped: false });
     for (const { geometry: mesh } of geometry.meshes) scene.add(new THREE.LineSegments(new THREE.EdgesGeometry(mesh), blueprint));
 
-    // Die Leuchten selbst: helle Felder unter der Decke
+    // Die Leuchten selbst: helle Felder unter der Decke, so schräg wie sie
     const panels = lights.map((light) => {
         const material = new THREE.MeshBasicMaterial({ map: lampTexture(light.color), toneMapped: false });
         const panel = new THREE.Mesh(new THREE.PlaneGeometry(light.size[0], light.size[1]), material);
-        panel.rotation.x = Math.PI / 2;
-        panel.position.copy(light.position).add(new THREE.Vector3(0, 0.012, 0));
+        const down = lampNormal(light);
+        panel.rotation.x = Math.PI / 2;   // waagerecht, nach unten gewandt
+        panel.quaternion.premultiply(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, -1, 0), down));
+        panel.position.copy(light.position).addScaledVector(down, -0.012);
         scene.add(panel);
         return { light, material };
     });
@@ -564,7 +585,10 @@ async function start() {
         addControl('Save light', '', saveLight),
         addControl('Back to start', 'R', () => walker.toStart()),
     ];
-    const refreshControls = () => { for (const refresh of refreshers) refresh(); };
+    const refreshControls = () => {
+        for (const refresh of refreshers) refresh();
+        help.textContent = automap.active ? AUTOMAP_HELP : WALK_HELP;
+    };
     refreshControls();
 
     document.addEventListener('keydown', (event) => {
