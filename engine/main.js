@@ -4,6 +4,10 @@
 import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { AnaglyphEffect } from 'three/addons/effects/AnaglyphEffect.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { loadLevel } from './level.js';
 import { buildGeometry, EDGE_ANGLE } from './geometry.js';
@@ -18,6 +22,13 @@ const PASSES_PER_FRAME = 4;    // pro Bild, solange gebacken wird
 const DARK_SECONDS = 1.2;      // erst nur die Linien im Dunkeln
 const SWITCH_SECONDS = 2.0;    // dann gehen die Leuchten nacheinander an
 const FLICKER_CHANNELS = 4;    // so viele Gruppen flackern unabhängig voneinander
+// Bloom: Was heller ist als BLOOM_THRESHOLD, strahlt in die Umgebung aus, wie
+// helles Licht in einer Kamera oder im Auge. Die Leuchten sind dafür
+// PANEL_HDR-mal so hell wie Weiß.
+const BLOOM_STRENGTH = 0.3;
+const BLOOM_RADIUS = 0.4;
+const BLOOM_THRESHOLD = 2.5;   // so leuchten vor allem die Leuchten, nicht schon helle Wände
+const PANEL_HDR = 5;
 const GLOW = 0.85;               // wie stark der Schein um eine Leuchte ist (auf Dunklem; auf Hellem weniger)
 
 const levelFile = params.get('level') ?? 'level.ini';
@@ -31,6 +42,7 @@ const PARTS = [
     { name: 'flicker', key: 'KeyF', label: 'Flicker' },
     { name: 'wireframe', key: 'KeyE', label: 'Edges', on: false },
     { name: 'points', key: 'KeyG', label: 'Light points', on: false },
+    { name: 'bloom', key: 'KeyH', label: 'Bloom' },
 ];
 const status = document.getElementById('status');
 const title = document.getElementById('title');
@@ -432,7 +444,7 @@ function surfaceMaterial(map, baker, uniforms) {
                 vec3 direct = light * intensity;
                 // Bounce-Licht, in Ecken dunkler: wie offen die Stelle ist, steht im Alphakanal
                 float open = steady.a * occlusionScale;
-                float occlusion = useOcclusion ? mix(1.0, open, 0.85) : 1.0;
+                float occlusion = useOcclusion ? mix(1.0, open, 0.7) : 1.0;
                 vec3 bounced = indirect * indirectIntensity * occlusion;
                 light = (useDirect ? direct : vec3(0.0)) + (useBounce ? bounced : vec3(0.0));
                 gl_FragColor = vec4(base * light, 1.0);
@@ -814,6 +826,20 @@ async function start() {
     const eyes = camera.clone();
     let useAnaglyph = params.has('anaglyph');
 
+    // Bloom (H), am Rechner: Das Bild entsteht erst in HDR (Werte über 1),
+    // dann strahlt, was sehr hell ist, weich aus (UnrealBloomPass: halbiert,
+    // verwischt, wieder vergrößert und dazugezählt), und zum Schluss bringt das
+    // Tone Mapping alles auf den Bildschirm (OutputPass). Mit der Rot-Cyan-
+    // Brille, in VR und in der Automap wäre das zu teuer oder doppelt: Dort
+    // bleibt der Schein der einzelnen Leuchten.
+    const composer = new EffectComposer(renderer);
+    composer.setPixelRatio(renderer.getPixelRatio());
+    composer.setSize(window.innerWidth, window.innerHeight);
+    composer.addPass(new RenderPass(scene, camera));
+    composer.addPass(new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), BLOOM_STRENGTH, BLOOM_RADIUS, BLOOM_THRESHOLD));
+    composer.addPass(new OutputPass());
+    const bloomActive = () => parts.bloom && !useAnaglyph && !renderer.xr.isPresenting && !automap.active;
+
     // Die Schalter oben links, in derselben Reihenfolge wie ihre Tasten
     const togglePart = (part) => { parts[part.name] = !parts[part.name]; showParts(); };
     const toggleAnaglyph = () => { useAnaglyph = !useAnaglyph; };
@@ -878,6 +904,7 @@ async function start() {
         camera.updateProjectionMatrix();
         renderer.setSize(window.innerWidth, window.innerHeight);
         anaglyph.setSize(window.innerWidth, window.innerHeight);
+        composer.setSize(window.innerWidth, window.innerHeight);
         automap.resize();
     });
 
@@ -1022,9 +1049,10 @@ async function start() {
         shared.flicker.value.set(...values);
         player.updateMatrixWorld(true);
         const eye = new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
+        const blooming = bloomActive();
         panels.forEach(({ light, material, glow }, i) => {
             const brightness = !on[i] ? 0.08 : light.channel >= 0 ? values[light.channel] : 1;
-            material.color.setScalar(brightness);
+            material.color.setScalar(brightness * (blooming ? PANEL_HDR : 1));
             // die leuchtenden Teile einer Lampe aus einem Modell im selben Takt
             if (light.model) {
                 light.glowMaterials ??= [];
@@ -1037,7 +1065,8 @@ async function start() {
             // der Schein blendet weich ein und aus, wenn eine Wand dazwischenkommt
             const seen = glowVisible(eye, light);
             glow.userData.seen += (seen - glow.userData.seen) * Math.min(1, dt * 10);
-            glow.material.color.setScalar(on[i] ? GLOW * brightness * glow.userData.seen : 0);   // die Stärke steckt in der Farbe
+            // die Stärke steckt in der Farbe; mit Bloom strahlt die Leuchte selbst
+            glow.material.color.setScalar(on[i] && !blooming ? GLOW * brightness * glow.userData.seen : 0);
         });
 
         // Spiegelungen, wenn alles fertig ist und alle Leuchten an sind (ohne den Schein der Leuchten)
@@ -1063,6 +1092,7 @@ async function start() {
             eyes.updateMatrixWorld(true);
             anaglyph.render(scene, eyes);
         }
+        else if (blooming) composer.render(dt);
         else renderer.render(scene, camera);
     });
 }

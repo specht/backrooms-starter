@@ -59,6 +59,7 @@ Shift+L, or `?rebake` in the address, bakes the light again in any case.
 <tr><td>F</td><td>flickering lamps on/off</td></tr>
 <tr><td>E</td><td>edges (wireframe) on/off</td></tr>
 <tr><td>G</td><td>light points: a dot for every point of the light map at which the light is computed</td></tr>
+<tr><td>H</td><td>bloom: very bright light glows into its surroundings, as in a camera (on; not with red-cyan glasses, in VR or in the automap)</td></tr>
 <tr><td>3</td><td>anaglyph for red-cyan glasses on/off</td></tr>
 <tr><td>M or Tab</td><td>automap: the whole building as a wireframe; drag to turn it, Shift+drag to move it, mouse wheel to zoom, V shows the rooms themselves from above instead, Esc to close</td></tr>
 <tr><td>Shift+L</td><td>bake the light again</td></tr>

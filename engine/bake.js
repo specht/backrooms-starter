@@ -426,12 +426,40 @@ vec3 hemisphere(vec3 n) {
     return normalize(tangent * cos(phi) * sqrt(r2) + bitangent * sin(phi) * sqrt(r2) + n * sqrt(1.0 - r2));
 }
 
+// Liegt ein Punkt der Lightmap in einem Block (eine Säule, die in Boden
+// und Decke steckt), rückt er auf der Fläche an den Rand des Blocks. Sonst
+// wäre er schwarz, und beim Zeichnen, das benachbarte Punkte mischt, färbte
+// das Schwarz rund um die Säule herum ab wie Schimmel.
+vec3 outOfBlocks(vec3 p, vec3 n) {
+    ivec2 cell = ivec2(floor(p.xz / cellMeters));
+    if (any(lessThan(cell, ivec2(0))) || any(greaterThanEqual(cell, ivec2(cellCount)))) return p;
+    if (texelFetch(cellInfo, cell, 0).b < 0.5) return p;
+    vec3 lo = texelFetch(blockMin, cell, 0).xyz, hi = texelFetch(blockMax, cell, 0).xyz;
+    if (any(lessThan(p, lo - 0.001)) || any(greaterThan(p, hi + 0.001))) return p;
+    // Die Flächen des Blocks selbst liegen auf seinem Rand und zeigen aus ihm
+    // heraus: die bleiben. Ein Boden unter einer Säule zeigt in sie hinein.
+    for (int i = 0; i < 3; i++) {
+        if (abs(n[i]) < 0.5) continue;
+        if (p[i] < lo[i] + 0.002 && n[i] < 0.0) return p;
+        if (p[i] > hi[i] - 0.002 && n[i] > 0.0) return p;
+    }
+    float best = 1e9;
+    vec3 q = p;
+    for (int i = 0; i < 3; i++) {
+        if (abs(n[i]) > 0.5) continue;   // nur auf der Fläche, nicht von ihr weg
+        float below = p[i] - lo[i], above = hi[i] - p[i];
+        if (below < best) { best = below; q = p; q[i] = lo[i] - 0.01; }
+        if (above < best) { best = above; q = p; q[i] = hi[i] + 0.01; }
+    }
+    return q;
+}
+
 // Die Stelle, von der die Strahlen ausgehen: auf der Fläche, etwas davor.
 // Wände, Decken und Blöcke sind genau: 2 cm genügen.
 vec3 surfacePoint(out vec3 n) {
     n = normalize(vNormal);
     vec3 inset = 0.01 * (1.0 - abs(n));
-    vec3 p = clamp(vWorld, vMin + inset, vMax - inset);
+    vec3 p = outOfBlocks(clamp(vWorld, vMin + inset, vMax - inset), n);
     return p + n * 0.02;
 }
 `;
@@ -485,18 +513,19 @@ void main() {
     light /= float(samples);
     flickering /= float(samples);
 
-    // Wie offen die Stelle ist: zwei kurze Strahlen (50 cm) in die Halbkugel.
+    // Wie offen die Stelle ist: zwei kurze Strahlen (80 cm) in die Halbkugel.
     // In Ecken treffen sie oft etwas; das dunkelt das Bounce-Licht dort ab
     // (Ambient Occlusion, im Alphakanal), und das Licht von überall auch.
-    // Was nah ist, dunkelt stark ab, was fast 50 cm weg ist, kaum: So läuft
-    // der Schatten weich aus, statt bei 50 cm mit einer Kante aufzuhören.
+    // Was nah ist, dunkelt mehr ab, was weiter weg ist, weniger, und zwar
+    // sanft: So läuft der Schatten weich und breit aus, ohne schwarze Linie
+    // dort, wo zwei Flächen sich treffen, und ohne Kante bei 80 cm.
     float open = 0.0;
     for (int r = 0; r < 16; r++) {
         if (r >= 2 * samples) break;
         vec3 dir = hemisphere(n);
-        float t = trace(start, dir, 0.5);
-        float near = t < 0.0 ? 0.0 : 1.0 - t / 0.5;
-        open += 1.0 - near * near;
+        float t = trace(start, dir, 0.8);
+        float near = t < 0.0 ? 0.0 : 1.0 - smoothstep(0.0, 0.8, t);
+        open += 1.0 - near;
     }
     open /= float(2 * samples);
     light += ambientColor * vAmbient * open;
