@@ -19,7 +19,6 @@ const DARK_SECONDS = 1.2;      // erst nur die Linien im Dunkeln
 const SWITCH_SECONDS = 2.0;    // dann gehen die Leuchten nacheinander an
 const FLICKER_CHANNELS = 4;    // so viele Gruppen flackern unabhängig voneinander
 const GLOW = 0.55;               // wie stark der Schein um eine Leuchte ist
-const GLOW_PULL = 0.8;           // so viele Meter rückt der Schein auf dich zu
 
 const levelFile = params.get('level') ?? 'level.ini';
 // Was zu sehen ist: Jede Taste schaltet einen Teil an oder aus, ein Klick
@@ -688,20 +687,18 @@ async function start() {
         // ein weicher Schein, knapp unter der Leuchte, immer zu dir gewandt:
         // So blendet sie ein wenig, wie eine helle Fläche im Dunkeln. Eine
         // durchsichtige Fläche pro Leuchte, kein Nachbearbeiten des Bildes,
-        // darum auch mit Rot-Cyan-Brille und in VR. Er rückt ein Stück auf
-        // dich zu (und wird dafür kleiner, sodass er gleich groß aussieht):
-        // So schneidet ihn die Decke um die Leuchte nicht ab, aber eine Säule
-        // vor der Leuchte verdeckt ihn. Hinter Wänden blendet glowVisible ihn aus.
+        // darum auch mit Rot-Cyan-Brille und in VR. Er liegt über allem (sonst
+        // schnitte ihn die Decke ab, mit harten Kanten); wie viel von der
+        // Leuchte zu sehen ist, hinter Wänden, Säulen und Statuen, sagt glowVisible.
         const glow = new THREE.Sprite(new THREE.SpriteMaterial({
             map: glowTexture(light.color), blending: THREE.AdditiveBlending, transparent: true,
-            depthWrite: false, toneMapped: false, opacity: 0,
+            depthWrite: false, depthTest: false, toneMapped: false, opacity: 0,
         }));
         glow.renderOrder = 4;
         glow.userData.seen = 0;
-        glow.userData.anchor = light.position.clone().addScaledVector(down, light.kind === 'bulb' ? 0 : 0.06);
-        glow.userData.span = light.kind === 'bulb' ? 0.7 : Math.max(...light.size) * 2.8;
-        glow.position.copy(glow.userData.anchor);
-        glow.scale.set(glow.userData.span, glow.userData.span, 1);
+        glow.position.copy(light.position).addScaledVector(down, light.kind === 'bulb' ? 0 : 0.06);
+        const span = light.kind === 'bulb' ? 0.7 : Math.max(...light.size) * 2.8;
+        glow.scale.set(span, span, 1);
         scene.add(glow);
         aboveRooms.push(glow);
         return { light, material, glow };
@@ -725,7 +722,22 @@ async function start() {
     // Sieht man von den Augen aus die Leuchte? Feld für Feld durch den
     // Grundriss: Ist eines davon eine Wand, verdeckt sie den Schein. Türen sind
     // Boden, durch sie hindurch bleibt er zu sehen.
-    const glowVisible = (from, to) => {
+    // Auch Blöcke (Säulen) und Statuen verdecken ihn, als Kästen genommen.
+    // Geprüft an fünf Punkten der Leuchte (der Mitte und vier zum Rand hin):
+    // Was davon zu sehen ist, so stark ist der Schein, so verschwindet er
+    // hinter einer Säule allmählich statt auf einmal.
+    const glowBlockers = [
+        ...level.things.filter((t) => t.type === 'block').map((t) => {
+            const [w, h, d] = t.size;
+            const cx = (t.x + 0.5) * settings.cell + t.offset[0], cz = (t.z + 0.5) * settings.cell + t.offset[2];
+            const y0 = t.floor + t.base + t.offset[1];
+            return new THREE.Box3(new THREE.Vector3(cx - w / 2, y0, cz - d / 2), new THREE.Vector3(cx + w / 2, y0 + h, cz + d / 2));
+        }),
+        ...statues.filter((object) => !lampModels.has(object)).map((object) => new THREE.Box3().setFromObject(object)),
+    ];
+    const ray = new THREE.Ray();
+    const hitPoint = new THREE.Vector3();
+    const lineFree = (from, to) => {
         const cell = settings.cell;
         const x0 = from.x / cell, z0 = from.z / cell, x1 = to.x / cell, z1 = to.z / cell;
         const steps = Math.ceil(Math.max(Math.abs(x1 - x0), Math.abs(z1 - z0)) * 2) + 1;
@@ -734,7 +746,26 @@ async function start() {
             const cx = Math.floor(x0 + (x1 - x0) * t), cz = Math.floor(z0 + (z1 - z0) * t);
             if (level.cells[cz * level.width + cx] !== 'floor') return false;
         }
+        ray.origin.copy(from);
+        ray.direction.subVectors(to, from);
+        const length = ray.direction.length();
+        ray.direction.divideScalar(length);
+        for (const box of glowBlockers) {
+            if (ray.intersectBox(box, hitPoint) && hitPoint.distanceTo(from) < length - 0.05) return false;
+        }
         return true;
+    };
+    const glowPoint = new THREE.Vector3();
+    const glowVisible = (from, light) => {
+        if (light.kind === 'bulb') return lineFree(from, light.position) ? 1 : 0;
+        const u = new THREE.Vector3(1, light.tilt?.[0] ?? 0, 0).normalize().multiplyScalar(light.size[0] * 0.35);
+        const v = new THREE.Vector3(0, light.tilt?.[1] ?? 0, 1).normalize().multiplyScalar(light.size[1] * 0.35);
+        let seen = 0;
+        for (const [a, b] of [[0, 0], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+            glowPoint.copy(light.position).addScaledVector(u, a).addScaledVector(v, b);
+            if (lineFree(from, glowPoint)) seen += 0.2;
+        }
+        return seen * seen;   // halb verdeckt: nur noch ein Viertel des Scheins
     };
 
     const walker = new Walker(level, player, camera, renderer);
@@ -999,14 +1030,7 @@ async function start() {
                 for (const glowing of light.glowMaterials) glowing.userData.glow.value = glowing.userData.glowBase * brightness;
             }
             // der Schein blendet weich ein und aus, wenn eine Wand dazwischenkommt
-            const seen = glowVisible(eye, light.position) ? 1 : 0;
-            // bis zu GLOW_PULL auf dich zu, höchstens die Hälfte des Wegs, und so viel kleiner
-            const { anchor, span } = glow.userData;
-            const toEye = eye.clone().sub(anchor);
-            const distance = Math.max(toEye.length(), 1e-3);
-            const pull = Math.min(GLOW_PULL, distance * 0.5);
-            glow.position.copy(anchor).addScaledVector(toEye, pull / distance);
-            glow.scale.setScalar(span * (distance - pull) / distance);
+            const seen = glowVisible(eye, light);
             glow.userData.seen += (seen - glow.userData.seen) * Math.min(1, dt * 10);
             glow.material.opacity = on[i] ? GLOW * brightness * glow.userData.seen : 0;
         });
