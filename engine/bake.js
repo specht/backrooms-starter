@@ -16,7 +16,14 @@
 // Mal ab. So werden auch Decken hell, die keine Leuchte direkt sieht.
 import * as THREE from 'three';
 
-export const VOXEL = 0.05;            // Kantenlänge eines Voxels (nur für Statuen) in Metern
+// Statuen kommen in Raster aus Voxeln, jede in ihr eigenes: so fein, wie es
+// der Speicher erlaubt, damit ihre Schatten an Wand und Boden glatt werden
+// (ein Voxel gilt als voll, sobald die Statue es berührt: Grobe Voxel machen
+// sie dicker und stufig). Nie feiner als VOXEL_MIN, je Statue höchstens
+// VOXELS_PER_STATUE, alle zusammen höchstens VOXELS_TOTAL (je ein Byte).
+const VOXEL_MIN = 0.01;
+const VOXELS_PER_STATUE = 6e6;
+const VOXELS_TOTAL = 24e6;
 const CELL = 0.25;                    // Zellen für das abprallende Licht
 const DIRECT_PASSES = 64;             // Durchgänge für das direkte Licht
 const BOUNCE_PASSES = 64;             // Durchgänge für jede Reflexion, je vier Strahlen
@@ -26,7 +33,8 @@ const LIGHT_SCALE = 30;               // macht power = 1 zu »hell unter der Lam
 // Das Raster für die Strahlen: für jedes Feld, was es ist, wie hoch seine
 // Decke an den vier Ecken ist und welcher Block darauf steht, alles genau.
 // Nur Statuen kommen in ein feines Raster aus Voxeln.
-export function buildGrid(level, statues, maxHeight) {
+// maxTextureSize: wie viele Voxel eine 3D-Textur je Richtung haben darf
+export function buildGrid(level, statues, maxHeight, maxTextureSize = 2048) {
     const { width, depth, cells, owner, settings } = level;
     const cell = settings.cell;
     const info = new Float32Array(width * depth * 4);      // Art, Statue, Block
@@ -50,8 +58,8 @@ export function buildGrid(level, statues, maxHeight) {
     // Ein Block gilt in jedem Feld, das er bedeckt (pro Feld einer)
     for (const block of level.things.filter((t) => t.type === 'block')) {
         const [w, h, d] = block.size;
-        const cx = (block.x + 0.5) * cell, cz = (block.z + 0.5) * cell;
-        const y0 = block.floor + block.base;   // auf dem Boden seines Felds
+        const cx = (block.x + 0.5) * cell + block.offset[0], cz = (block.z + 0.5) * cell + block.offset[2];
+        const y0 = block.floor + block.base + block.offset[1];   // auf dem Boden seines Felds (oder höher)
         const min = [cx - w / 2, y0, cz - d / 2], max = [cx + w / 2, y0 + h, cz + d / 2];
         for (let z = Math.floor(min[2] / cell); z < Math.ceil(max[2] / cell); z++) {
             for (let x = Math.floor(min[0] / cell); x < Math.ceil(max[0] / cell); x++) {
@@ -66,23 +74,45 @@ export function buildGrid(level, statues, maxHeight) {
     }
 
     // Statuen: ihre Oberfläche in feine Voxel, so dicht abgetastet, dass kein
-    // Strahl durchschlüpft. Das Raster reicht nur über den Kasten um alle Statuen.
-    const box = new THREE.Box3();
-    for (const object of statues) box.expandByObject(object);
-    if (box.isEmpty()) box.set(new THREE.Vector3(0, 0, 0), new THREE.Vector3(VOXEL, VOXEL, VOXEL));
-    box.expandByScalar(VOXEL);
-    const origin = box.min.clone();
-    const extent = box.getSize(new THREE.Vector3());
-    const nx = Math.ceil(extent.x / VOXEL), ny = Math.ceil(extent.y / VOXEL), nz = Math.ceil(extent.z / VOXEL);
-    const data = new Uint8Array(nx * ny * nz);
-    const set = (vx, vy, vz) => {
-        if (vx < 0 || vy < 0 || vz < 0 || vx >= nx || vy >= ny || vz >= nz) return;
-        data[(vz * ny + vy) * nx + vx] = 255;
-        const fx = Math.floor((origin.x + (vx + 0.5) * VOXEL) / cell), fz = Math.floor((origin.z + (vz + 0.5) * VOXEL) / cell);
-        if (fx >= 0 && fz >= 0 && fx < width && fz < depth) info[(fz * width + fx) * 4 + 1] = 1;
-    };
+    // Strahl durchschlüpft. Jede Statue hat ihr eigenes Raster über ihrem
+    // Kasten; alle liegen nebeneinander in einer 3D-Textur (Regalbretter in
+    // x und y), statueGrids sagt, wo.
+    const boxes = statues.map((object) => new THREE.Box3().setFromObject(object));
+    const sizes = boxes.map((box) => box.getSize(new THREE.Vector3()));
+    const voxelSize = sizes.map((size) => Math.max(VOXEL_MIN, Math.cbrt(Math.max(size.x * size.y * size.z, 1e-6) / VOXELS_PER_STATUE),
+        Math.max(size.x, size.y, size.z) / (maxTextureSize - 2)));
+    const countOf = (i, v) => sizes[i].toArray().map((extent) => Math.ceil(extent / v) + 2);   // ein Voxel Rand ringsum
+    const total = voxelSize.reduce((sum, v, i) => sum + countOf(i, v).reduce((a, b) => a * b, 1), 0);
+    if (total > VOXELS_TOTAL) voxelSize.forEach((v, i) => { voxelSize[i] = v * Math.cbrt(total / VOXELS_TOTAL); });
+    let grids, atlas;
+    for (let attempt = 0; ; attempt++) {
+        grids = statues.map((_, i) => ({ voxel: voxelSize[i], count: countOf(i, voxelSize[i]), origin: boxes[i].min.clone().subScalar(voxelSize[i]) }));
+        // Regalbretter: nebeneinander in x, Reihen übereinander in y
+        let x = 0, y = 0, row = 0, depthMax = 1, widthMax = 1;
+        for (const grid of grids) {
+            const [nx, ny, nz] = grid.count;
+            if (x + nx > maxTextureSize) { x = 0; y += row; row = 0; }
+            grid.offset = [x, y, 0];
+            x += nx; row = Math.max(row, ny);
+            widthMax = Math.max(widthMax, x); depthMax = Math.max(depthMax, nz);
+        }
+        atlas = [widthMax, Math.max(1, y + row), depthMax];
+        if (atlas[1] <= maxTextureSize || attempt > 8) break;
+        voxelSize.forEach((v, i) => { voxelSize[i] = v * 1.25; });   // passt nicht: alle etwas gröber
+    }
+    const [ax, ay, az] = atlas;
+    const data = new Uint8Array(ax * ay * az);
+    const gridInfo = new Float32Array(Math.max(1, grids.length) * 3 * 4);
     const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), p = new THREE.Vector3();
-    for (const object of statues) {
+    statues.forEach((object, index) => {
+        const { voxel, count: [nx, ny, nz], origin, offset: [ox, oy] } = grids[index];
+        gridInfo.set([origin.x, origin.y, origin.z, voxel, ox, oy, 0, 0, nx, ny, nz, 0], index * 12);
+        const set = (vx, vy, vz) => {
+            if (vx < 0 || vy < 0 || vz < 0 || vx >= nx || vy >= ny || vz >= nz) return;
+            data[(vz * ay + oy + vy) * ax + ox + vx] = 255;
+            const fx = Math.floor((origin.x + (vx + 0.5) * voxel) / cell), fz = Math.floor((origin.z + (vz + 0.5) * voxel) / cell);
+            if (fx >= 0 && fz >= 0 && fx < width && fz < depth) info[(fz * width + fx) * 4 + 1] = 1;
+        };
         object.updateMatrixWorld(true);
         object.traverse((mesh) => {
             if (!mesh.isMesh) return;
@@ -95,23 +125,25 @@ export function buildGrid(level, statues, maxHeight) {
                 b.fromBufferAttribute(position, ib).applyMatrix4(mesh.matrixWorld);
                 c.fromBufferAttribute(position, ic).applyMatrix4(mesh.matrixWorld);
                 const longest = Math.max(a.distanceTo(b), b.distanceTo(c), c.distanceTo(a));
-                const steps = Math.max(1, Math.ceil(longest / (VOXEL * 0.5)));
+                const steps = Math.max(1, Math.ceil(longest / (voxel * 0.5)));
                 for (let s = 0; s <= steps; s++) {
                     for (let t = 0; t <= steps - s; t++) {
                         const u = s / steps, v = t / steps;
                         p.copy(a).multiplyScalar(1 - u - v).addScaledVector(b, u).addScaledVector(c, v);
-                        set(Math.floor((p.x - origin.x) / VOXEL), Math.floor((p.y - origin.y) / VOXEL), Math.floor((p.z - origin.z) / VOXEL));
+                        set(Math.floor((p.x - origin.x) / voxel), Math.floor((p.y - origin.y) / voxel), Math.floor((p.z - origin.z) / voxel));
                     }
                 }
             }
         });
-    }
-    const voxels = new THREE.Data3DTexture(data, nx, ny, nz);
+    });
+    const voxels = new THREE.Data3DTexture(data, ax, ay, az);
     voxels.format = THREE.RedFormat;
     voxels.type = THREE.UnsignedByteType;
     voxels.minFilter = voxels.magFilter = THREE.NearestFilter;
     voxels.unpackAlignment = 1;
     voxels.needsUpdate = true;
+    const statueGrids = new THREE.DataTexture(gridInfo, Math.max(1, grids.length) * 3, 1, THREE.RGBAFormat, THREE.FloatType);
+    statueGrids.needsUpdate = true;
 
     const texture = (array) => {
         const t = new THREE.DataTexture(array, width, depth, THREE.RGBAFormat, THREE.FloatType);
@@ -120,7 +152,7 @@ export function buildGrid(level, statues, maxHeight) {
     };
     return {
         info: texture(info), ceilings: texture(ceilings), floors: texture(floors), blockMin: texture(blockMin), blockMax: texture(blockMax),
-        voxels, voxelCount: new THREE.Vector3(nx, ny, nz), voxelOrigin: origin, cells: new THREE.Vector2(width, depth), cell,
+        voxels, statueGrids, statueCount: grids.length, cells: new THREE.Vector2(width, depth), cell,
     };
 }
 
@@ -157,8 +189,10 @@ export function lightTexture(lights, on = null, texture = null) {
     lights.forEach((light, i) => {
         const color = new THREE.Color(light.color);
         const power = on && !on[i] ? 0 : light.power * LIGHT_SCALE;
-        data.set([light.position.x, light.position.y, light.position.z, light.size[0]], i * 12);
-        data.set([color.r * power, color.g * power, color.b * power, light.size[1]], i * 12 + 4);
+        // eine Lampe aus einem Modell: Radius negativ, dann die Fläche, der sie gleichkommt
+        const bulb = light.kind === 'bulb';
+        data.set([light.position.x, light.position.y, light.position.z, bulb ? -light.radius : light.size[0]], i * 12);
+        data.set([color.r * power, color.g * power, color.b * power, bulb ? light.size[0] * light.size[1] : light.size[1]], i * 12 + 4);
         // wie steil die Decke über der Leuchte in x und z ansteigt: Sie liegt darin
         data.set([light.channel, lightRange(light), light.tilt?.[0] ?? 0, light.tilt?.[1] ?? 0], i * 12 + 8);
     });
@@ -177,14 +211,16 @@ in vec3 faceMin;
 in vec3 faceMax;
 in float ambient;
 in vec3 albedo;
+in float density;
 out vec3 vWorld;
 out vec3 vNormal;
 out vec3 vMin;
 out vec3 vMax;
 out float vAmbient;
 out vec3 vAlbedo;
+out float vDensity;
 void main() {
-    vWorld = world; vNormal = normal; vMin = faceMin; vMax = faceMax; vAmbient = ambient; vAlbedo = albedo;
+    vWorld = world; vNormal = normal; vMin = faceMin; vMax = faceMax; vAmbient = ambient; vAlbedo = albedo; vDensity = density;
     gl_Position = vec4(position.xy * 2.0 - 1.0, 0.0, 1.0);
 }`;
 
@@ -199,11 +235,11 @@ in vec3 vMin;
 in vec3 vMax;
 in float vAmbient;
 in vec3 vAlbedo;
+in float vDensity;             // wie viel feiner als sonst die Lichtkarte hier ist (bei Statuen)
 
-uniform sampler3D voxels;      // nur Statuen
-uniform vec3 gridSize;         // Voxel in x, y, z
-uniform vec3 gridOrigin;       // Ecke des Kastens um die Statuen
-uniform float voxel;
+uniform sampler3D voxels;      // die Raster aller Statuen nebeneinander
+uniform sampler2D statueGrids; // je Statue drei Texel: Ecke und Voxelgröße, Stelle in voxels, Voxel in x, y, z
+uniform int statueCount;
 uniform sampler2D cellInfo;    // r: 0 nichts, 1 Boden, 2 Wand; g: Statue; b: Block
 uniform sampler2D cellCeiling; // Deckenhöhe an den Ecken (x0z0, x1z0, x0z1, x1z1)
 uniform sampler2D cellFloor;   // Bodenhöhe an den Ecken, ebenso
@@ -237,18 +273,34 @@ vec3 lampPoint(vec4 a, vec4 b, vec4 e) {
 }
 vec3 lampNormal(vec4 e) { return normalize(vec3(e.b, -1.0, e.a)); }
 
+// Eine Lampe aus einem Modell (a.w < 0, etwa eine Wandlampe) ist eine kleine
+// Kugel mit dem Radius -a.w, die nach allen Seiten gleich strahlt; b.w sagt,
+// wie viel Fläche einer Leuchte unter der Decke sie gleichkommt.
+vec3 lightPoint(vec4 a, vec4 b, vec4 e) {
+    if (a.w >= 0.0) return lampPoint(a, b, e);
+    float z = 2.0 * random() - 1.0, phi = 6.2831853 * random(), r = sqrt(1.0 - z * z);
+    return a.xyz + vec3(r * cos(phi), z, r * sin(phi)) * (-a.w);
+}
+// wie viel die Leuchte zur Fläche hin abgibt (l zeigt von der Fläche zur Leuchte)
+float lightFacing(vec4 a, vec4 e, vec3 l) { return a.w < 0.0 ? 1.0 : -dot(l, lampNormal(e)); }
+float lightArea(vec4 a, vec4 b) { return a.w < 0.0 ? b.w : a.w * b.w; }
+
 vec3 safeDirection(vec3 d) {
     return vec3(abs(d.x) < 1e-6 ? 1e-6 : d.x, abs(d.y) < 1e-6 ? 1e-6 : d.y, abs(d.z) < 1e-6 ? 1e-6 : d.z);
 }
 
-bool statueVoxel(ivec3 v) {
-    if (any(lessThan(v, ivec3(0))) || any(greaterThanEqual(v, ivec3(gridSize)))) return false;
-    return texelFetch(voxels, v, 0).r > 0.5;
+bool statueVoxel(ivec3 v, ivec3 offset, ivec3 size) {
+    if (any(lessThan(v, ivec3(0))) || any(greaterThanEqual(v, size))) return false;
+    return texelFetch(voxels, offset + v, 0).r > 0.5;
 }
 
-// Durch die Voxel der Statuen, von t0 bis t1 entlang des Strahls (3D-DDA)
-float statueTrace(vec3 a, vec3 dir, float t0, float t1) {
-    vec3 p = (a + dir * t0 - gridOrigin) / voxel;
+// Durch das Raster einer Statue, von t0 bis t1 entlang des Strahls (3D-DDA).
+// Für Punkte auf Wänden und Böden liegt das Raster bei jedem Strahl um bis
+// zu einen halben Voxel anders: Über alle Durchgänge gemittelt werden die
+// Stufen der Voxel im Schatten einer Statue zu einer glatten Kante.
+float gridTrace(vec3 a, vec3 dir, float t0, float t1, vec3 origin, float voxel, ivec3 offset, ivec3 size) {
+    vec3 shift = statueSkip > 0.0 ? vec3(0.0) : vec3(random(), random(), random()) - 0.5;
+    vec3 p = (a + dir * t0 - origin) / voxel + shift;
     float len = (t1 - t0) / voxel;
     ivec3 cell = ivec3(floor(p));
     ivec3 stepDir = ivec3(sign(dir));
@@ -256,14 +308,48 @@ float statueTrace(vec3 a, vec3 dir, float t0, float t1) {
     vec3 tDelta = abs(1.0 / safe);
     vec3 tMax = (vec3(cell) + max(sign(dir), 0.0) - p) / safe;
     float t = 0.0;
-    for (int i = 0; i < 256; i++) {
-        if (statueVoxel(cell) && t0 + t * voxel >= statueSkip) return t0 + t * voxel;
+    for (int i = 0; i < 2048; i++) {
+        if (statueVoxel(cell, offset, size) && t0 + t * voxel >= statueSkip) return t0 + t * voxel;
         if (tMax.x < tMax.y && tMax.x < tMax.z) { t = tMax.x; tMax.x += tDelta.x; cell.x += stepDir.x; }
         else if (tMax.y < tMax.z) { t = tMax.y; tMax.y += tDelta.y; cell.y += stepDir.y; }
         else { t = tMax.z; tMax.z += tDelta.z; cell.z += stepDir.z; }
         if (t > len) return -1.0;
     }
     return -1.0;
+}
+
+// Durch alle Statuen, deren Kasten der Strahl zwischen t0 und t1 kreuzt:
+// das nächste Voxel, -1: keins
+float statueTrace(vec3 a, vec3 dir, float t0, float t1) {
+    float best = -1.0;
+    vec3 inv = 1.0 / safeDirection(dir);
+    for (int i = 0; i < 256; i++) {
+        if (i >= statueCount) break;
+        vec4 g0 = texelFetch(statueGrids, ivec2(3 * i, 0), 0);
+        ivec3 offset = ivec3(texelFetch(statueGrids, ivec2(3 * i + 1, 0), 0).xyz);
+        ivec3 size = ivec3(texelFetch(statueGrids, ivec2(3 * i + 2, 0), 0).xyz);
+        vec3 lo = g0.xyz, hi = g0.xyz + vec3(size) * g0.w;
+        vec3 ta = (lo - a) * inv, tb = (hi - a) * inv;
+        vec3 near = min(ta, tb), far = max(ta, tb);
+        float s0 = max(t0, max(max(near.x, near.y), near.z));
+        float s1 = min(best >= 0.0 ? best : t1, min(min(far.x, far.y), far.z));
+        if (s1 <= s0) continue;
+        float t = gridTrace(a, dir, s0, s1, g0.xyz, g0.w, offset, size);
+        if (t >= 0.0) best = t;
+    }
+    return best;
+}
+
+// Liegt q in einem vollen Voxel einer Statue?
+bool insideStatue(vec3 q) {
+    for (int i = 0; i < 256; i++) {
+        if (i >= statueCount) break;
+        vec4 g0 = texelFetch(statueGrids, ivec2(3 * i, 0), 0);
+        ivec3 offset = ivec3(texelFetch(statueGrids, ivec2(3 * i + 1, 0), 0).xyz);
+        ivec3 size = ivec3(texelFetch(statueGrids, ivec2(3 * i + 2, 0), 0).xyz);
+        if (statueVoxel(ivec3(floor((q - g0.xyz) / g0.w)), offset, size)) return true;
+    }
+    return false;
 }
 
 // Wo trifft ein Strahl auf einen Quader? -1: gar nicht
@@ -365,7 +451,12 @@ void main() {
     vec3 start = surfacePoint(n);
     vec3 light = vec3(0.0);
     vec4 flickering = vec4(0.0);
+    // Wo die Lichtkarte feiner ist (bei Statuen), hat jeder Punkt weniger
+    // Nachbarn, mit denen sein Rauschen verschwimmt: dort mehr Proben je Durchgang
+    int samples = int(clamp(vDensity, 1.0, 8.0) + 0.5);
 
+    for (int k = 0; k < 8; k++) {
+    if (k >= samples) break;
     for (int i = 0; i < 1024; i++) {
         if (i >= lightCount) break;
         vec4 a = texelFetch(lights, ivec2(3 * i, 0), 0);
@@ -378,28 +469,36 @@ void main() {
         if (distance > range) continue;
         float fade = 1.0 - smoothstep(0.7 * range, range, distance);
         // ein zufälliger Punkt auf der Leuchte
-        vec3 s = lampPoint(a, b, c);
+        vec3 s = lightPoint(a, b, c);
         vec3 l = s - start;
         float d2 = dot(l, l);
         l /= sqrt(d2);
         float atSurface = dot(n, l);      // wie schräg das Licht auf die Fläche fällt
-        float atLamp = -dot(l, lampNormal(c));   // am meisten senkrecht vor der Leuchte
+        float atLamp = lightFacing(a, c, l);     // am meisten senkrecht vor der Leuchte
         if (atSurface <= 0.0 || atLamp <= 0.0) continue;
         if (blocked(start, s)) continue;
-        vec3 amount = b.rgb * atSurface * atLamp * (a.w * b.w) / (3.14159 * d2 + 0.05) * fade;
+        vec3 amount = b.rgb * atSurface * atLamp * lightArea(a, b) / (3.14159 * d2 + 0.05) * fade;
         if (channel < 0) light += amount;
         else flickering[channel] += dot(amount, vec3(0.2126, 0.7152, 0.0722));   // nur wie hell, die Farbe hat der Kanal
     }
+    }
+    light /= float(samples);
+    flickering /= float(samples);
 
     // Wie offen die Stelle ist: zwei kurze Strahlen (50 cm) in die Halbkugel.
     // In Ecken treffen sie oft etwas; das dunkelt das Bounce-Licht dort ab
     // (Ambient Occlusion, im Alphakanal), und das Licht von überall auch.
+    // Was nah ist, dunkelt stark ab, was fast 50 cm weg ist, kaum: So läuft
+    // der Schatten weich aus, statt bei 50 cm mit einer Kante aufzuhören.
     float open = 0.0;
-    for (int r = 0; r < 2; r++) {
+    for (int r = 0; r < 16; r++) {
+        if (r >= 2 * samples) break;
         vec3 dir = hemisphere(n);
-        vec3 end = start + dir * 0.5;
-        if (end.y > 0.0 && !blocked(start, end)) open += 0.5;
+        float t = trace(start, dir, 0.5);
+        float near = t < 0.0 ? 0.0 : 1.0 - t / 0.5;
+        open += 1.0 - near * near;
     }
+    open /= float(2 * samples);
     light += ambientColor * vAmbient * open;
 
     steady = vec4(light, open);
@@ -477,8 +576,9 @@ out vec3 vMin;
 out vec3 vMax;
 out float vAmbient;
 out vec3 vAlbedo;
+out float vDensity;
 void main() {
-    vWorld = vec3(0.0); vNormal = vec3(0.0, 1.0, 0.0); vMin = vec3(0.0); vMax = vec3(0.0); vAmbient = 0.0; vAlbedo = vec3(0.0);
+    vWorld = vec3(0.0); vNormal = vec3(0.0, 1.0, 0.0); vMin = vec3(0.0); vMax = vec3(0.0); vAmbient = 0.0; vAlbedo = vec3(0.0); vDensity = 1.0;
     gl_Position = vec4(position.xy, 0.0, 1.0);
 }`;
 
@@ -569,7 +669,7 @@ void main() {
     vec3 start = surface + n * 0.1;
     for (int k = 1; k <= 15; k++) {
         vec3 q = surface + n * (0.01 * float(k));
-        if (!statueVoxel(ivec3(floor((q - gridOrigin) / voxel)))) { start = q + n * 0.005; break; }
+        if (!insideStatue(q)) { start = q + n * 0.005; break; }
     }
     state = uint(index) * 9781u + pass * 6271u + 13u;
     statueSkip = 0.08;
@@ -583,14 +683,14 @@ void main() {
         float distance = length(a.xyz - start);
         if (distance > range) continue;
         float fade = 1.0 - smoothstep(0.7 * range, range, distance);
-        vec3 s = lampPoint(a, b, e);
+        vec3 s = lightPoint(a, b, e);
         vec3 l = s - start;
         float d2 = dot(l, l);
         l /= sqrt(d2);
-        float atSurface = dot(n, l), atLamp = -dot(l, lampNormal(e));
+        float atSurface = dot(n, l), atLamp = lightFacing(a, e, l);
         if (atSurface <= 0.0 || atLamp <= 0.0) continue;
         if (blocked(start, s)) continue;
-        vec3 amount = b.rgb * atSurface * atLamp * (a.w * b.w) / (3.14159 * d2 + 0.05) * fade;
+        vec3 amount = b.rgb * atSurface * atLamp * lightArea(a, b) / (3.14159 * d2 + 0.05) * fade;
         light += e.r < 0.0 ? amount : amount;   // flackernde Leuchten zählen hier ruhig
     }
     // Bounce-Licht: Strahlen in die Halbkugel über der Fläche
@@ -652,6 +752,8 @@ void main() {
     if (p.w < 0.5) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
     vec3 n = texelFetch(surfaceNormal, t, 0).xyz;
     vec3 albedo = texelFetch(surfaceAlbedo, t, 0).rgb;
+    // ein Detailstück (Albedo -1): Seine Fläche gibt das Licht schon ab
+    if (albedo.r < 0.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
     // auch flackernde Leuchten werfen Licht zurück, so hell, als brennten sie ruhig
     vec4 f = texelFetch(flicker, t, 0);
     vec3 flickering = f.x * channelColor[0] + f.y * channelColor[1] + f.z * channelColor[2] + f.w * channelColor[3];
@@ -713,9 +815,8 @@ export class LightBaker {
         const ambient = new THREE.Color('#d8c890');
         const grid = {
             voxels: { value: voxels.voxels },
-            gridSize: { value: voxels.voxelCount },
-            gridOrigin: { value: voxels.voxelOrigin },
-            voxel: { value: VOXEL },
+            statueGrids: { value: voxels.statueGrids },
+            statueCount: { value: voxels.statueCount },
             cellInfo: { value: voxels.info },
             cellCeiling: { value: voxels.ceilings },
             cellFloor: { value: voxels.floors },
@@ -921,7 +1022,7 @@ export class LightBaker {
     // Wie weit, von 0 bis 1, und was gerade passiert
     get progress() {
         if (this.saved) return 1;
-        return Math.min(1, (this.directPasses + (this.bounce - 1) * BOUNCE_PASSES + this.gatherPasses) / (DIRECT_PASSES + this.bounces * BOUNCE_PASSES));
+        return Math.min(1, (this.directPasses + Math.max(0, this.bounce - 1) * BOUNCE_PASSES + this.gatherPasses) / (DIRECT_PASSES + this.bounces * BOUNCE_PASSES));
     }
 
     get stage() {

@@ -6,7 +6,7 @@ import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { AnaglyphEffect } from 'three/addons/effects/AnaglyphEffect.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { loadLevel } from './level.js';
-import { buildGeometry } from './geometry.js';
+import { buildGeometry, EDGE_ANGLE } from './geometry.js';
 import { buildGrid, LightBaker, lightRange, channelColors } from './bake.js';
 import { wallpaperTexture, carpetTexture, ceilingTexture, lampTexture, plainTexture, marbleTexture, woodTexture, tileTexture, velvetTexture, glowTexture } from './textures.js';
 import { Walker } from './controls.js';
@@ -30,6 +30,7 @@ const PARTS = [
     { name: 'occlusion', key: 'KeyO', label: 'Occlusion' },
     { name: 'flicker', key: 'KeyF', label: 'Flicker' },
     { name: 'wireframe', key: 'KeyE', label: 'Edges', on: false },
+    { name: 'points', key: 'KeyG', label: 'Light points', on: false },
 ];
 const status = document.getElementById('status');
 const title = document.getElementById('title');
@@ -116,9 +117,104 @@ function placeStatue(object, thing, settings) {
     const placed = new THREE.Box3().setFromObject(object);
     const center = placed.getCenter(new THREE.Vector3());
     // auf dem Boden ihres Felds oder auf ihrem Sockel (pedestal)
-    object.position.set((thing.x + 0.5) * settings.cell - center.x, (thing.floor ?? 0) + (thing.base ?? 0) - placed.min.y, (thing.z + 0.5) * settings.cell - center.z);
+    const [dx, dy, dz] = thing.offset ?? [0, 0, 0];   // offset = x, y, z: aus der Mitte des Felds geschoben
+    object.position.set((thing.x + 0.5) * settings.cell + dx - center.x, (thing.floor ?? 0) + (thing.base ?? 0) + dy - placed.min.y, (thing.z + 0.5) * settings.cell + dz - center.z);
     object.updateMatrixWorld(true);
     return object;
+}
+
+// Eine Lampe aus einem Modell gibt so viel Licht wie eine Leuchte von
+// BULB_SIZE mal BULB_SIZE Metern unter der Decke, aber nach allen Seiten
+const BULB_SIZE = 0.5;
+
+// Leuchtende Teile eines Modells (emissive, etwa eine Glühbirne) bleiben hell:
+// zu ihrem Licht kommt das Leuchten aus ihrer Textur dazu
+function addGlow(material, map, strength) {
+    material.userData.glow = { value: strength };
+    material.userData.glowBase = strength;
+    material.onBeforeCompile = (shader) => {
+        shader.uniforms.glowMap = { value: map };
+        shader.uniforms.glowStrength = material.userData.glow;
+        shader.fragmentShader = shader.fragmentShader
+            .replace('#include <common>', '#include <common>\nuniform sampler2D glowMap;\nuniform float glowStrength;')
+            .replace('#include <opaque_fragment>', 'outgoingLight += texture2D(glowMap, vMapUv).rgb * glowStrength;\n#include <opaque_fragment>');
+    };
+}
+
+// Wie stark eine Stelle eines Modells spiegelt: Metall ganz, glattes Glas
+// oder Lack ein wenig, Raues gar nicht. Aus metalness und roughness des
+// Modells und ihren Texturen (Poly Haven packt beide in eine: g rau, b Metall).
+// Liefert { strength, map, most } oder null, wenn nichts spiegelt; most: wie
+// stark die am stärksten spiegelnde Stelle spiegelt.
+function reflectivity(material) {
+    if (!material?.isMeshStandardMaterial) return null;
+    const metal = material.metalness ?? 0, rough = material.roughness ?? 1;
+    const strength = (m, r) => (0.08 + 0.92 * m) * Math.min(1, Math.max(0, (0.55 - r) / 0.45));
+    const map = material.roughnessMap ?? material.metalnessMap;
+    if (!map?.image) {
+        const s = strength(metal, rough);
+        return s > 0.02 ? { strength: s, map: null, most: s } : null;
+    }
+    const { width, height } = map.image;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    context.drawImage(map.image, 0, 0);
+    const pixels = context.getImageData(0, 0, width, height);
+    const p = pixels.data;
+    let most = 0;
+    for (let i = 0; i < p.length; i += 4) {
+        const r = (material.roughnessMap ? p[i + 1] / 255 : 1) * rough;
+        const m = (material.metalnessMap ? p[i + 2] / 255 : 1) * metal;
+        const s = strength(m, r);
+        p[i] = p[i + 1] = p[i + 2] = Math.round(s * 255);
+        p[i + 3] = 255;
+        most = Math.max(most, s);
+    }
+    if (most < 0.02) return null;
+    context.putImageData(pixels, 0, 0);
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.flipY = map.flipY;
+    texture.channel = map.channel;
+    texture.colorSpace = THREE.NoColorSpace;
+    return { strength: 1, map: texture, most };
+}
+
+// Wie fein das Rundumbild ist, je Seite: Ein Spiegel braucht es scharf, für
+// etwas Glanz genügt ein grobes (ein feines kostet etwa 48 MB auf der Grafikkarte)
+const REFLECTION_SHARP = 1024;
+const REFLECTION_SOFT = 256;
+
+// Spiegelungen: Ist das Licht fertig, nimmt eine Kamera aus der Mitte jedes
+// spiegelnden Modells einmal ein Rundumbild des Raums auf (eine Cube Map).
+// Das Modell zeigt es dort, wo es spiegelt. Es ist ein Bild: Was sich danach
+// bewegt (du), ist nicht darin, aber es kostet beim Laufen nichts.
+function captureReflections(renderer, scene, statues, hide) {
+    for (const statue of statues) {
+        const meshes = [];
+        statue.traverse((mesh) => { if (mesh.isMesh && mesh.userData.reflect) meshes.push(mesh); });
+        if (meshes.length === 0) continue;
+        const mirror = meshes.some((mesh) => mesh.userData.reflect.most > 0.7);
+        const target = statue.userData.reflection ?? new THREE.WebGLCubeRenderTarget(mirror ? REFLECTION_SHARP : REFLECTION_SOFT, { type: THREE.HalfFloatType });
+        statue.userData.reflection = target;
+        const camera = new THREE.CubeCamera(0.05, 80, target);
+        new THREE.Box3().setFromObject(statue).getCenter(camera.position);
+        statue.visible = false;
+        const shown = hide.filter((object) => object.visible);
+        for (const object of shown) object.visible = false;
+        camera.update(renderer, scene);
+        statue.visible = true;
+        for (const object of shown) object.visible = true;
+        for (const mesh of meshes) {
+            const { strength, map } = mesh.userData.reflect;
+            mesh.material.envMap = target.texture;
+            mesh.material.combine = THREE.MixOperation;
+            mesh.material.reflectivity = strength;
+            mesh.material.specularMap = map;
+            mesh.material.needsUpdate = true;
+        }
+    }
 }
 
 // Wohin eine Leuchte strahlt: senkrecht aus der Ebene der Decke über ihr
@@ -144,13 +240,15 @@ function lightStatue(object, lights, ambient) {
             n.fromBufferAttribute(normal, i).applyMatrix3(normalMatrix).normalize();
             let r = ambient, g = ambient, b = ambient;
             for (const light of lights) {
+                if (light.model === object) continue;   // eine Lampe beleuchtet sich nicht selbst
                 l.copy(light.position).sub(p);
                 const d2 = l.lengthSq();
                 const range = lightRange(light), distance = Math.sqrt(d2);
                 if (distance > range) continue;
                 const fade = 1 - THREE.MathUtils.smoothstep(distance, 0.7 * range, range);
                 l.normalize();
-                const amount = Math.max(n.dot(l), 0) * Math.max(-l.dot(down.get(light)), 0) * 30 * light.power
+                const facing = light.kind === 'bulb' ? 1 : Math.max(-l.dot(down.get(light)), 0);
+                const amount = Math.max(n.dot(l), 0) * facing * 30 * light.power
                     * light.size[0] * light.size[1] / (Math.PI * d2 + 0.05) * fade;
                 color.set(light.color);
                 r += color.r * amount; g += color.g * amount; b += color.b * amount;
@@ -160,11 +258,20 @@ function lightStatue(object, lights, ambient) {
         geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
         mesh.userData.direct = colors.slice();   // ohne Bounce-Licht, das kommt nach dem Backen dazu
         const old = mesh.material;
+        const reflect = reflectivity(old);
+        if (reflect) mesh.userData.reflect = reflect;
         mesh.material = new THREE.MeshBasicMaterial({
             map: old.map ?? null,
             color: old.map ? 0xffffff : (old.color ?? new THREE.Color(0xb8b0a0)),
             vertexColors: true,
         });
+        // Glas, durch das Licht fällt (der Schirm einer Lampe): durchsichtig
+        if (old.transmission > 0 || old.transparent) {
+            mesh.material.transparent = true;
+            mesh.material.opacity = old.transmission > 0 ? 0.25 : old.opacity;
+            mesh.material.depthWrite = false;
+        }
+        if (old.emissiveMap && old.map) addGlow(mesh.material, old.emissiveMap, (old.emissiveIntensity ?? 1) * Math.max(old.emissive?.r ?? 1, old.emissive?.g ?? 1, old.emissive?.b ?? 1));
         mesh.userData.baseColor = mesh.material.color.clone();
         mesh.userData.map = mesh.material.map;
     });
@@ -267,11 +374,17 @@ function surfaceMaterial(map, baker, uniforms) {
         },
         vertexShader: /* glsl */ `
             attribute vec2 uv1;
+            attribute vec2 detailUv;           // ein feineres Stück Lichtkarte, nahe bei Statuen
+            attribute float detailWeight;      // wie viel davon gilt: am Rand des Stücks 0
             varying vec2 vUv;
             varying vec2 vLightUv;
+            varying vec2 vDetailUv;
+            varying float vDetailWeight;
             void main() {
                 vUv = uv;
                 vLightUv = uv1;
+                vDetailUv = detailUv;
+                vDetailWeight = detailWeight;
                 gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
             }`,
         fragmentShader: /* glsl */ `
@@ -289,14 +402,24 @@ function surfaceMaterial(map, baker, uniforms) {
             uniform bool useBounce;
             uniform bool useOcclusion;
             uniform vec4 flicker;              // wie hell jeder Kanal gerade ist
+            uniform bool usePoints;            // die Taste G: die Punkte der Lichtkarte zeigen
+            uniform float atlasSize;
             uniform vec3 channelColor[${FLICKER_CHANNELS}];
             varying vec2 vUv;
             varying vec2 vLightUv;
+            varying vec2 vDetailUv;
+            varying float vDetailWeight;
             void main() {
                 vec3 base = useTexture ? texture2D(map, vUv * mapScale).rgb : vec3(0.8);
                 vec4 steady = texture2D(steadyMap, vLightUv);
                 vec4 flickering = texture2D(flickerMap, vLightUv);
                 vec3 indirect = texture2D(indirectMap, vLightUv).rgb;
+                // nahe bei Statuen das feinere Stück darüber, zum Rand hin weich ausgeblendet
+                if (vDetailWeight > 0.0) {
+                    steady = mix(steady, texture2D(steadyMap, vDetailUv), vDetailWeight);
+                    flickering = mix(flickering, texture2D(flickerMap, vDetailUv), vDetailWeight);
+                    indirect = mix(indirect, texture2D(indirectMap, vDetailUv).rgb, vDetailWeight);
+                }
                 if (squared) {
                     steady *= steady;
                     flickering *= flickering;
@@ -312,6 +435,18 @@ function surfaceMaterial(map, baker, uniforms) {
                 vec3 bounced = indirect * indirectIntensity * occlusion;
                 light = (useDirect ? direct : vec3(0.0)) + (useBounce ? bounced : vec3(0.0));
                 gl_FragColor = vec4(base * light, 1.0);
+                // G: ein Punkt für jeden Punkt der Lichtkarte, an dem das Licht
+                // ausgerechnet wurde (nahe bei Statuen die feineren); zu kleine
+                // (weit weg) blenden aus, damit keine graue Fläche entsteht
+                if (usePoints) {
+                    vec2 texel = (vDetailWeight > 0.5 ? vDetailUv : vLightUv) * atlasSize;
+                    vec2 pixels = fwidth(texel);
+                    float size = 1.0 / max(pixels.x, pixels.y);   // Bildpunkte je Punkt der Lichtkarte
+                    float d = length(fract(texel) - 0.5);
+                    float dot = 1.0 - smoothstep(0.17, 0.17 + 1.5 / size, d);
+                    float shown = smoothstep(3.0, 7.0, size);
+                    gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.05, 0.04, 0.02), dot * shown * 0.85);
+                }
                 #include <tonemapping_fragment>
                 #include <colorspace_fragment>
             }`,
@@ -359,7 +494,9 @@ async function start() {
     document.title = settings.name;
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // höchstens doppelt so fein wie der Bildschirm, sonst wird es langsam;
+    // ?sharp: so fein, wie der Bildschirm ist (für Bilder in hoher Auflösung)
+    renderer.setPixelRatio(params.has('sharp') ? window.devicePixelRatio : Math.min(window.devicePixelRatio, 2));
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.1;
@@ -422,8 +559,32 @@ async function start() {
         }
     }
 
-    const geometry = buildGeometry(level);
-    const voxels = buildGrid(level, statues, geometry.maxHeight);
+    // Lampen aus Modellen (light = Farbe beim Modell): Ihr Licht sitzt in der
+    // Mitte ihrer leuchtenden Teile, sonst in ihrer Mitte, und strahlt nach
+    // allen Seiten. Das Modell selbst hält sein Licht nicht auf.
+    const lampModels = new Set();
+    statues.forEach((object, i) => {
+        const thing = statueThings[i];
+        if (!thing.glow) return;
+        lampModels.add(object);
+        const box = new THREE.Box3();
+        object.traverse((mesh) => {
+            const material = mesh.material;
+            if (mesh.isMesh && (material?.emissiveMap || (material?.emissive && material.emissive.getHex() !== 0))) box.expandByObject(mesh);
+        });
+        if (box.isEmpty()) box.setFromObject(object);
+        const size = box.getSize(new THREE.Vector3());
+        const channel = thing.glow.flicker > 0 ? nextChannel++ % FLICKER_CHANNELS : -1;
+        lights.push({
+            type: 'light', kind: 'bulb', char: thing.char, x: thing.x, z: thing.z, room: thing.room,
+            color: thing.glow.color, power: thing.glow.power, flicker: thing.glow.flicker, channel,
+            size: [BULB_SIZE, BULB_SIZE], radius: Math.min(0.08, Math.max(0.02, Math.min(size.x, size.y, size.z) / 3)),
+            tilt: null, position: box.getCenter(new THREE.Vector3()), model: object,
+        });
+    });
+
+    const geometry = buildGeometry(level, statues.map((object) => new THREE.Box3().setFromObject(object)));
+    const voxels = buildGrid(level, statues.filter((object) => !lampModels.has(object)), geometry.maxHeight, renderer.getContext().getParameter(WebGL2RenderingContext.MAX_3D_TEXTURE_SIZE));
     // ?bounces=0 zum Ausprobieren, sonst aus level.ini
     const bounces = params.has('bounces') ? Number(params.get('bounces')) : settings.bounces;
     const baker = new LightBaker(renderer, level, geometry, voxels, lights, bounces);
@@ -453,6 +614,8 @@ async function start() {
         useBounce: { value: true },
         useOcclusion: { value: true },
         flicker: { value: new THREE.Vector4(1, 1, 1, 1) },
+        usePoints: { value: false },
+        atlasSize: { value: geometry.atlasSize },
         channelColor: { value: channelColors(lights, FLICKER_CHANNELS) },
     };
     // Welche Teile an sind. ?show=light, direct oder bounce: nur das Licht,
@@ -467,6 +630,7 @@ async function start() {
         shared.useDirect.value = parts.direct;
         shared.useBounce.value = parts.bounce;
         shared.useOcclusion.value = parts.occlusion;
+        shared.usePoints.value = parts.points;
         showStatueLight(statues, parts);
     };
     const textures = new Map();
@@ -503,7 +667,7 @@ async function start() {
     // bis das Licht da ist, dann verblassen sie.
     const blueprint = new THREE.LineBasicMaterial({ color: '#fff4c4', transparent: true, opacity: 0.85, toneMapped: false });
     for (const { kind, geometry: mesh } of geometry.meshes) {
-        const lines = new THREE.LineSegments(new THREE.EdgesGeometry(mesh), blueprint);
+        const lines = new THREE.LineSegments(new THREE.EdgesGeometry(mesh, EDGE_ANGLE), blueprint);
         scene.add(lines);
         if (kind === 'ceiling') aboveRooms.push(lines);
     }
@@ -512,6 +676,7 @@ async function start() {
     const panels = lights.map((light) => {
         const material = new THREE.MeshBasicMaterial({ map: lampTexture(light.color), toneMapped: false });
         const panel = new THREE.Mesh(new THREE.PlaneGeometry(light.size[0], light.size[1]), material);
+        panel.visible = light.kind !== 'bulb';   // eine Lampe aus einem Modell zeigt das Modell
         const down = lampNormal(light);
         panel.rotation.x = Math.PI / 2;   // waagerecht, nach unten gewandt
         panel.quaternion.premultiply(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, -1, 0), down));
@@ -529,8 +694,8 @@ async function start() {
         }));
         glow.renderOrder = 4;
         glow.userData.seen = 0;
-        glow.position.copy(light.position).addScaledVector(down, 0.06);
-        const span = Math.max(...light.size) * 2.8;
+        glow.position.copy(light.position).addScaledVector(down, light.kind === 'bulb' ? 0 : 0.06);
+        const span = light.kind === 'bulb' ? 0.7 : Math.max(...light.size) * 2.8;
         glow.scale.set(span, span, 1);
         scene.add(glow);
         aboveRooms.push(glow);
@@ -546,6 +711,7 @@ async function start() {
     });
     // Mit gespeichertem Licht haben die Statuen ihres schon
     let statuesBounced = false;
+    let reflectionsTaken = false;   // die Rundumbilder für spiegelnde Modelle
     if (lightSource) {
         statuesBounced = found.light.statues ? restoreStatueLight(statues, found.light.statues) : statues.length === 0;
     }
@@ -567,7 +733,14 @@ async function start() {
     };
 
     const walker = new Walker(level, player, camera, renderer);
-    for (const thing of level.things.filter((t) => t.type === 'model')) walker.blocked.add(`${thing.x},${thing.z}`);
+    // Um Statuen geht man herum: um ihren Grundriss, ein paar Zentimeter
+    // knapper; unter dem, was über Kopfhöhe hängt (eine Wandlampe), hindurch
+    for (const object of statues) {
+        const box = new THREE.Box3().setFromObject(object);
+        const floor = level.floorAtPoint((box.min.x + box.max.x) / 2, (box.min.z + box.max.z) / 2);
+        if (box.min.y - floor > 1.7) continue;
+        walker.addObstacle({ x0: box.min.x + 0.05, x1: box.max.x - 0.05, z0: box.min.z + 0.05, z1: box.max.z - 0.05 });
+    }
     // ?view=x,z,blick,neigung,grundriss: an diese Stelle (in Feldern des
     // Bauwerks) und in diese Richtung (in Grad). Der Grundriss ist ein kurzer
     // Fingerabdruck: Hat sich das Level geändert, gilt die Stelle nicht mehr.
@@ -604,7 +777,7 @@ async function start() {
     const togglePart = (part) => { parts[part.name] = !parts[part.name]; showParts(); };
     const toggleAnaglyph = () => { useAnaglyph = !useAnaglyph; };
     const toggleAutomap = () => automap.toggle(camera);
-    // H: der Kasten oben links weg und wieder da
+    // P: der Kasten oben links weg und wieder da
     const togglePanel = () => document.body.classList.toggle('panel-hidden');
     const rebake = () => { restart = true; };
     // Save light: das Licht als Datei, die neben level.ini gehört
@@ -627,7 +800,7 @@ async function start() {
         addControl('Automap', 'M', toggleAutomap, () => automap.active),
         addControl('Rebake light', '⇧L', rebake),
         addControl('Save light', '', saveLight),
-        addControl('Hide panel', 'H', () => togglePanel()),
+        addControl('Hide panel', 'P', () => togglePanel()),
         addControl('Back to start', 'R', () => walker.toStart()),
     ];
     const refreshControls = () => {
@@ -643,7 +816,7 @@ async function start() {
         if (event.code === 'KeyL' && event.shiftKey) rebake();
         else if (part) togglePart(part);
         if (event.code === 'Digit3') toggleAnaglyph();
-        if (event.code === 'KeyH') togglePanel();
+        if (event.code === 'KeyP') togglePanel();
         if (event.code === 'KeyR') walker.toStart();
         // V: in der Automap die Räume statt des Drahtgitters, und zurück
         if (event.code === 'KeyV' && automap.active) automap.roomsView = !automap.roomsView;
@@ -730,6 +903,7 @@ async function start() {
             bar.parentElement.classList.remove('done');
             startedAt = performance.now();
             statuesBounced = false;
+            reflectionsTaken = false;
         }
         const t = now - sequenceStart;   // Zeit seit dem Anfang des Lichts
 
@@ -741,9 +915,12 @@ async function start() {
         if (switched) baker.switchLights(on);
         const allOn = on.every(Boolean);
 
-        // Linien weg, Statuen hell: beides, während die Leuchten angehen
+        // Statuen hell, während die Leuchten angehen. Die Linien verschwinden,
+        // so wie das Backen vorankommt; mit gespeichertem Licht, während die
+        // Leuchten angehen.
         const shown = THREE.MathUtils.clamp((t - DARK_SECONDS) / (SWITCH_SECONDS + 0.5), 0, 1);
-        blueprint.opacity = parts.wireframe ? 0.85 : 0.85 * (1 - shown);
+        const baked = lightSource ? shown : baker.done ? 1 : baker.progress;
+        blueprint.opacity = parts.wireframe ? 0.85 : 0.85 * (1 - baked);
         for (const mesh of statueMeshes) {
             if (parts.textures) mesh.material.color.copy(mesh.userData.baseColor);
             else mesh.material.color.setScalar(0.8);
@@ -806,11 +983,26 @@ async function start() {
         panels.forEach(({ light, material, glow }, i) => {
             const brightness = !on[i] ? 0.08 : light.channel >= 0 ? values[light.channel] : 1;
             material.color.setScalar(brightness);
+            // die leuchtenden Teile einer Lampe aus einem Modell im selben Takt
+            if (light.model) {
+                light.glowMaterials ??= [];
+                if (!light.glowCollected) {
+                    light.glowCollected = true;
+                    light.model.traverse((mesh) => { if (mesh.isMesh && mesh.material.userData.glow) light.glowMaterials.push(mesh.material); });
+                }
+                for (const glowing of light.glowMaterials) glowing.userData.glow.value = glowing.userData.glowBase * brightness;
+            }
             // der Schein blendet weich ein und aus, wenn eine Wand dazwischenkommt
             const seen = glowVisible(eye, light.position) ? 1 : 0;
             glow.userData.seen += (seen - glow.userData.seen) * Math.min(1, dt * 10);
             glow.material.opacity = on[i] ? GLOW * brightness * glow.userData.seen : 0;
         });
+
+        // Spiegelungen, wenn alles fertig ist und alle Leuchten an sind (ohne den Schein der Leuchten)
+        if (!reflectionsTaken && baker.done && statuesBounced && allOn && shown >= 1) {
+            reflectionsTaken = true;
+            captureReflections(renderer, scene, statues, panels.map(({ glow }) => glow));
+        }
 
         walker.update(dt);
         rememberPlace();

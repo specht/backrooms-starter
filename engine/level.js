@@ -52,7 +52,7 @@ function darker(settings) {
 const LIGHT_DEFAULTS = {
     color: '#fff3cf',
     power: 1.0,
-    size: [0.6, 1.2],     // Breite und Länge der Leuchte in Metern
+    size: [0.85, 0.85],   // Breite und Länge der Leuchte in Metern; eine Zahl: quadratisch
     flicker: 0,           // 0: ruhig, 1: flackert
 };
 
@@ -187,7 +187,7 @@ function parseRoom(id, source) {
                     if (size.length !== 3) throw new LevelError(file, entry.line, `pedestal = ${thing.pedestal}: expected width, height, depth in metres.`);
                     const material = thing.pedestal_material ?? null;
                     if (material !== null && !BLOCK_MATERIALS.includes(material)) throw new LevelError(file, entry.line, `pedestal_material = ${material} does not exist. Possible: ${BLOCK_MATERIALS.join(', ')}.`);
-                    things.push({ type: 'block', char, x, z, base: 0, color: thing.pedestal_color ?? null, material, size });
+                    things.push({ type: 'block', char, x, z, base: 0, color: thing.pedestal_color ?? null, material, size, offset: thing.offset });
                     thing.base = size[1];
                 }
             } else if (char !== '.') {
@@ -208,21 +208,46 @@ function parseRoom(id, source) {
     return { id, file, settings, heights, width, depth, cells, things, doors, links, start };
 }
 
+// offset = x, y, z: ein Ding um so viele Meter aus der Mitte seines Felds
+// geschoben, wie in three.js: x nach Osten (im Grundriss nach rechts),
+// y nach oben, z nach Süden (im Grundriss nach unten)
+function offsetOf(file, section, entries) {
+    if (entries.offset === undefined) return [0, 0, 0];
+    const offset = [entries.offset].flat();
+    if (offset.length !== 3 || offset.some((v) => typeof v !== 'number' || Math.abs(v) > 50)) {
+        throw new LevelError(file, section.line, `offset = ${entries.offset}: expected x, y, z in metres: x east, y up, z south (negative: west, down, north), for example offset = 0, 1.8, -0.4.`);
+    }
+    return offset;
+}
+
 function makeThing(file, char, section, x, z) {
     const entries = values(section);
+    if (entries.model !== undefined) {
+        const model = { type: 'model', char, x, z, ...MODEL_DEFAULTS, ...entries, offset: offsetOf(file, section, entries) };
+        // light = Farbe beim Modell: Es ist eine Lampe (eine Wandlampe, eine
+        // Stehlampe). Ihr Licht kommt aus ihren leuchtenden Teilen.
+        if (entries.light !== undefined) {
+            if (!/^#[0-9a-f]{6}$/i.test(String(entries.light))) throw new LevelError(file, section.line, `light = ${entries.light}: expected a colour such as #ffd9a0.`);
+            model.glow = { color: String(entries.light), power: entries.power ?? 1, flicker: entries.flicker ?? 0 };
+        }
+        return model;
+    }
     if (entries.light !== undefined) {
         const light = { ...LIGHT_DEFAULTS, ...entries };
         if (typeof light.light === 'string' && light.light.startsWith('#')) light.color = light.light;
+        const size = [light.size].flat();
+        if (size.length === 1) size.push(size[0]);
+        if (size.length !== 2 || size.some((v) => !(v > 0) || v > 20)) throw new LevelError(file, section.line, `size = ${light.size}: expected one number (a square lamp) or width, length in metres.`);
+        light.size = size;
         return { type: 'light', char, x, z, ...light };
     }
-    if (entries.model !== undefined) return { type: 'model', char, x, z, ...MODEL_DEFAULTS, ...entries };
     if (entries.block !== undefined) {
         // block = höhe (ein ganzes Feld) oder block = breite, höhe, tiefe
         const size = [entries.block].flat();
         const [w, h, d] = size.length === 1 ? [1, size[0], 1] : size;
         if (size.length !== 1 && size.length !== 3) throw new LevelError(file, section.line, `block = ${entries.block}: expected a height, or width, height, depth in metres.`);
         if ([w, h, d].some((v) => !(v > 0) || v > 50)) throw new LevelError(file, section.line, `block = ${entries.block}: every size is between 0 and 50 metres.`);
-        const block = { type: 'block', char, x, z, ...BLOCK_DEFAULTS, ...entries, size: [w, h, d] };
+        const block = { type: 'block', char, x, z, ...BLOCK_DEFAULTS, ...entries, size: [w, h, d], offset: offsetOf(file, section, entries) };
         if (block.material !== null && !BLOCK_MATERIALS.includes(block.material)) throw new LevelError(file, section.line, `material = ${block.material} does not exist. Possible: ${BLOCK_MATERIALS.join(', ')}.`);
         return block;
     }
@@ -351,6 +376,7 @@ export async function loadLevel(levelFile, fetchText) {
         const above = ceilingFunction(room);
         room.floorAt = (x, z) => room.elevation + room.floorRelative(x, z);
         room.ceilingAt = (x, z) => room.floorAt(x, z) + above(x, z);
+        room.ceilingRelative = above;
         room.ox = room.offset.x - minX;
         room.oz = room.offset.z - minZ;
         for (const door of Object.values(room.doors)) doorCells.add((room.oz + door.z) * width + room.ox + door.x);
@@ -377,7 +403,9 @@ export async function loadLevel(levelFile, fetchText) {
     for (const room of roomList) {
         // floor: wie hoch der Boden unter einem Ding liegt, mitten auf seinem Feld
         for (const thing of room.things) {
-            things.push({ ...thing, x: thing.x + room.ox, z: thing.z + room.oz, room: room.index, floor: room.floorAt(thing.x + 0.5, thing.z + 0.5) });
+            const [dx, , dz] = thing.offset ?? [0, 0, 0];
+            things.push({ ...thing, x: thing.x + room.ox, z: thing.z + room.oz, room: room.index,
+                floor: room.floorAt(thing.x + 0.5 + dx / settings.cell, thing.z + 0.5 + dz / settings.cell) });
         }
         if (room.start) {
             if (start) throw new LevelError(room.file, room.start.line, 'there is more than one @ in the level: you can only start in one place.');
@@ -392,10 +420,50 @@ export async function loadLevel(levelFile, fetchText) {
     }
     if (!start) throw new LevelError(`rooms/${settings.start}.room`, null, 'the level has no @: where do you start?');
 
+    // Eine Tür verbindet zwei Böden, die verschieden schräg sein können (ein
+    // Raum mit Rampe quer zur Tür). Ihr Feld hat darum keine eigene Höhe:
+    // An jeder Kante liegt es so hoch wie der Boden dahinter, dazwischen
+    // läuft es gerade (bilinear). So bleibt keine Lücke und keine Stufe.
+    const doorCorners = new Map();   // Feld -> Höhe an den Ecken (x0z0, x1z0, x0z1, x1z1)
+    for (const at of doorCells) {
+        const gx = at % width, gz = Math.floor(at / width);
+        const own = roomList[owner[at]];
+        const corners = [[gx, gz], [gx + 1, gz], [gx, gz + 1], [gx + 1, gz + 1]];
+        const heights = corners.map(([cx, cz]) => own.floorAt(cx - own.ox, cz - own.oz));
+        // [Nachbar, die beiden Ecken an der Kante zu ihm]
+        for (const [dx, dz, edge] of [[-1, 0, [0, 2]], [1, 0, [1, 3]], [0, -1, [0, 1]], [0, 1, [2, 3]]]) {
+            const n = (gz + dz) * width + gx + dx;
+            if (cells[n] !== 'floor' || doorCells.has(n)) continue;
+            const room = roomList[owner[n]];
+            for (const k of edge) heights[k] = room.floorAt(corners[k][0] - room.ox, corners[k][1] - room.oz);
+        }
+        // Nur wo es nötig ist: Liegen beide Böden so, dass der Raum der Tür
+        // sie ohnehin trifft, bleibt sie ein Teil seines Bodens (ohne Naht)
+        const mine = corners.map(([cx, cz]) => own.floorAt(cx - own.ox, cz - own.oz));
+        if (heights.some((h, k) => Math.abs(h - mine[k]) > 1e-3)) doorCorners.set(at, heights);
+    }
+    // Türen mit eigenem, verdrehtem Boden
+    const twistedDoors = new Set(doorCorners.keys());
+    // Der Boden einer Tür an (x, z) in Feldern, wenn dort eine Tür dieses Raums ist, sonst null
+    const doorPatch = (x, z, roomIndex) => {
+        for (const cx of Number.isInteger(x) ? [x - 1, x] : [Math.floor(x)]) {
+            for (const cz of Number.isInteger(z) ? [z - 1, z] : [Math.floor(z)]) {
+                if (cx < 0 || cz < 0 || cx >= width || cz >= depth) continue;
+                const heights = doorCorners.get(cz * width + cx);
+                if (!heights || owner[cz * width + cx] !== roomIndex) continue;
+                const fx = x - cx, fz = z - cz;
+                return (heights[0] * (1 - fx) + heights[1] * fx) * (1 - fz) + (heights[2] * (1 - fx) + heights[3] * fx) * fz;
+            }
+        }
+        return null;
+    };
+
     const level = {
-        settings, width, depth, cells, owner, rooms: roomList, things, start,
-        // Deckenhöhe an einer Stelle der Welt (in Feldern), im Raum dieses Feldes
+        settings, width, depth, cells, owner, rooms: roomList, things, start, twistedDoors,
+        // Bodenhöhe an einer Stelle der Welt (in Feldern), im Raum dieses Feldes
         floorAt(x, z, roomIndex) {
+            const door = doorPatch(x, z, roomIndex);
+            if (door !== null) return door;
             const room = roomList[roomIndex];
             return room.floorAt(x - room.ox, z - room.oz);
         },
@@ -404,11 +472,13 @@ export async function loadLevel(levelFile, fetchText) {
             const cx = Math.floor(x / settings.cell), cz = Math.floor(z / settings.cell);
             const index = owner[cz * width + cx];
             if (index === undefined || index < 0) return 0;
-            const room = roomList[index];
-            return room.floorAt(x / settings.cell - room.ox, z / settings.cell - room.oz);
+            return level.floorAt(x / settings.cell, z / settings.cell, index);
         },
+        // Deckenhöhe: so hoch über dem Boden, wie der Raum es dort will
         ceilingAt(x, z, roomIndex) {
             const room = roomList[roomIndex];
+            const door = doorPatch(x, z, roomIndex);
+            if (door !== null) return door + room.ceilingRelative(x - room.ox, z - room.oz);
             return room.ceilingAt(x - room.ox, z - room.oz);
         },
     };

@@ -3,6 +3,20 @@
 // Statuen weiße, der Pfeil bist du. Ziehen mit der Maus dreht, das Mausrad
 // zoomt.
 import * as THREE from 'three';
+import { EDGE_ANGLE } from './geometry.js';
+import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
+import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
+import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
+
+// Linien des Drahtgitters, so breit in Punkten der Seite (LineSegments2
+// rechnet das selbst auf die Pixel um): auch auf einem feinen Bildschirm und
+// in einem großen Bild gut zu sehen
+const LINE_WIDTH = 1.5;
+// Linien hinter Wänden und Böden: so viel so hell wie die davor
+const HIDDEN = 0.18;
+// Linien nur hinter einer Decke: dünner und etwas blasser, aber zu sehen
+const UNDER_CEILING = 0.55;
+const UNDER_CEILING_WIDTH = 0.9;
 
 // Eine Farbe für alles auf der Karte, wie eine Blaupause auf Schwarz
 const LINE_COLOR = '#6fd3ff';
@@ -18,6 +32,11 @@ function roomColor() {
 const DISTANCE = 17;
 const ELEVATION = 0.6;
 const AHEAD = 0.25;
+
+// Ein Name ist in der Welt 0,8 m hoch, auf dem Bildschirm aber höchstens so
+// viele Punkte der Seite: Aus der Nähe wächst er nicht über alles andere.
+const LABEL_HEIGHT = 0.8;
+const LABEL_MAX_PIXELS = 26;
 
 function label(text, color) {
     const font = '500 120px system-ui, sans-serif';
@@ -39,7 +58,8 @@ function label(text, color) {
     texture.colorSpace = THREE.SRGBColorSpace;
     texture.anisotropy = 4;
     const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false, toneMapped: false }));
-    sprite.scale.set(0.8 * canvas.width / canvas.height, 0.8, 1);
+    sprite.userData.aspect = canvas.width / canvas.height;
+    sprite.scale.set(LABEL_HEIGHT * sprite.userData.aspect, LABEL_HEIGHT, 1);
     sprite.renderOrder = 10;
     return sprite;
 }
@@ -65,12 +85,38 @@ export class Automap {
 
         // das Drahtgitter, in der Ansicht mit Räumen auch über den Räumen
         this.lines = new THREE.Group();
+        this.labels = [];
         this.model.add(this.lines);
+        // Was hinter Wänden und Böden liegt, ist nur schwach zu sehen, was nur
+        // hinter einer Decke liegt, dünner. Wände, Böden und Blöcke, dann die
+        // Decken werden unsichtbar gezeichnet, nur in den Tiefenpuffer, etwas
+        // nach hinten versetzt, damit ihre eigenen Kanten davor liegen. Jede
+        // Linie gibt es dreimal: schwach (hinter Wänden), dünn (vor Wänden,
+        // vielleicht hinter einer Decke) und kräftig (vor allem); render()
+        // zeichnet sie in zwei Durchgängen.
+        this.occluders = new THREE.Group();
+        this.ceilingOccluders = new THREE.Group();
+        this.linesBehind = new THREE.Group();
+        this.linesThin = new THREE.Group();
+        this.linesFront = new THREE.Group();
+        this.lines.add(this.linesBehind, this.linesThin, this.linesFront);
+        const hidden = new THREE.MeshBasicMaterial({ colorWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 });
         for (const { kind, room, geometry: mesh } of geometry.meshes) {
             const color = roomColor(room).multiplyScalar(kind === 'floor' ? 0.55 : 1);
-            const material = new THREE.LineBasicMaterial({ color, toneMapped: false, transparent: true, opacity: kind === 'ceiling' ? 0.35 : 0.9 });
-            this.lines.add(new THREE.LineSegments(new THREE.EdgesGeometry(mesh), material));
+            const opacity = kind === 'ceiling' ? 0.35 : 0.9;
+            const edges = new LineSegmentsGeometry().fromEdgesGeometry(new THREE.EdgesGeometry(mesh, EDGE_ANGLE));
+            const line = (extra) => new LineMaterial({ color, linewidth: LINE_WIDTH, toneMapped: false, transparent: true, opacity, depthWrite: false, ...extra });
+            this.linesBehind.add(new LineSegments2(edges, line({ opacity: opacity * HIDDEN, depthFunc: THREE.GreaterDepth })));
+            this.linesThin.add(new LineSegments2(edges, line({ opacity: opacity * UNDER_CEILING, linewidth: UNDER_CEILING_WIDTH })));
+            this.linesFront.add(new LineSegments2(edges, line({})));
+            const occluder = new THREE.Mesh(mesh, hidden);
+            occluder.renderOrder = -1;
+            if (kind === 'floor' || kind === 'wall' || kind === 'block') this.occluders.add(occluder);
+            else if (kind === 'ceiling') this.ceilingOccluders.add(occluder);
         }
+        this.model.add(this.occluders, this.ceilingOccluders);
+        this.ceilingOccluders.visible = false;
+        this.linesThin.visible = false;
         // Raumnamen über der Mitte jedes Raums
         for (const room of level.rooms) {
             const x = (room.ox + room.width / 2) * cell, z = (room.oz + room.depth / 2) * cell;
@@ -80,6 +126,7 @@ export class Automap {
                 .map(([cx, cz]) => room.ceilingAt(cx, cz)));
             sprite.position.set(x, top + 1.2, z);
             this.overlay.add(sprite);
+            this.labels.push(sprite);
         }
         const dot = (color, size) => new THREE.Mesh(new THREE.SphereGeometry(size, 12, 8), new THREE.MeshBasicMaterial({ color, toneMapped: false }));
         for (const light of lights) {
@@ -190,6 +237,35 @@ export class Automap {
         }
     }
 
+    // Zwei Durchgänge: zuerst Wände und Böden in den Tiefenpuffer, die Linien
+    // dahinter schwach und davor dünn; dann die Decken dazu und die Linien vor
+    // allem kräftig darüber. So ist dünn, was nur eine Decke verdeckt.
+    renderLayered(c) {
+        const renderer = this.renderer;
+        const keep = renderer.autoClear;
+        this.linesFront.visible = false;
+        this.overlay.visible = false;
+        this.linesThin.visible = true;
+        renderer.render(this.scene, c);
+        renderer.autoClear = false;
+        this.occluders.visible = false;
+        this.linesBehind.visible = false;
+        this.linesThin.visible = false;
+        this.ceilingOccluders.visible = true;
+        this.linesFront.visible = true;
+        this.overlay.visible = true;
+        // ohne Hintergrund: Er würde das erste Bild übermalen
+        const background = this.scene.background;
+        this.scene.background = null;
+        // Wände und Böden noch einmal in die Tiefe, dazu die Decken
+        this.occluders.visible = true;
+        renderer.render(this.scene, c);
+        this.scene.background = background;
+        renderer.autoClear = keep;
+        this.ceilingOccluders.visible = false;
+        this.linesBehind.visible = true;
+    }
+
     resize() {
         this.camera.aspect = window.innerWidth / window.innerHeight;
         this.camera.updateProjectionMatrix();
@@ -204,6 +280,8 @@ export class Automap {
         this.youPivot.position.set(this.player.position.x, this.player.position.y + 0.05, this.player.position.z);
         this.youPivot.rotation.y = this.player.rotation.y;
         if (vrCamera) {
+            // als kleines Modell: die Namen in ihrer Größe in der Welt
+            for (const sprite of this.labels) sprite.scale.set(LABEL_HEIGHT * sprite.userData.aspect, LABEL_HEIGHT, 1);
             // Der Spieler steht nicht in dieser Szene: seine Lage selbst aktualisieren
             vrCamera.parent?.updateMatrixWorld(true);
             // anderthalb Meter groß, 70 cm vor dir, auf Tischhöhe
@@ -249,6 +327,13 @@ export class Automap {
         }
         c.lookAt(target);
         c.updateMatrixWorld(true);
+        // die Namen nicht größer als LABEL_MAX_PIXELS: wie viele Punkte ein
+        // Meter in seiner Entfernung auf dem Bildschirm hat
+        const perMeter = window.innerHeight / (2 * Math.tan(THREE.MathUtils.degToRad(c.fov / 2)));
+        for (const sprite of this.labels) {
+            const height = Math.min(LABEL_HEIGHT, LABEL_MAX_PIXELS * c.position.distanceTo(sprite.position) / perMeter);
+            sprite.scale.set(height * sprite.userData.aspect, height, 1);
+        }
         // Mit Räumen: die Szene ohne Decken und Leuchten, darin für dieses
         // Bild die Namen, Punkte und der Pfeil
         let scene = this.scene;
@@ -274,6 +359,8 @@ export class Automap {
             anaglyph.render(scene, c);
             anaglyph.eyeSep = eyeSep;
             anaglyph.planeDistance = planeDistance;
+        } else if (scene === this.scene) {
+            this.renderLayered(c);
         } else {
             this.renderer.render(scene, c);
         }

@@ -14,16 +14,16 @@ export class Walker {
         this.yaw = 0;
         this.pitch = 0;
         this.keys = new Set();
-        this.blocked = new Set();   // Felder mit Statuen
         this.enabled = () => true;
         this.mayCapture = () => true;  // ob ein Klick die Maus zum Umsehen fängt
         this.mayLook = () => true;     // ob die gefangene Maus gerade zum Umsehen dient
         // Blöcke, die bis unter Kopfhöhe reichen, stehen im Weg
         const cell = level.settings.cell;
-        this.boxes = level.things.filter((t) => t.type === 'block' && t.base < 1.7).map((t) => ({
-            x0: (t.x + 0.5) * cell - t.size[0] / 2, x1: (t.x + 0.5) * cell + t.size[0] / 2,
-            z0: (t.z + 0.5) * cell - t.size[2] / 2, z1: (t.z + 0.5) * cell + t.size[2] / 2,
-        }));
+        // (Statuen kommen mit addObstacle dazu, wenn sie geladen sind)
+        this.boxes = level.things.filter((t) => t.type === 'block' && t.base + t.offset[1] < 1.7).map((t) => {
+            const cx = (t.x + 0.5) * cell + t.offset[0], cz = (t.z + 0.5) * cell + t.offset[2];
+            return { x0: cx - t.size[0] / 2, x1: cx + t.size[0] / 2, z0: cz - t.size[2] / 2, z1: cz + t.size[2] / 2 };
+        });
         camera.position.set(0, EYE_HEIGHT, 0);
         const { start, settings } = level;
         this.toStart();
@@ -62,7 +62,12 @@ export class Walker {
         const { width, depth, cells, settings } = this.level;
         const cx = Math.floor(x / settings.cell), cz = Math.floor(z / settings.cell);
         if (cx < 0 || cz < 0 || cx >= width || cz >= depth) return true;
-        return cells[cz * width + cx] !== 'floor' || this.blocked.has(`${cx},${cz}`);
+        return cells[cz * width + cx] !== 'floor';
+    }
+
+    // Etwas, um das man herumgehen muss: sein Grundriss, x0 bis x1 und z0 bis z1 in Metern
+    addObstacle(box) {
+        this.boxes.push(box);
     }
 
     // Passt ein Kreis mit RADIUS an diese Stelle? Geprüft an acht Punkten des Rands.
@@ -105,7 +110,8 @@ export class Walker {
         if (this.keys.has('KeyD')) side += 1;
         if (this.keys.has('KeyA')) side -= 1;
         if (forward === 0 && side === 0) return;
-        const speed = (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight') ? 3.2 : 1.6) * dt;
+        // gemächlich gehen (1,25 m/s), mit Shift laufen
+        const speed = (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight') ? 2.5 : 1.25) * dt;
         const length = Math.hypot(forward, side);
         const sin = Math.sin(this.yaw), cos = Math.cos(this.yaw);
         // Blickrichtung ist -z, um yaw gedreht
@@ -142,7 +148,7 @@ export class Walker {
             forward.y = 0;
             forward.normalize();
             const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0));
-            const step = forward.multiplyScalar(-move.y).add(right.multiplyScalar(move.x)).multiplyScalar(1.6 * dt);
+            const step = forward.multiplyScalar(-move.y).add(right.multiplyScalar(move.x)).multiplyScalar(1.25 * dt);
             this.move(step.x, step.z);
         }
     }
