@@ -140,6 +140,20 @@ export function lampTexture(color) {
     }, false);
 }
 
+// Der Schein um eine Leuchte: in der Mitte hell, nach außen weich auslaufend
+// (so fällt Licht aus einer hellen Fläche ins Auge), in der Farbe der Leuchte
+export function glowTexture(color) {
+    return canvasTexture(128, (context, size) => {
+        const [r, g, b] = [1, 3, 5].map((i) => parseInt(String(color).slice(i, i + 2), 16));
+        const gradient = context.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+        for (const [stop, alpha] of [[0, 0.9], [0.12, 0.55], [0.3, 0.2], [0.6, 0.05], [1, 0]]) {
+            gradient.addColorStop(stop, `rgba(${r}, ${g}, ${b}, ${alpha})`);
+        }
+        context.fillStyle = gradient;
+        context.fillRect(0, 0, size, size);
+    }, false);
+}
+
 // Eine schlichte Fläche in einer Farbe, leicht fleckig: für farbige Blöcke
 export function plainTexture(base) {
     return canvasTexture(256, (context, size) => {

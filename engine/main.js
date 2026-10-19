@@ -8,7 +8,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { loadLevel } from './level.js';
 import { buildGeometry } from './geometry.js';
 import { buildGrid, LightBaker, lightRange, channelColors } from './bake.js';
-import { wallpaperTexture, carpetTexture, ceilingTexture, lampTexture, plainTexture, marbleTexture, woodTexture, tileTexture, velvetTexture } from './textures.js';
+import { wallpaperTexture, carpetTexture, ceilingTexture, lampTexture, plainTexture, marbleTexture, woodTexture, tileTexture, velvetTexture, glowTexture } from './textures.js';
 import { Walker } from './controls.js';
 import { Automap } from './automap.js';
 import { fingerprint, encodeLight, findLight, writeCache, download, lightFileName } from './lightstore.js';
@@ -18,6 +18,7 @@ const PASSES_PER_FRAME = 4;    // pro Bild, solange gebacken wird
 const DARK_SECONDS = 1.2;      // erst nur die Linien im Dunkeln
 const SWITCH_SECONDS = 2.0;    // dann gehen die Leuchten nacheinander an
 const FLICKER_CHANNELS = 4;    // so viele Gruppen flackern unabhängig voneinander
+const GLOW = 0.55;             // wie stark der Schein um eine Leuchte ist
 
 const levelFile = params.get('level') ?? 'level.ini';
 // Was zu sehen ist: Jede Taste schaltet einen Teil an oder aus, ein Klick
@@ -517,7 +518,23 @@ async function start() {
         panel.position.copy(light.position).addScaledVector(down, -0.012);
         scene.add(panel);
         aboveRooms.push(panel);
-        return { light, material };
+        // ein weicher Schein, knapp unter der Leuchte, immer zu dir gewandt:
+        // So blendet sie ein wenig, wie eine helle Fläche im Dunkeln. Eine
+        // durchsichtige Fläche pro Leuchte, kein Nachbearbeiten des Bildes,
+        // darum auch mit Rot-Cyan-Brille und in VR. Er liegt über allem (sonst
+        // schnitte ihn die Decke ab); ob er zu sehen ist, sagt glowVisible.
+        const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+            map: glowTexture(light.color), blending: THREE.AdditiveBlending, transparent: true,
+            depthWrite: false, depthTest: false, toneMapped: false, opacity: 0,
+        }));
+        glow.renderOrder = 4;
+        glow.userData.seen = 0;
+        glow.position.copy(light.position).addScaledVector(down, 0.06);
+        const span = Math.max(...light.size) * 2.8;
+        glow.scale.set(span, span, 1);
+        scene.add(glow);
+        aboveRooms.push(glow);
+        return { light, material, glow };
     });
 
     const statueMeshes = [];
@@ -533,6 +550,21 @@ async function start() {
         statuesBounced = found.light.statues ? restoreStatueLight(statues, found.light.statues) : statues.length === 0;
     }
     showParts();
+
+    // Sieht man von den Augen aus die Leuchte? Feld für Feld durch den
+    // Grundriss: Ist eines davon eine Wand, verdeckt sie den Schein. Türen sind
+    // Boden, durch sie hindurch bleibt er zu sehen.
+    const glowVisible = (from, to) => {
+        const cell = settings.cell;
+        const x0 = from.x / cell, z0 = from.z / cell, x1 = to.x / cell, z1 = to.z / cell;
+        const steps = Math.ceil(Math.max(Math.abs(x1 - x0), Math.abs(z1 - z0)) * 2) + 1;
+        for (let k = 1; k < steps; k++) {
+            const t = k / steps;
+            const cx = Math.floor(x0 + (x1 - x0) * t), cz = Math.floor(z0 + (z1 - z0) * t);
+            if (level.cells[cz * level.width + cx] !== 'floor') return false;
+        }
+        return true;
+    };
 
     const walker = new Walker(level, player, camera, renderer);
     for (const thing of level.things.filter((t) => t.type === 'model')) walker.blocked.add(`${thing.x},${thing.z}`);
@@ -769,8 +801,15 @@ async function start() {
         // Flackern: Licht und Leuchte eines Kanals im selben Takt
         const values = Array.from({ length: FLICKER_CHANNELS }, (_, k) => parts.flicker ? flickerValue(now, k + 1) : 1);
         shared.flicker.value.set(...values);
-        panels.forEach(({ light, material }, i) => {
-            material.color.setScalar(!on[i] ? 0.08 : light.channel >= 0 ? values[light.channel] : 1);
+        player.updateMatrixWorld(true);
+        const eye = new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
+        panels.forEach(({ light, material, glow }, i) => {
+            const brightness = !on[i] ? 0.08 : light.channel >= 0 ? values[light.channel] : 1;
+            material.color.setScalar(brightness);
+            // der Schein blendet weich ein und aus, wenn eine Wand dazwischenkommt
+            const seen = glowVisible(eye, light.position) ? 1 : 0;
+            glow.userData.seen += (seen - glow.userData.seen) * Math.min(1, dt * 10);
+            glow.material.opacity = on[i] ? GLOW * brightness * glow.userData.seen : 0;
         });
 
         walker.update(dt);
