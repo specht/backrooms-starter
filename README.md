@@ -63,6 +63,7 @@ Shift+L, or `?rebake` in the address, bakes the light again in any case.
 <tr><td>Shift+L</td><td>bake the light again</td></tr>
 <tr><td>»Save light«</td><td>download the baked light as <code>level.light</code> (see below)</td></tr>
 <tr><td>R</td><td>back to the start</td></tr>
+<tr><td>H</td><td>hide the panel at the top left, and show it again</td></tr>
 </table>
 
 Every switch is also shown at the top left and can be clicked. In VR the left
@@ -135,7 +136,7 @@ field without a wall next to it, is reported with the file and the line.
 <tr><td><code>walls</code></td><td><code>wallpaper</code>, <code>marble</code> or <code>plain</code></td></tr>
 <tr><td><code>floor</code></td><td><code>carpet</code>, <code>marble</code> or <code>plain</code></td></tr>
 <tr><td><code>wallpaper</code>, <code>carpet</code>, <code>ceiling</code></td><td>colours, such as <code>#c9b458</code></td></tr>
-<tr><td><code>baseboard</code></td><td>a skirting board: height and colour, such as <code>0.08, #5a4626</code></td></tr>
+<tr><td><code>baseboard</code></td><td>the skirting board: height and colour, such as <code>0.08, #86763c</code>; without it, 8 cm and half as bright as the wallpaper; <code>none</code>: no skirting board</td></tr>
 <tr><td><code>look</code></td><td>where you look at the <code>@</code>: <code>north</code>, <code>east</code>, <code>south</code>, <code>west</code> or degrees</td></tr>
 <tr><td><code>ambient</code></td><td>light from everywhere in this room (0 to 1), usually not needed</td></tr>
 </table>

@@ -560,6 +560,9 @@ async function start() {
     const togglePart = (part) => { parts[part.name] = !parts[part.name]; showParts(); };
     const toggleAnaglyph = () => { useAnaglyph = !useAnaglyph; };
     const toggleAutomap = () => automap.toggle(camera);
+    // H: der Kasten oben links weg und wieder da; solange er weg ist, sagt eine
+    // kleine Zeile in der Ecke, wie er zurückkommt
+    const togglePanel = () => document.body.classList.toggle('panel-hidden');
     const rebake = () => { restart = true; };
     // Save light: das Licht als Datei, die neben level.ini gehört
     const saveLight = async () => {
@@ -581,6 +584,7 @@ async function start() {
         addControl('Automap', 'M', toggleAutomap, () => automap.active),
         addControl('Rebake light', '⇧L', rebake),
         addControl('Save light', '', saveLight),
+        addControl('Hide panel', 'H', () => togglePanel()),
         addControl('Back to start', 'R', () => walker.toStart()),
     ];
     const refreshControls = () => {
@@ -596,6 +600,7 @@ async function start() {
         if (event.code === 'KeyL' && event.shiftKey) rebake();
         else if (part) togglePart(part);
         if (event.code === 'Digit3') toggleAnaglyph();
+        if (event.code === 'KeyH') togglePanel();
         if (event.code === 'KeyR') walker.toStart();
         if (event.code === 'KeyM' || event.code === 'Tab') {
             event.preventDefault();

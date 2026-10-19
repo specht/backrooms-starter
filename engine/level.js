@@ -30,12 +30,23 @@ const ROOM_DEFAULTS = {
     ceiling: '#d8d0a8',   // Deckenplatten
     walls: 'wallpaper',   // Wände: wallpaper, marble oder plain (einfarbig in der Farbe von wallpaper)
     floor: 'carpet',      // Boden: carpet, marble oder plain (einfarbig in der Farbe von carpet)
-    baseboard: null,      // Sockelleiste: höhe, farbe, zum Beispiel 0.08, #b29a52 (ohne: keine)
+    baseboard: 'auto',    // Sockelleiste: höhe, farbe, zum Beispiel 0.08, #5a4626; ohne: 8 cm, dunkler als die Wand; none: keine
     ambient: null,        // Umgebungslicht nur in diesem Raum, sonst das aus level.ini
     look: null,           // wohin du am @ schaust: north, east, south, west oder Grad (0 = Norden, 90 = Osten)
 };
 
 const HEADINGS = { north: 0, east: 90, south: 180, west: 270 };
+
+// Die Farbe einer Sockelleiste ohne eigene Farbe: etwas dunkler als die
+// Tapete (65 %), an Marmor ein dunkler Stein
+function darker(settings) {
+    if (settings.walls === 'marble') return '#6e675b';
+    const hex = /^#([0-9a-f]{6})$/i.exec(String(settings.wallpaper));
+    if (!hex) return '#86763c';
+    const value = parseInt(hex[1], 16);
+    const half = [16, 8, 0].map((shift) => Math.round(((value >> shift) & 255) * 0.65));
+    return '#' + half.map((c) => c.toString(16).padStart(2, '0')).join('');
+}
 
 const LIGHT_DEFAULTS = {
     color: '#fff3cf',
@@ -63,7 +74,9 @@ export class LevelError extends Error {
 }
 
 function parseValue(text) {
-    const value = text.replace(/\s+#.*$/, '').trim();   // Kommentar am Zeilenende
+    // Kommentar am Zeilenende: Leerzeichen, # und noch ein Leerzeichen. Eine
+    // Farbe wie #5a4626 hat keins dahinter: 0.08, #5a4626 bleibt ganz.
+    const value = text.replace(/\s+#(?=\s|$).*$/, '').trim();
     if (/^-?\d+(\.\d+)?$/.test(value)) return Number(value);
     if (/^-?\d+(\.\d+)?(\s*,\s*-?\d+(\.\d+)?)+$/.test(value)) return value.split(',').map(Number);
     return value;
@@ -111,8 +124,11 @@ function parseRoom(id, source) {
     if (heights.some((h) => !(h > 0.5 && h < 50))) throw new LevelError(file, null, `height = ${settings.height}: a ceiling is between 0.5 and 50 metres high.`);
     if (!['wallpaper', 'marble', 'plain'].includes(settings.walls)) throw new LevelError(file, null, `walls = ${settings.walls} does not exist. Possible: wallpaper, marble, plain.`);
     if (!['carpet', 'marble', 'plain'].includes(settings.floor)) throw new LevelError(file, null, `floor = ${settings.floor} does not exist. Possible: carpet, marble, plain.`);
-    if (settings.baseboard !== null && settings.baseboard !== undefined) {
-        const [height, color = '#e6e0d2'] = String(settings.baseboard).split(',').map((part) => part.trim());
+    if (settings.baseboard === 'none') {
+        settings.baseboard = null;
+    } else {
+        const given = settings.baseboard === 'auto' ? [] : String(settings.baseboard).split(',').map((part) => part.trim());
+        const [height = 0.08, color = darker(settings)] = given;
         const h = Number(height);
         if (!(h > 0.01 && h < 1)) throw new LevelError(file, null, `baseboard = ${settings.baseboard}: expected a height in metres (0.01 to 1) and a colour, for example baseboard = 0.08, #b29a52.`);
         settings.baseboard = { height: h, color };

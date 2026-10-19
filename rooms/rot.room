@@ -1,7 +1,6 @@
 # Ein Raum in Rot. Das Licht reicht bis in den Gang hinaus.
 
 [room]
-baseboard = 0.08, #c8c0b0
 name = Rot
 height = 2.8
 wallpaper = #ddd6c8

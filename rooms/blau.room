@@ -1,7 +1,6 @@
 # Niedrig und blau. Hier ist es still.
 
 [room]
-baseboard = 0.08, #b8bcc6
 name = Blau
 height = 2.2
 wallpaper = #d4d6dc

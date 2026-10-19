@@ -119,3 +119,23 @@ canvas {
     font: 600 0.75rem ui-monospace, monospace;
     text-align: center;
 }
+
+/* H blendet den Kasten aus; dann bleibt nur ein leiser Hinweis in der Ecke */
+body.panel-hidden #info {
+    display: none;
+}
+
+#panel-note {
+    display: none;
+    position: fixed;
+    top: 0.6rem;
+    left: 0.8rem;
+    color: #f4ecc8;
+    font-size: 0.8rem;
+    opacity: 0.45;
+    pointer-events: none;
+}
+
+body.panel-hidden #panel-note {
+    display: block;
+}

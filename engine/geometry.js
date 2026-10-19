@@ -160,15 +160,42 @@ export function buildGeometry(level) {
             const board = level.rooms[room].settings.baseboard;
             if (board) {
                 const n = INWARD[direction], depthOut = 0.015, y = board.height;
-                const ax = a[0] * cell, az = a[1] * cell, bx = b[0] * cell, bz = b[1] * cell;
-                const fax = ax + n[0] * depthOut, faz = az + n[2] * depthOut, fbx = bx + n[0] * depthOut, fbz = bz + n[2] * depthOut;
+                // Die Enden: An einer äußeren Ecke (die Wand biegt weg, wie an
+                // einer Tür) laufen beide Leisten um ihre Dicke weiter, bis ihre
+                // Vorderseiten sich treffen; an einer inneren Ecke hört die Leiste
+                // entlang z vor der Vorderseite der anderen auf. Das Quadrat in
+                // der Ecke deckt oben nur die Leiste entlang x, sonst lägen zwei
+                // Flächen aufeinander. Wo eine Wand nur geteilt ist (schräge
+                // Decke, anderer Raum), bleibt alles, wie es ist.
+                const lengthCells = Math.abs(b[0] - a[0]) + Math.abs(b[1] - a[1]);
+                const d = [(b[0] - a[0]) / lengthCells, (b[1] - a[1]) / lengthCells];
+                const alongX = direction === 'north' || direction === 'south';
+                const corner = (p, out) => {
+                    const probe = (side) => at(Math.floor(p[0] + out[0] * 0.5 + n[0] * 0.5 * side), Math.floor(p[1] + out[1] * 0.5 + n[2] * 0.5 * side));
+                    if (probe(-1) === 'floor') return 'outer';
+                    if (probe(1) !== 'floor') return 'inner';
+                    return 'straight';
+                };
+                // um wie viel Meter Vorderseite und Oberseite an einem Ende weiterlaufen
+                const reach = (kind) => ({
+                    outer: [depthOut, alongX ? depthOut : 0],
+                    inner: [alongX ? 0 : -depthOut, alongX ? 0 : -depthOut],
+                    straight: [0, 0],
+                })[kind];
+                const [frontStart, topStart] = reach(corner(a, [-d[0], -d[1]]));
+                const [frontEnd, topEnd] = reach(corner(b, d));
+                const along = (p, extra, sign, offset) => [
+                    p[0] * cell + sign * d[0] * extra + n[0] * offset, p[1] * cell + sign * d[1] * extra + n[2] * offset];
+                const fa = along(a, frontStart, -1, depthOut), fb = along(b, frontEnd, 1, depthOut);
+                const ta = along(a, topStart, -1, 0), tb = along(b, topEnd, 1, 0);
+                const tfa = along(a, topStart, -1, depthOut), tfb = along(b, topEnd, 1, depthOut);
                 const put = (corners, sw, sh, want) => {
                     let face = corners;
                     if (faceNormal(face).reduce((sum, v, i) => sum + v * want[i], 0) < 0) face = [face[0], face[3], face[2], face[1]];
                     faces.push({ kind: 'baseboard', color: board.color, room, corners: face, normal: faceNormal(face), w: texels(sw), h: texels(sh) });
                 };
-                put([[fax, 0, faz], [fbx, 0, fbz], [fbx, y, fbz], [fax, y, faz]], length, y, n);
-                put([[ax, y, az], [bx, y, bz], [fbx, y, fbz], [fax, y, faz]], length, Math.max(depthOut, 0.2), [0, 1, 0]);
+                put([[fa[0], 0, fa[1]], [fb[0], 0, fb[1]], [fb[0], y, fb[1]], [fa[0], y, fa[1]]], length + frontStart + frontEnd, y, n);
+                put([[ta[0], y, ta[1]], [tb[0], y, tb[1]], [tfb[0], y, tfb[1]], [tfa[0], y, tfa[1]]], length + topStart + topEnd, Math.max(depthOut, 0.2), [0, 1, 0]);
             }
             start = end + 1;
         }
