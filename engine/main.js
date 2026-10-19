@@ -355,7 +355,10 @@ async function start() {
     renderer.xr.enabled = true;
     renderer.xr.setReferenceSpaceType('local-floor');
     document.body.appendChild(renderer.domElement);
-    document.body.appendChild(VRButton.createButton(renderer));
+    // »ENTER VR« nur, wenn der Browser VR kann; sonst stünde dort »VR NOT SUPPORTED«
+    navigator.xr?.isSessionSupported('immersive-vr')
+        .then((supported) => { if (supported) document.body.appendChild(VRButton.createButton(renderer)); })
+        .catch(() => {});
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color('#0b0a06');
