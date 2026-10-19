@@ -133,7 +133,7 @@ field without a wall next to it, is reported with the file and the line.
 <tr><td><code>name</code></td><td>shown in the automap</td></tr>
 <tr><td><code>height</code></td><td>ceiling height in metres (2.7); two numbers for a sloped ceiling: <code>height = 2.5, 4</code></td></tr>
 <tr><td><code>slope</code></td><td><code>flat</code>, or the direction the ceiling rises to: <code>north</code>, <code>east</code>, <code>south</code>, <code>west</code>; <code>gable</code> is a pitched roof, highest in the middle, its ridge along the longer side of the room</td></tr>
-<tr><td><code>walls</code></td><td><code>wallpaper</code>, <code>marble</code>, <code>wood</code> (vertical boards), <code>tiles</code> (10 cm, as in a pool) or <code>plain</code>, in the colour of <code>wallpaper</code></td></tr>
+<tr><td><code>walls</code></td><td><code>wallpaper</code>, <code>marble</code>, <code>wood</code> (vertical boards), <code>tiles</code> (10 cm, as in a pool), <code>velvet</code> (curtain folds, as in a cinema) or <code>plain</code>, in the colour of <code>wallpaper</code></td></tr>
 <tr><td><code>floor</code></td><td><code>carpet</code>, <code>marble</code>, <code>wood</code> (floorboards), <code>tiles</code> or <code>plain</code>, in the colour of <code>carpet</code></td></tr>
 <tr><td><code>wallpaper</code>, <code>carpet</code>, <code>ceiling</code></td><td>colours, such as <code>#c9b458</code></td></tr>
 <tr><td><code>baseboard</code></td><td>the skirting board: height and colour, such as <code>0.08, #86763c</code>; without it, 8 cm and half as bright as the wallpaper; <code>none</code>: no skirting board</td></tr>

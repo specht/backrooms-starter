@@ -8,7 +8,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { loadLevel } from './level.js';
 import { buildGeometry } from './geometry.js';
 import { buildGrid, LightBaker, lightRange, channelColors } from './bake.js';
-import { wallpaperTexture, carpetTexture, ceilingTexture, lampTexture, plainTexture, marbleTexture, woodTexture, tileTexture } from './textures.js';
+import { wallpaperTexture, carpetTexture, ceilingTexture, lampTexture, plainTexture, marbleTexture, woodTexture, tileTexture, velvetTexture } from './textures.js';
 import { Walker } from './controls.js';
 import { Automap } from './automap.js';
 import { fingerprint, encodeLight, findLight, writeCache, download, lightFileName } from './lightstore.js';
@@ -480,7 +480,7 @@ async function start() {
         const key = `${style}:${color}`;
         if (!textures.has(key)) {
             const make = { wallpaper: wallpaperTexture, carpet: carpetTexture, ceiling: ceilingTexture, plain: plainTexture,
-                marble: () => marbleTexture(1024, 2), wood: woodTexture, tiles: tileTexture }[style];
+                marble: () => marbleTexture(1024, 2), wood: woodTexture, tiles: tileTexture, velvet: velvetTexture }[style];
             textures.set(key, make(color));
         }
         return textures.get(key);

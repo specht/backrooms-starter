@@ -261,3 +261,31 @@ export function tileTexture(base) {
     });
 }
 
+// Samt wie ein Vorhang im Kino: senkrechte Falten, 25 cm breit, jede auf
+// einer Seite im Licht und auf der anderen im Schatten; eine zweite, langsamere
+// Welle macht sie ungleich, ein feiner Flor schimmert darüber. Alle Wellen
+// passen genau in einen Meter: nahtlos.
+export function velvetTexture(base) {
+    return canvasTexture(512, (context, size) => {
+        const rng = random(71);
+        const [r, g, b] = rgb(base);
+        const image = context.createImageData(size, size);
+        const tau = Math.PI * 2;
+        for (let x = 0; x < size; x++) {
+            const t = x / size;
+            const fold = Math.sin(tau * 4 * t + 0.9 * Math.sin(tau * 2 * t) + 0.4 * Math.sin(tau * 7 * t));
+            const light = 0.62 + 0.38 * (0.5 + 0.5 * fold) ** 1.6;   // Kamm im Licht, Tal im Schatten
+            for (let y = 0; y < size; y++) {
+                const sheen = 1 + 0.05 * Math.sin(tau * 3 * (y / size) + 2 * fold);   // leichter Glanz entlang der Falte
+                const f = light * sheen * (0.93 + rng() * 0.1);
+                const i = (y * size + x) * 4;
+                image.data[i] = Math.min(255, r * f);
+                image.data[i + 1] = Math.min(255, g * f);
+                image.data[i + 2] = Math.min(255, b * f);
+                image.data[i + 3] = 255;
+            }
+        }
+        context.putImageData(image, 0, 0);
+    });
+}
+
