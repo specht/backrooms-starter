@@ -560,8 +560,7 @@ async function start() {
     const togglePart = (part) => { parts[part.name] = !parts[part.name]; showParts(); };
     const toggleAnaglyph = () => { useAnaglyph = !useAnaglyph; };
     const toggleAutomap = () => automap.toggle(camera);
-    // H: der Kasten oben links weg und wieder da; solange er weg ist, sagt eine
-    // kleine Zeile in der Ecke, wie er zurückkommt
+    // H: der Kasten oben links weg und wieder da
     const togglePanel = () => document.body.classList.toggle('panel-hidden');
     const rebake = () => { restart = true; };
     // Save light: das Licht als Datei, die neben level.ini gehört
