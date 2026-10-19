@@ -832,7 +832,9 @@ async function start() {
     // Tone Mapping alles auf den Bildschirm (OutputPass). Mit der Rot-Cyan-
     // Brille, in VR und in der Automap wäre das zu teuer oder doppelt: Dort
     // bleibt der Schein der einzelnen Leuchten.
-    const composer = new EffectComposer(renderer);
+    // mit eigener Kantenglättung (MSAA): Das Bild entsteht hier nicht mehr
+    // direkt auf dem Bildschirm, dessen antialias gälte dann nicht
+    const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 }));
     composer.setPixelRatio(renderer.getPixelRatio());
     composer.setSize(window.innerWidth, window.innerHeight);
     composer.addPass(new RenderPass(scene, camera));
