@@ -37,7 +37,7 @@ const controls = document.getElementById('controls');
 const help = document.getElementById('help');
 // was die Maus und die Tasten gerade tun, unten im Kasten oben links
 const WALK_HELP = 'Click into the picture to look around with the mouse · WASD to walk, Shift to run';
-const AUTOMAP_HELP = 'Automap: drag to turn it, Shift+drag to move it, mouse wheel to zoom · WASD still walks · M or Esc closes it';
+const AUTOMAP_HELP = 'Automap: drag to turn it, Shift+drag to move it, mouse wheel to zoom · V: rooms or wireframe · WASD still walks · M or Esc closes it';
 
 // Ein Schalter mit Lämpchen (grün, wenn an) und seiner Taste. Ohne state
 // ist es ein Knopf, der etwas tut. Er nimmt keinen Fokus, damit die Tasten
@@ -469,11 +469,13 @@ async function start() {
         showStatueLight(statues, parts);
     };
     const textures = new Map();
-    const textureFor = (kind, room, blockColor) => {
+    const textureFor = (kind, room, blockColor, blockMaterial) => {
         const r = level.rooms[room].settings;
-        // ein Block ohne eigene Farbe sieht aus wie die Wände seines Raums
+        // ein Block ohne eigene Farbe sieht aus wie die Wände seines Raums;
+        // mit material aus diesem, in seiner Farbe oder der Tapete des Raums
         let style, color;
-        if ((kind === 'block' || kind === 'baseboard') && blockColor) [style, color] = ['plain', blockColor];
+        if (kind === 'block' && blockMaterial) [style, color] = [blockMaterial, blockColor ?? r.wallpaper];
+        else if ((kind === 'block' || kind === 'baseboard') && blockColor) [style, color] = ['plain', blockColor];
         else if (kind === 'floor') [style, color] = [r.floor, r.carpet];
         else if (kind === 'ceiling') [style, color] = ['ceiling', r.ceiling];
         else [style, color] = [r.walls, r.wallpaper];
@@ -486,16 +488,24 @@ async function start() {
         return textures.get(key);
     };
     const surfaceMaterials = [];
-    for (const { kind, room, color, geometry: mesh } of geometry.meshes) {
-        const material = surfaceMaterial(textureFor(kind, room, color), baker, shared);
+    // was die Automap mit Räumen (V) ausblendet, damit man von oben hineinsieht
+    const aboveRooms = [];
+    for (const { kind, room, color, material: blockMaterial, geometry: mesh } of geometry.meshes) {
+        const material = surfaceMaterial(textureFor(kind, room, color, blockMaterial), baker, shared);
         surfaceMaterials.push(material);
-        scene.add(new THREE.Mesh(mesh, material));
+        const surface = new THREE.Mesh(mesh, material);
+        scene.add(surface);
+        if (kind === 'ceiling') aboveRooms.push(surface);
     }
 
     // Am Anfang ist es dunkel: feine Linien an allen Kanten zeigen den Raum,
     // bis das Licht da ist, dann verblassen sie.
     const blueprint = new THREE.LineBasicMaterial({ color: '#fff4c4', transparent: true, opacity: 0.85, toneMapped: false });
-    for (const { geometry: mesh } of geometry.meshes) scene.add(new THREE.LineSegments(new THREE.EdgesGeometry(mesh), blueprint));
+    for (const { kind, geometry: mesh } of geometry.meshes) {
+        const lines = new THREE.LineSegments(new THREE.EdgesGeometry(mesh), blueprint);
+        scene.add(lines);
+        if (kind === 'ceiling') aboveRooms.push(lines);
+    }
 
     // Die Leuchten selbst: helle Felder unter der Decke, so schräg wie sie
     const panels = lights.map((light) => {
@@ -506,6 +516,7 @@ async function start() {
         panel.quaternion.premultiply(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, -1, 0), down));
         panel.position.copy(light.position).addScaledVector(down, -0.012);
         scene.add(panel);
+        aboveRooms.push(panel);
         return { light, material };
     });
 
@@ -601,6 +612,8 @@ async function start() {
         if (event.code === 'Digit3') toggleAnaglyph();
         if (event.code === 'KeyH') togglePanel();
         if (event.code === 'KeyR') walker.toStart();
+        // V: in der Automap die Räume statt des Drahtgitters, und zurück
+        if (event.code === 'KeyV' && automap.active) automap.roomsView = !automap.roomsView;
         if (event.code === 'KeyM' || event.code === 'Tab') {
             event.preventDefault();
             toggleAutomap();
@@ -763,6 +776,7 @@ async function start() {
         rememberPlace();
         if (automap.active) {
             automap.render({
+                rooms: { scene, hide: aboveRooms },
                 anaglyph: useAnaglyph && !renderer.xr.isPresenting ? anaglyph : null,
                 vrCamera: renderer.xr.isPresenting ? camera : null,
             });

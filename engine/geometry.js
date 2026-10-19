@@ -208,7 +208,7 @@ export function buildGeometry(level) {
         const x0 = cx - w / 2, x1 = cx + w / 2, z0 = cz - d / 2, z1 = cz + d / 2;
         const y0 = block.base, y1 = block.base + h;
         const room = roomOf(block.x, block.z);
-        const put = (corners, sw, sh) => faces.push({ kind: 'block', color: block.color, room, corners, normal: faceNormal(corners), w: texels(sw), h: texels(sh) });
+        const put = (corners, sw, sh) => faces.push({ kind: 'block', color: block.color, material: block.material, room, corners, normal: faceNormal(corners), w: texels(sw), h: texels(sh) });
         put([[x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]], w, d);                 // oben
         if (y0 > 0.001) put([[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]], w, d); // unten
         put([[x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0]], w, h);                 // nach -z
@@ -222,13 +222,13 @@ export function buildGeometry(level) {
     // Eine Geometrie für jede Sorte Fläche in jedem Raum (eigene Tapete, eigener Teppich)
     const groups = new Map();
     for (const face of faces) {
-        const key = `${face.kind}:${face.room}:${face.color ?? ''}`;
-        if (!groups.has(key)) groups.set(key, { kind: face.kind, room: face.room, color: face.color ?? null, faces: [] });
+        const key = `${face.kind}:${face.room}:${face.color ?? ''}:${face.material ?? ''}`;
+        if (!groups.has(key)) groups.set(key, { kind: face.kind, room: face.room, color: face.color ?? null, material: face.material ?? null, faces: [] });
         groups.get(key).faces.push(face);
     }
 
     const meshes = [];
-    for (const { kind, room, color, faces: list } of groups.values()) {
+    for (const { kind, room, color, material, faces: list } of groups.values()) {
         const positions = [], normals = [], uvs = [], uv1s = [], indices = [];
         const bakePositions = [], bakeWorld = [], bakeNormal = [], bakeMin = [], bakeMax = [], bakeAmbient = [], bakeAlbedo = [], bakeIndices = [];
         const roomSettings = level.rooms[room].settings;
@@ -236,7 +236,7 @@ export function buildGeometry(level) {
         // Wie viel Licht die Fläche zurückwirft, in ihrer Farbe: die Farbe des
         // Raums für diese Fläche, etwas dunkler (Flecken und Muster der Textur)
         const style = kind === 'floor' ? roomSettings.floor : kind === 'ceiling' ? 'ceiling'
-            : (kind === 'block' || kind === 'baseboard') && color ? 'plain' : roomSettings.walls;
+            : material ?? ((kind === 'block' || kind === 'baseboard') && color ? 'plain' : roomSettings.walls);
         const surfaceColor = style === 'marble' ? '#e2ddd2' : kind === 'floor' ? roomSettings.carpet
             : kind === 'ceiling' ? roomSettings.ceiling : (kind === 'block' || kind === 'baseboard') && color ? color : roomSettings.wallpaper;
         const albedo = new THREE.Color(surfaceColor).multiplyScalar(0.85);
@@ -296,7 +296,7 @@ export function buildGeometry(level) {
         bake.setAttribute('ambient', new THREE.Float32BufferAttribute(bakeAmbient, 1));
         bake.setAttribute('albedo', new THREE.Float32BufferAttribute(bakeAlbedo, 3));
         bake.setIndex(bakeIndices);
-        meshes.push({ kind, room, color, geometry, bake });
+        meshes.push({ kind, room, color, material, geometry, bake });
     }
     const maxHeight = Math.max(...faces.map((f) => Math.max(...f.corners.map((c) => c[1]))));
     return { meshes, atlasSize, faceCount: faces.length, maxHeight };

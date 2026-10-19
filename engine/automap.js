@@ -40,6 +40,11 @@ export class Automap {
         // kleines Modell vor dir, wie ein Puppenhaus.
         this.model = new THREE.Group();
         this.scene.add(this.model);
+        // Namen, Punkte und der Pfeil: über dem Drahtgitter und, in der
+        // Ansicht mit Räumen (V), über der richtigen Szene
+        this.overlay = new THREE.Group();
+        this.model.add(this.overlay);
+        this.roomsView = false;
         const cell = level.settings.cell;
 
         for (const { kind, room, geometry: mesh } of geometry.meshes) {
@@ -52,20 +57,20 @@ export class Automap {
             const x = (room.ox + room.width / 2) * cell, z = (room.oz + room.depth / 2) * cell;
             const sprite = label(room.settings.name ?? room.id, roomColor(room.index));
             sprite.position.set(x, Math.max(...room.heights) + 1.2, z);
-            this.model.add(sprite);
+            this.overlay.add(sprite);
         }
         const dot = (color, size) => new THREE.Mesh(new THREE.SphereGeometry(size, 12, 8), new THREE.MeshBasicMaterial({ color, toneMapped: false }));
         for (const light of lights) {
             const marker = dot(light.flicker > 0 ? '#ff9a3c' : '#ffe680', 0.12);
             marker.position.copy(light.position);
-            this.model.add(marker);
+            this.overlay.add(marker);
         }
         for (const statue of statues) {
             const box = new THREE.Box3().setFromObject(statue);
             const marker = dot('#ffffff', 0.2);
             box.getCenter(marker.position);
             marker.position.y = box.max.y;
-            this.model.add(marker);
+            this.overlay.add(marker);
         }
         // du: ein Pfeil auf dem Boden von deinem Platz in Blickrichtung, ein
         // pulsierender Ring um dich und ein Strahl nach oben
@@ -90,7 +95,7 @@ export class Automap {
         beam.position.y = top / 2;
         beam.renderOrder = 5;
         this.youPivot.add(beam);
-        this.model.add(this.youPivot);
+        this.overlay.add(this.youPivot);
 
         // Kamera kreist um die Mitte des Bauwerks
         const size = Math.max(level.width, level.depth) * cell;
@@ -169,8 +174,11 @@ export class Automap {
     }
 
     // anaglyph: am Rechner mit Rot-Cyan-Brille. vrCamera: in VR die Kamera
-    // des Spielers, das Modell steht dann klein vor ihm.
-    render({ anaglyph = null, vrCamera = null } = {}) {
+    // des Spielers, das Modell steht dann klein vor ihm. rooms: die richtige
+    // Szene und was darin für die Ansicht von oben verschwinden muss (Decken,
+    // Leuchten); mit roomsView zeichnet die Karte dann sie statt des
+    // Drahtgitters, in VR bleibt es beim Drahtgitter.
+    render({ anaglyph = null, vrCamera = null, rooms = null } = {}) {
         this.youPivot.position.set(this.player.position.x, 0.05, this.player.position.z);
         this.youPivot.rotation.y = this.player.rotation.y;
         if (vrCamera) {
@@ -217,6 +225,19 @@ export class Automap {
         }
         c.lookAt(target);
         c.updateMatrixWorld(true);
+        // Mit Räumen: die Szene ohne Decken und Leuchten, darin für dieses
+        // Bild die Namen, Punkte und der Pfeil
+        let scene = this.scene;
+        if (this.roomsView && rooms) {
+            scene = rooms.scene;
+            for (const object of rooms.hide) object.visible = false;
+            scene.add(this.overlay);
+        }
+        const restore = () => {
+            if (scene === this.scene) return;
+            for (const object of rooms.hide) object.visible = true;
+            this.model.add(this.overlay);
+        };
         if (anaglyph) {
             // Das Bauwerk wie ein Modell auf dem Tisch: Augenabstand und
             // Bildebene wachsen mit der Entfernung, sonst wirkt es flach.
@@ -224,11 +245,12 @@ export class Automap {
             const { eyeSep, planeDistance } = anaglyph;
             anaglyph.eyeSep = distance * 0.04;
             anaglyph.planeDistance = distance;
-            anaglyph.render(this.scene, c);
+            anaglyph.render(scene, c);
             anaglyph.eyeSep = eyeSep;
             anaglyph.planeDistance = planeDistance;
         } else {
-            this.renderer.render(this.scene, c);
+            this.renderer.render(scene, c);
         }
+        restore();
     }
 }

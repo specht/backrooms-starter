@@ -55,9 +55,13 @@ const LIGHT_DEFAULTS = {
     flicker: 0,           // 0: ruhig, 1: flackert
 };
 
+// Woraus ein Block sein kann (material = …): dieselben Arten wie Wände
+const BLOCK_MATERIALS = ['wallpaper', 'marble', 'wood', 'tiles', 'velvet', 'plain'];
+
 const BLOCK_DEFAULTS = {
     base: 0,              // Unterkante über dem Boden, in Metern
     color: null,          // ohne Farbe: mit der Tapete des Raums
+    material: null,       // ohne: wie die Wände des Raums, mit color einfarbig
 };
 
 const MODEL_DEFAULTS = {
@@ -172,7 +176,9 @@ function parseRoom(id, source) {
                 if (thing.type === 'model' && thing.pedestal !== undefined) {
                     const size = [thing.pedestal].flat();
                     if (size.length !== 3) throw new LevelError(file, entry.line, `pedestal = ${thing.pedestal}: expected width, height, depth in metres.`);
-                    things.push({ type: 'block', char, x, z, base: 0, color: thing.pedestal_color ?? null, size });
+                    const material = thing.pedestal_material ?? null;
+                    if (material !== null && !BLOCK_MATERIALS.includes(material)) throw new LevelError(file, entry.line, `pedestal_material = ${material} does not exist. Possible: ${BLOCK_MATERIALS.join(', ')}.`);
+                    things.push({ type: 'block', char, x, z, base: 0, color: thing.pedestal_color ?? null, material, size });
                     thing.base = size[1];
                 }
             } else if (char !== '.') {
@@ -207,7 +213,9 @@ function makeThing(file, char, section, x, z) {
         const [w, h, d] = size.length === 1 ? [1, size[0], 1] : size;
         if (size.length !== 1 && size.length !== 3) throw new LevelError(file, section.line, `block = ${entries.block}: expected a height, or width, height, depth in metres.`);
         if ([w, h, d].some((v) => !(v > 0) || v > 50)) throw new LevelError(file, section.line, `block = ${entries.block}: every size is between 0 and 50 metres.`);
-        return { type: 'block', char, x, z, ...BLOCK_DEFAULTS, ...entries, size: [w, h, d] };
+        const block = { type: 'block', char, x, z, ...BLOCK_DEFAULTS, ...entries, size: [w, h, d] };
+        if (block.material !== null && !BLOCK_MATERIALS.includes(block.material)) throw new LevelError(file, section.line, `material = ${block.material} does not exist. Possible: ${BLOCK_MATERIALS.join(', ')}.`);
+        return block;
     }
     throw new LevelError(file, section.line, `[${char}] needs light = ... (a lamp), block = ... (a block) or model = ... (a statue).`);
 }

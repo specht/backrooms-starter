@@ -59,7 +59,7 @@ Shift+L, or `?rebake` in the address, bakes the light again in any case.
 <tr><td>F</td><td>flickering lamps on/off</td></tr>
 <tr><td>E</td><td>edges (wireframe) on/off</td></tr>
 <tr><td>3</td><td>anaglyph for red-cyan glasses on/off</td></tr>
-<tr><td>M or Tab</td><td>automap: the whole building as a wireframe; drag to turn it, Shift+drag to move it, mouse wheel to zoom, Esc to close</td></tr>
+<tr><td>M or Tab</td><td>automap: the whole building as a wireframe; drag to turn it, Shift+drag to move it, mouse wheel to zoom, V shows the rooms themselves from above instead, Esc to close</td></tr>
 <tr><td>Shift+L</td><td>bake the light again</td></tr>
 <tr><td>»Save light«</td><td>download the baked light as <code>level.light</code> (see below)</td></tr>
 <tr><td>R</td><td>back to the start</td></tr>
@@ -157,7 +157,9 @@ A lamp hangs just below the ceiling, in the middle of its field.
 `block = 2` fills its field up to 2 metres; `block = 0.9, 6, 0.9` is 0.9 m
 wide, 6 m high and 0.9 m deep, in the middle of its field: a column.
 `base` lifts it off the floor, `color` paints it (without a colour, it has the
-room's wallpaper).
+room's wallpaper). `material` makes it of `marble`, `wood`, `tiles`, `velvet`,
+`wallpaper` or `plain`, whatever the room's walls are, in the colour of
+`color` or the room's wallpaper.
 
 ### A statue
 
@@ -166,7 +168,7 @@ room's wallpaper).
 <tr><td><code>height</code></td><td>in metres (2.0)</td></tr>
 <tr><td><code>rotation</code></td><td>in degrees, around the vertical axis</td></tr>
 <tr><td><code>material</code></td><td><code>marble</code> instead of the model's own textures</td></tr>
-<tr><td><code>pedestal</code></td><td>a block under it: width, height, depth; <code>pedestal_color</code> paints it</td></tr>
+<tr><td><code>pedestal</code></td><td>a block under it: width, height, depth; <code>pedestal_color</code> paints it, <code>pedestal_material</code> makes it of marble, wood and so on</td></tr>
 <tr><td><code>tilt</code></td><td>in degrees, around the x axis, for a model that still lies down</td></tr>
 </table>
 
