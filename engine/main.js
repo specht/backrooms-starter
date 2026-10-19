@@ -18,7 +18,7 @@ const PASSES_PER_FRAME = 4;    // pro Bild, solange gebacken wird
 const DARK_SECONDS = 1.2;      // erst nur die Linien im Dunkeln
 const SWITCH_SECONDS = 2.0;    // dann gehen die Leuchten nacheinander an
 const FLICKER_CHANNELS = 4;    // so viele Gruppen flackern unabhängig voneinander
-const GLOW = 0.55;               // wie stark der Schein um eine Leuchte ist
+const GLOW = 0.85;               // wie stark der Schein um eine Leuchte ist (auf Dunklem; auf Hellem weniger)
 
 const levelFile = params.get('level') ?? 'level.ini';
 // Was zu sehen ist: Jede Taste schaltet einen Teil an oder aus, ein Klick
@@ -690,9 +690,14 @@ async function start() {
         // darum auch mit Rot-Cyan-Brille und in VR. Er liegt über allem (sonst
         // schnitte ihn die Decke ab, mit harten Kanten); wie viel von der
         // Leuchte zu sehen ist, hinter Wänden, Säulen und Statuen, sagt glowVisible.
+        // Gemischt wie »Negativ multiplizieren« (screen): 1 - (1 - Schein) * (1 - Bild).
+        // Auf Dunklem leuchtet er, auf schon Hellem kaum noch, auf Weiß gar
+        // nicht: Eine weiße Decke wird nicht von einem Verlauf überzogen.
         const glow = new THREE.Sprite(new THREE.SpriteMaterial({
-            map: glowTexture(light.color), blending: THREE.AdditiveBlending, transparent: true,
-            depthWrite: false, depthTest: false, toneMapped: false, opacity: 0,
+            map: glowTexture(light.color), transparent: true, color: 0x000000,
+            blending: THREE.CustomBlending, blendEquation: THREE.AddEquation,
+            blendSrc: THREE.OneMinusDstColorFactor, blendDst: THREE.OneFactor,
+            depthWrite: false, depthTest: false, toneMapped: false,
         }));
         glow.renderOrder = 4;
         glow.userData.seen = 0;
@@ -1032,7 +1037,7 @@ async function start() {
             // der Schein blendet weich ein und aus, wenn eine Wand dazwischenkommt
             const seen = glowVisible(eye, light);
             glow.userData.seen += (seen - glow.userData.seen) * Math.min(1, dt * 10);
-            glow.material.opacity = on[i] ? GLOW * brightness * glow.userData.seen : 0;
+            glow.material.color.setScalar(on[i] ? GLOW * brightness * glow.userData.seen : 0);   // die Stärke steckt in der Farbe
         });
 
         // Spiegelungen, wenn alles fertig ist und alle Leuchten an sind (ohne den Schein der Leuchten)
