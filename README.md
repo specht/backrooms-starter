@@ -19,6 +19,15 @@ Serve this folder with any static web server and open `index.html`:
 Opening `index.html` directly as a file does not work: the browser does not
 let a page load the room files from disk.
 
+## Two levels
+
+- `level.ini` and `rooms/`: your level. It starts small: a room, a corridor
+  and two coloured rooms. Build on it.
+- `lobby/`: »Level 0: Die Lobby«, a whole level with eleven rooms, a corridor
+  that opens up nine metres high, a colonnade, a gallery of pedestals and a
+  marble hall with a statue. Open it with `index.html?level=lobby/level.ini`.
+  Its light is already baked (`lobby/level.light`), so it is there at once.
+
 After a change to a room, reload the page.
 
 ## Saved light
@@ -67,6 +76,7 @@ back to the same spot, as long as the floor plan has not changed.
 <table>
 <tr><td><code>level.ini</code></td><td>the name of the level, the room you start in, light settings</td></tr>
 <tr><td><code>rooms/NAME.room</code></td><td>one file per room: its floor plan and what is in it</td></tr>
+<tr><td><code>lobby/</code></td><td>a whole level to try, with its rooms and its baked light</td></tr>
 <tr><td><code>statues/</code></td><td>3D models (GLB) for statues</td></tr>
 <tr><td><code>level.light</code></td><td>saved light, if you saved it (»Save light«)</td></tr>
 <tr><td><code>engine/</code></td><td>the program: reading the level, building it, baking the light, walking</td></tr>
@@ -181,7 +191,7 @@ room's wallpaper).
 
 ## Statues and licences
 
-- `statues/athena.glb`: Athena Giustiniani, a 3D scan of the plaster cast
+- `statues/athena.glb` (used in `lobby/rooms/halle.room`): Athena Giustiniani, a 3D scan of the plaster cast
   KAS255 at the National Gallery of Denmark (SMK), public domain
   ([SMK Open](https://open.smk.dk/artwork/image/KAS255),
   [Public Domain Mark](https://creativecommons.org/publicdomain/mark/1.0/));
