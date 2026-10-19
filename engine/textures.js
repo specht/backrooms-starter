@@ -125,9 +125,13 @@ export function ceilingTexture(base) {
 }
 
 // Die Leuchte selbst: helles Feld mit Raster
+// Eine Leuchte von unten: Sie ist viel heller als alles um sie her, darum
+// sieht ihre Mitte fast weiß aus, auch bei farbigem Licht; nur Raster und Rand
+// haben ihre Farbe. Sonst verschwände eine rote Leuchte an ihrer roten Decke.
 export function lampTexture(color) {
+    const core = `#${new THREE.Color(color).lerp(new THREE.Color('#ffffff'), 0.65).getHexString()}`;
     return canvasTexture(128, (context, size) => {
-        context.fillStyle = shade(color, 1.0);
+        context.fillStyle = core;
         context.fillRect(0, 0, size, size);
         context.fillStyle = shade(color, 0.82);
         for (let i = 1; i < 4; i++) {
