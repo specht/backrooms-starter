@@ -18,7 +18,8 @@ const PASSES_PER_FRAME = 4;    // pro Bild, solange gebacken wird
 const DARK_SECONDS = 1.2;      // erst nur die Linien im Dunkeln
 const SWITCH_SECONDS = 2.0;    // dann gehen die Leuchten nacheinander an
 const FLICKER_CHANNELS = 4;    // so viele Gruppen flackern unabhängig voneinander
-const GLOW = 0.55;             // wie stark der Schein um eine Leuchte ist
+const GLOW = 0.55;               // wie stark der Schein um eine Leuchte ist
+const GLOW_PULL = 0.8;           // so viele Meter rückt der Schein auf dich zu
 
 const levelFile = params.get('level') ?? 'level.ini';
 // Was zu sehen ist: Jede Taste schaltet einen Teil an oder aus, ein Klick
@@ -687,17 +688,20 @@ async function start() {
         // ein weicher Schein, knapp unter der Leuchte, immer zu dir gewandt:
         // So blendet sie ein wenig, wie eine helle Fläche im Dunkeln. Eine
         // durchsichtige Fläche pro Leuchte, kein Nachbearbeiten des Bildes,
-        // darum auch mit Rot-Cyan-Brille und in VR. Er liegt über allem (sonst
-        // schnitte ihn die Decke ab); ob er zu sehen ist, sagt glowVisible.
+        // darum auch mit Rot-Cyan-Brille und in VR. Er rückt ein Stück auf
+        // dich zu (und wird dafür kleiner, sodass er gleich groß aussieht):
+        // So schneidet ihn die Decke um die Leuchte nicht ab, aber eine Säule
+        // vor der Leuchte verdeckt ihn. Hinter Wänden blendet glowVisible ihn aus.
         const glow = new THREE.Sprite(new THREE.SpriteMaterial({
             map: glowTexture(light.color), blending: THREE.AdditiveBlending, transparent: true,
-            depthWrite: false, depthTest: false, toneMapped: false, opacity: 0,
+            depthWrite: false, toneMapped: false, opacity: 0,
         }));
         glow.renderOrder = 4;
         glow.userData.seen = 0;
-        glow.position.copy(light.position).addScaledVector(down, light.kind === 'bulb' ? 0 : 0.06);
-        const span = light.kind === 'bulb' ? 0.7 : Math.max(...light.size) * 2.8;
-        glow.scale.set(span, span, 1);
+        glow.userData.anchor = light.position.clone().addScaledVector(down, light.kind === 'bulb' ? 0 : 0.06);
+        glow.userData.span = light.kind === 'bulb' ? 0.7 : Math.max(...light.size) * 2.8;
+        glow.position.copy(glow.userData.anchor);
+        glow.scale.set(glow.userData.span, glow.userData.span, 1);
         scene.add(glow);
         aboveRooms.push(glow);
         return { light, material, glow };
@@ -996,6 +1000,13 @@ async function start() {
             }
             // der Schein blendet weich ein und aus, wenn eine Wand dazwischenkommt
             const seen = glowVisible(eye, light.position) ? 1 : 0;
+            // bis zu GLOW_PULL auf dich zu, höchstens die Hälfte des Wegs, und so viel kleiner
+            const { anchor, span } = glow.userData;
+            const toEye = eye.clone().sub(anchor);
+            const distance = Math.max(toEye.length(), 1e-3);
+            const pull = Math.min(GLOW_PULL, distance * 0.5);
+            glow.position.copy(anchor).addScaledVector(toEye, pull / distance);
+            glow.scale.setScalar(span * (distance - pull) / distance);
             glow.userData.seen += (seen - glow.userData.seen) * Math.min(1, dt * 10);
             glow.material.opacity = on[i] ? GLOW * brightness * glow.userData.seen : 0;
         });
