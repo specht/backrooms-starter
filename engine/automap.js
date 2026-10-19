@@ -13,6 +13,12 @@ function roomColor() {
 // Ein Raumname als Schild: helle, nicht fette Schrift, nur ein Hauch der
 // Farbe des Raums, darunter ein schmaler Strich in seiner Farbe. Groß gezeichnet
 // (120 px), damit er auch aus der Nähe scharf bleibt; in der Welt 0,8 m hoch.
+// Wie die Karte beim Öffnen auf dich schaut: aus 17 m, um 35 Grad geneigt,
+// auf eine Stelle ein Viertel dieses Abstands vor dir
+const DISTANCE = 17;
+const ELEVATION = 0.6;
+const AHEAD = 0.25;
+
 function label(text, color) {
     const font = '500 120px system-ui, sans-serif';
     const canvas = document.createElement('canvas');
@@ -171,10 +177,10 @@ export class Automap {
         if (document.pointerLockElement) document.exitPointerLock();
         this.follow = true;
         this.offset.set(0, 0, 0);
-        this.center.set(this.player.position.x, 0, this.player.position.z);
+        this.center.set(this.player.position.x, this.player.position.y, this.player.position.z);
         this.azimuth = this.player.rotation.y;
-        this.elevation = 0.85;
-        this.distance = 14;
+        this.elevation = ELEVATION;
+        this.distance = DISTANCE;
         this.flight = null;
         if (eye) {
             eye.updateMatrixWorld(true);
@@ -216,11 +222,11 @@ export class Automap {
         }
         this.model.scale.setScalar(1);
         this.model.position.set(0, 0, 0);
-        this.center.set(this.player.position.x, 0, this.player.position.z).add(this.offset);
+        this.center.set(this.player.position.x, this.player.position.y, this.player.position.z).add(this.offset);
         if (this.follow) {
             // mit dir drehen und neigen: schaust du nach unten, sieht die Karte von oben
             this.azimuth = this.player.rotation.y;
-            this.elevation = THREE.MathUtils.clamp(0.85 - this.pitch(), -1.4, 1.5);
+            this.elevation = THREE.MathUtils.clamp(ELEVATION - this.pitch(), -1.4, 1.5);
         }
         const pulse = 1 + 0.25 * Math.sin(performance.now() / 180);
         this.you.scale.setScalar(pulse);
@@ -230,7 +236,9 @@ export class Automap {
             this.center.y + Math.sin(this.elevation) * this.distance,
             this.center.z + Math.cos(this.azimuth) * Math.cos(this.elevation) * this.distance,
         );
-        const target = this.center.clone();
+        // der Blick geht ein Stück vor dich: Du stehst unten im Bild, vor dir liegt das Level
+        const target = this.center.clone().add(new THREE.Vector3(
+            -Math.sin(this.azimuth), 0, -Math.cos(this.azimuth)).multiplyScalar(this.distance * AHEAD));
         if (this.flight) {
             // eine Sekunde lang von den Augen hierher, sanft an- und auslaufend
             const t = Math.min(1, (performance.now() - this.flight.start) / 1000);
