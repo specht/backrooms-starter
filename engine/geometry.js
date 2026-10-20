@@ -123,8 +123,8 @@ function addDetail(faces, boxes) {
 const SLAB_COLOR = '#8e8a80';   // die Decke zwischen zwei Räumen übereinander, am Rand eines Lochs
 const ROUND_SIDES = 32;         // so viele schmale Flächen hat eine runde Säule ringsum
 const ARCH_STEPS = 64;          // so viele Stücke hat der Halbkreis eines Bogens, wie breit er auch ist
-// Eine Tür zwischen zwei Räumen: innen (Laibung, Sturz, Gewölbe) heller Putz,
-// auf beiden Seiten der Wand um die Öffnung eine Bekleidung in der Farbe der
+// Eine Tür zwischen zwei Räumen: innen (Laibung, Sturz, Gewölbe) heller Putz;
+// mit casing = on auf beiden Seiten der Wand um die Öffnung eine Bekleidung in der Farbe der
 // Sockelleiste ihres Raums (ohne: hell gestrichen), so breit und so weit vor der Wand
 const LINING_COLOR = '#e4dfd4';
 const THRESHOLD_COLOR = '#cdc6b8';   // der Boden in der Tür: eine Schwelle aus hellem Stein, von Bekleidung zu Bekleidung
@@ -160,14 +160,15 @@ export function buildGeometry(level, modelBoxes = []) {
     // Raum dahinter): gezeichnet als feines Gitter, damit er genau auf der
     // Fläche liegt, mit der Strahlen und Füße rechnen
     const DOOR_GRID = 16;   // je Stück unter einem Grad Knick: Für Kanten zählt erst mehr (EDGE_ANGLE)
-    // Ein Durchgang: ein Feld mit Boden (eine Tür), quer zur Wand auf beiden
+    // Ein Durchgang mit Rahmen (casing = on): ein Feld mit Boden (eine Tür), quer zur Wand auf beiden
     // Seiten der Boden zweier verschiedener Räume, gleich hoch. Seine Hälften
     // gehören den Räumen, auf deren Seite sie liegen: Wand, Sockelleiste,
     // Boden und Decke wie dort. So sieht man der Wand ihre Dicke an, statt
     // dass ein Raum bis an die Tapete des anderen reicht. axis: quer durch
     // die Wand; near: der Raum auf der Seite der kleineren Zahl, far: der andere
     const passage = (x, z, k) => {
-        if (!level.doorAt(x, z, k) || at(x, z, k) !== 'floor' || level.twistedDoors.has(level.index(x, z, k)) || level.poolAt(x, z, k) || level.liftAt(x, z, k)) return null;
+        // nur eine Tür mit casing = on hat einen Rahmen; jede andere gehört dem Raum, dem ihr Feld gehört
+        if (!level.framedDoorAt(x, z, k) || !level.doorAt(x, z, k) || at(x, z, k) !== 'floor' || level.twistedDoors.has(level.index(x, z, k)) || level.poolAt(x, z, k) || level.liftAt(x, z, k)) return null;
         const own = roomOf(x, z, k);
         for (const [axis, a, b] of [['z', [x, z - 1], [x, z + 1]], ['x', [x - 1, z], [x + 1, z]]]) {
             if (at(a[0], a[1], k) !== 'floor' || at(b[0], b[1], k) !== 'floor') continue;
@@ -480,8 +481,8 @@ export function buildGeometry(level, modelBoxes = []) {
                 const corner = (p, out) => {
                     const cellAt = (side) => [Math.floor(p[0] + out[0] * 0.5 + n[0] * 0.5 * side), Math.floor(p[1] + out[1] * 0.5 + n[2] * 0.5 * side)];
                     const probe = (side) => at(...cellAt(side), layer);
-                    // an einer Tür endet sie unter der Bekleidung
-                    if (probe(-1) === 'floor' && passage(...cellAt(-1), layer)) return 'straight';
+                    // an einer Tür mit Bekleidung endet sie unter ihr
+                    if (probe(-1) === 'floor' && passage(...cellAt(-1), layer) && level.framedDoorAt(...cellAt(-1), layer)) return 'straight';
                     if (probe(-1) === 'floor') return 'outer';
                     if (probe(1) !== 'floor') return 'inner';
                     return 'straight';
@@ -566,7 +567,7 @@ export function buildGeometry(level, modelBoxes = []) {
         for (let z = 0; z < depth; z++) {
             for (let x = 0; x < width; x++) {
                 const pass = passage(x, z, k);
-                if (!pass || level.bareDoorAt(x, z, k)) continue;
+                if (!pass || !level.framedDoorAt(x, z, k)) continue;
                 const alongX = pass.axis === 'z';
                 const world = (a, y, c) => (alongX ? [a, y, c] : [c, y, a]);
                 const dir = (da, dy, dc) => (alongX ? [da, dy, dc] : [dc, dy, da]);

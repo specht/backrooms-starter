@@ -16,6 +16,9 @@ import { buildGrid, LightBaker, lightRange, channelColors } from './bake.js';
 import { wallpaperTexture, carpetTexture, ceilingTexture, lampTexture, plainTexture, marbleTexture, woodTexture, tileTexture, velvetTexture, glowTexture } from './textures.js';
 import { Walker } from './controls.js';
 import { Automap, LINE_COLOR } from './automap.js';
+import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
+import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
+import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { fingerprint, encodeLight, findLight, writeCache, download, lightFileName } from './lightstore.js';
 import { VHSPass } from './vhs.js';
 import { LensPass } from './lens.js';
@@ -424,12 +427,12 @@ function bounceModels(models, baker, parts) {
 
 // Wie fleckig jede Art Fläche ist (stains in surfaceMaterial): Tapete,
 // Teppich und Decke am meisten, Glattes weniger
-const GRIME = { wallpaper: 1, carpet: 1, ceiling: 0.9, plain: 0.7, tiles: 0.45, wood: 0.4, velvet: 0.35, marble: 0.3 };
+const GRIME = { wallpaper: 1, carpet: 1, ceiling: 0.9, plain: 0.7, tiles: 0.45, wood: 0.4, velvet: 0.35, marble: 0.3, cardboard: 0.6 };
 
 // Wand, Boden und Decke: Textur mal Licht aus den beiden Lichtkarten
 // Holz, Fliesen und Marmor rechnet der Shader selbst, aus der Stelle in der
 // Welt: Kein Brett, keine Fliese und keine Ader wiederholt sich (SHADER_STYLES)
-const SHADER_STYLES = { wood: 1, tiles: 2, marble: 3 };
+const SHADER_STYLES = { wood: 1, tiles: 2, marble: 3, cardboard: 4 };
 // Glänzende Flächen spiegeln die Leuchten ihres Raums (GLOSS: wie sehr; bis zu MIRRORED Leuchten je Raum)
 const GLOSS = { tiles: 1, marble: 0.6 };
 const MIRRORED = 16;
@@ -594,8 +597,21 @@ function surfaceMaterial(map, baker, uniforms, grime = 1, style = null, color = 
                 float cloud = 0.94 + 0.06 * noise3(p * 4.0);
                 return pow(vec3(0.941, 0.925, 0.894) * cloud * (1.0 - strength * lines), vec3(2.2));
             }
+            // Pappe: Kraftpapier mit Flecken und feinen Fasern, und über die Mitte
+            // des Felds ein Streifen Klebeband, oben und an den Seiten nach Norden
+            // und Süden (eine Kiste steht mitten auf ihrem Feld)
+            vec3 cardboard(vec3 p, vec3 n) {
+                float aa = length(fwidth(p)) + 1e-5;
+                float blotch = noise3(p * 3.0);
+                float fibre = noise3(vec3(p.x * 70.0, p.y * 6.0, p.z * 70.0)) * clamp(1.0 - aa * 60.0, 0.0, 1.0);
+                vec3 color = baseColor * (0.9 + 0.08 * blotch + 0.05 * (fibre - 0.5));
+                float across = abs(fract(p.x) - 0.5);
+                float onTape = abs(n.x) < 0.5 ? 1.0 - smoothstep(0.035 - aa, 0.035 + aa, across) : 0.0;
+                color = mix(color, baseColor * vec3(1.2, 1.1, 0.9), onTape * 0.85);
+                return pow(min(color, vec3(1.0)), vec3(2.2));
+            }
             void main() {
-                vec3 surface = style == 1 ? wood(vUv) : style == 2 ? tiles(vUv) : style == 3 ? marble(vWorld) : texture2D(map, vUv * mapScale).rgb;
+                vec3 surface = style == 1 ? wood(vUv) : style == 2 ? tiles(vUv) : style == 3 ? marble(vWorld) : style == 4 ? cardboard(vWorld, vNormal) : texture2D(map, vUv * mapScale).rgb;
                 vec3 base = useTexture ? stains(surface, vWorld) : vec3(0.8);
                 vec4 steady = texture2D(steadyMap, vLightUv);
                 vec4 flickering = texture2D(flickerMap, vLightUv);
@@ -978,11 +994,12 @@ async function start() {
         if (kind === 'ceiling') aboveRooms.push(surface);
     }
 
-    // Am Anfang ist es dunkel: feine Linien an allen Kanten zeigen den Raum,
-    // bis das Licht da ist, dann verblassen sie.
-    const blueprint = new THREE.LineBasicMaterial({ color: LINE_COLOR, transparent: true, opacity: 0.85, toneMapped: false });   // dasselbe Blau wie in der Automap
+    // Am Anfang ist es dunkel: Linien an allen Kanten zeigen den Raum, bis das
+    // Licht da ist, dann verblassen sie; E zeigt sie wieder. Dasselbe Blau wie
+    // in der Automap, so breit (Pixel), dass man sie auch auf hellen Wänden sieht
+    const blueprint = new LineMaterial({ color: LINE_COLOR, linewidth: 2 * renderer.getPixelRatio(), transparent: true, opacity: 0.85, toneMapped: false });
     for (const { kind, room, geometry: mesh } of geometry.meshes) {
-        const lines = new THREE.LineSegments(new THREE.EdgesGeometry(mesh, EDGE_ANGLE), blueprint);
+        const lines = new LineSegments2(new LineSegmentsGeometry().fromEdgesGeometry(new THREE.EdgesGeometry(mesh, EDGE_ANGLE)), blueprint);
         lines.userData.room = room;
         scene.add(lines);
         if (kind === 'ceiling') aboveRooms.push(lines);
@@ -1386,7 +1403,7 @@ async function start() {
         // Leuchten angehen.
         const shown = THREE.MathUtils.clamp((t - DARK_SECONDS) / (SWITCH_SECONDS + 0.5), 0, 1);
         const baked = lightSource ? shown : baker.done ? 1 : baker.progress;
-        blueprint.opacity = parts.wireframe ? 0.85 : 0.85 * (1 - baked);
+        blueprint.opacity = parts.wireframe ? 1 : 0.85 * (1 - baked);
         for (const mesh of modelMeshes) {
             if (parts.textures) mesh.material.color.copy(mesh.userData.baseColor);
             else mesh.material.color.setScalar(0.8);

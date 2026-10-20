@@ -63,7 +63,7 @@ const LIGHT_DEFAULTS = {
 };
 
 // Woraus ein Block sein kann (material = …): dieselben Arten wie Wände
-const BLOCK_MATERIALS = ['wallpaper', 'marble', 'wood', 'tiles', 'velvet', 'plain'];
+const BLOCK_MATERIALS = ['wallpaper', 'marble', 'wood', 'tiles', 'velvet', 'plain', 'cardboard'];
 
 const BLOCK_DEFAULTS = {
     shape: 'box',         // box: ein Quader, round: eine Säule (rund, oder oval, wenn Breite und Tiefe verschieden sind)
@@ -81,7 +81,7 @@ const POOL_DEFAULTS = {
     water: 0.15,          // so tief unter dem Boden liegt das Wasser, in Metern; off: ein leeres Becken
     railing: 'off',       // on: ein Geländer aus Metall rundherum, wo man am Rand steht
     color: '#bcd8da',     // die Fliesen des Beckens
-    tint: '#bff0f3',      // die Farbe des Wassers: So sieht Weiß hinter 2 m Wasser aus
+    tint: '#86b8b5',      // die Farbe des Wassers: So sieht Weiß hinter 2 m Wasser aus
     waves: 1,             // wie groß die Wellen sind: 1 ruhig, 2 größer und schneller, 0 glatt
     rim: null,            // ein Rand aus Fliesen um das Becken: höhe, breite, zum Beispiel 0.2, 0.3
 };
@@ -286,7 +286,7 @@ function parseRoom(id, source) {
             }
             doors[char].arch = { height, width: wide, line: section.line };
         }
-        // casing = off: ohne Bekleidung um die Öffnung (geometry.js), auf beiden Seiten
+        // casing = on: eine Bekleidung um die Öffnung (geometry.js), auf beiden Seiten
         const casing = values(section).casing;
         if (casing !== undefined) {
             if (!['on', 'off'].includes(String(casing))) throw new LevelError(file, section.line, `casing = ${casing}: expected on or off.`);
@@ -842,11 +842,11 @@ export async function loadLevel(levelFile, fetchText) {
     // halbe Breite. Je Feld der Tür: wo es im Bogen liegt (u0 bis u1, Meter
     // von seinem Anfang), entlang welcher Achse der Bogen geht, und wie hoch
     // er an einer Stelle ist.
-    // Türen ohne Bekleidung (casing = off bei einer der beiden Seiten)
-    const bare = new Set();   // Feld (mit Schicht)
+    // Türen mit Bekleidung (casing = on bei einer der beiden Seiten)
+    const framed = new Set();   // Feld (mit Schicht)
     for (const edge of edges) {
-        if (edge.hole || edge.back || (edge.da.casing ?? edge.db.casing ?? true)) continue;
-        for (const c of edge.da.cells) for (let k = 0; k < cells.length / size; k++) bare.add(index(edge.a.ox + c.x, edge.a.oz + c.z, k));
+        if (edge.hole || edge.back || !(edge.da.casing ?? edge.db.casing ?? false)) continue;
+        for (const c of edge.da.cells) for (let k = 0; k < cells.length / size; k++) framed.add(index(edge.a.ox + c.x, edge.a.oz + c.z, k));
     }
     arches = new Map();   // Feld (mit Schicht) -> Bogen
     for (const edge of edges) {
@@ -1034,8 +1034,8 @@ export async function loadLevel(levelFile, fetchText) {
         lift,
         lifts,
         // die Treppe oder das Podest an einem Feld in Schicht k, oder null
-        // eine Tür ohne Bekleidung (casing = off)
-        bareDoorAt: (x, z, k = 0) => bare.has(index(x, z, k)),
+        // eine Tür mit Bekleidung (casing = on)
+        framedDoorAt: (x, z, k = 0) => framed.has(index(x, z, k)),
         // ein Feld mit einer Tür (in Schicht k)
         doorAt: (x, z, k = 0) => x >= 0 && z >= 0 && x < width && z < depth && doorCells.has(index(x, z, k)),
         liftAt: (x, z, k = 0) => (x < 0 || z < 0 || x >= width || z >= depth ? null : lifted.get(index(x, z, k)) ?? null),

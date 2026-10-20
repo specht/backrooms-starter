@@ -187,10 +187,11 @@ place at the same height, is reported with the file and the line.
 makes the arch only 0.8 m wide, in the middle of the door, with wall beside
 it. Either side of the door may say it.
 
-A door is as deep as the wall, one field. Its reveal (sides, lintel, vault)
-is light plaster, and on each face of the wall a casing frames the opening,
-in the colour of that room's skirting board, or painted light without one.
-`casing = off` in a door's section leaves it out on both sides.
+A door is as deep as the wall, one field, and looks like the room that field
+belongs to. `casing = on` in a door's section gives it a frame: a reveal
+(sides, lintel, vault) of light plaster, a threshold of light stone, and on
+each face of the wall a casing round the opening, in the colour of that
+room's skirting board (painted light without one), straight or along the arch.
 
 Rooms may lie on top of each other: a ramp leads up one storey, and the room
 up there may lie over the one below, as long as its floor is not below that
@@ -248,7 +249,7 @@ A lamp hangs just below the ceiling, in the middle of its field.
 wide, 6 m high and 0.9 m deep, in the middle of its field: a column.
 `base` lifts it off the floor, `color` paints it (without a colour, it has the
 room's wallpaper). `material` makes it of `marble`, `wood`, `tiles`, `velvet`,
-`wallpaper` or `plain`, whatever the room's walls are, in the colour of
+`wallpaper`, `plain` or `cardboard` (a box with a strip of tape over the middle of its field), whatever the room's walls are, in the colour of
 `color` or the room's wallpaper. `shape = round` makes it a round column (an
 oval one when width and depth differ).
 
@@ -312,7 +313,7 @@ railing = on
 <table>
 <tr><td><code>pool</code></td><td>depth below the floor, 0.2 to 20 metres</td></tr>
 <tr><td><code>water</code></td><td>how far below the floor the water stands (0.15); <code>off</code>: an empty pool</td></tr>
-<tr><td><code>tint</code></td><td>the colour of the water: what white looks like behind 2 m of it (<code>#bff0f3</code>, clear); <code>#6f8f5a</code> is murky</td></tr>
+<tr><td><code>tint</code></td><td>the colour of the water: what white looks like behind 2 m of it (<code>#86b8b5</code>, blue-green); <code>#6f8f5a</code> is murky</td></tr>
 <tr><td><code>color</code></td><td>the tiles of the pool (<code>#bcd8da</code>)</td></tr>
 <tr><td><code>railing</code></td><td><code>on</code>: a metal railing wherever you can stand at the edge</td></tr>
 <tr><td><code>waves</code></td><td>how big the waves are: 1 calm (the default), 2 bigger, steeper and faster, 0 smooth</td></tr>
