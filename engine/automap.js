@@ -19,7 +19,7 @@ const UNDER_CEILING = 0.55;
 const UNDER_CEILING_WIDTH = 0.9;
 
 // Eine Farbe für alles auf der Karte, wie eine Blaupause auf Schwarz
-const LINE_COLOR = '#6fd3ff';
+export const LINE_COLOR = '#6fd3ff';   // die Linien der Karte, und die Kanten im Bild (E, main.js)
 function roomColor() {
     return new THREE.Color(LINE_COLOR);
 }

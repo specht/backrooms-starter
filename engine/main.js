@@ -15,7 +15,7 @@ import { buildGeometry, EDGE_ANGLE } from './geometry.js';
 import { buildGrid, LightBaker, lightRange, channelColors } from './bake.js';
 import { wallpaperTexture, carpetTexture, ceilingTexture, lampTexture, plainTexture, marbleTexture, woodTexture, tileTexture, velvetTexture, glowTexture } from './textures.js';
 import { Walker } from './controls.js';
-import { Automap } from './automap.js';
+import { Automap, LINE_COLOR } from './automap.js';
 import { fingerprint, encodeLight, findLight, writeCache, download, lightFileName } from './lightstore.js';
 import { VHSPass } from './vhs.js';
 import { LensPass } from './lens.js';
@@ -980,7 +980,7 @@ async function start() {
 
     // Am Anfang ist es dunkel: feine Linien an allen Kanten zeigen den Raum,
     // bis das Licht da ist, dann verblassen sie.
-    const blueprint = new THREE.LineBasicMaterial({ color: '#fff4c4', transparent: true, opacity: 0.85, toneMapped: false });
+    const blueprint = new THREE.LineBasicMaterial({ color: LINE_COLOR, transparent: true, opacity: 0.85, toneMapped: false });   // dasselbe Blau wie in der Automap
     for (const { kind, room, geometry: mesh } of geometry.meshes) {
         const lines = new THREE.LineSegments(new THREE.EdgesGeometry(mesh, EDGE_ANGLE), blueprint);
         lines.userData.room = room;
