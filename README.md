@@ -68,6 +68,7 @@ Shift+L, or `?rebake` in the address, bakes the light again in any case.
 <tr><td>H</td><td>bloom: very bright light glows into its surroundings, as in a camera (on; not with red-cyan glasses, in VR or in the automap)</td></tr>
 <tr><td>C</td><td>VHS: as if filmed with an old camcorder, with scan lines, smeared colours, a rolling tracking band and today's date and time on the tape (off; not with red-cyan glasses, in VR or in the automap)</td></tr>
 <tr><td>X</td><td>chromatic aberration: coloured fringes towards the edges, red outwards, blue inwards, as through a simple lens (off; not with red-cyan glasses, in VR or in the automap)</td></tr>
+<tr><td>K</td><td>collision: what stops you while walking, as red boxes (blocks, statues and models, railings, the wall beside a narrow arch; a round column as a cylinder), and your circle on the floor with the eight points at which the program looks for a floor to step on, green if there is one, red if not (off)</td></tr>
 <tr><td>3</td><td>anaglyph for red-cyan glasses on/off</td></tr>
 <tr><td>M or Tab</td><td>automap: the whole building as a wireframe; drag to turn it, Shift+drag to move it, mouse wheel to zoom, V shows the rooms themselves from above instead, U shows which rooms are drawn from where you stand (the others pale, the portals you look through orange), Esc to close</td></tr>
 <tr><td>Shift+L</td><td>bake the light again</td></tr>

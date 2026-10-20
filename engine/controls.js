@@ -3,7 +3,7 @@
 // halten dich auf.
 import * as THREE from 'three';
 
-const RADIUS = 0.25;      // so breit bist du, in Metern
+export const RADIUS = 0.25;   // so breit bist du, in Metern (ein Kreis um deine Füße)
 const EYE_HEIGHT = 1.6;   // Augenhöhe am Rechner
 const STICK_RADIUS = 55;  // so weit (Pixel) schiebt der Daumen den Stick bis zum Anschlag
 const TOUCH_TURN = 0.005; // so viel dreht ein Pixel Wischen (Bogenmaß)

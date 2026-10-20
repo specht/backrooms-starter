@@ -22,6 +22,7 @@ import { LensPass } from './lens.js';
 import { Water } from './water.js';
 import { railing, liftRailing } from './railing.js';
 import { Portals } from './portals.js';
+import { collisionView } from './collision.js';
 
 const params = new URLSearchParams(location.search);
 const PASSES_PER_FRAME = 4;    // pro Bild, solange gebacken wird
@@ -51,6 +52,7 @@ const PARTS = [
     { name: 'bloom', key: 'KeyH', label: 'Bloom' },
     { name: 'vhs', key: 'KeyC', label: 'VHS', on: false },
     { name: 'aberration', key: 'KeyX', label: 'Aberration', on: false },
+    { name: 'collision', key: 'KeyK', label: 'Collision', on: false },
 ];
 const status = document.getElementById('status');
 const title = document.getElementById('title');
@@ -1158,6 +1160,10 @@ async function start() {
     }
 
     const automap = new Automap(level, geometry, lights, statues, player, renderer, () => walker.pitch);
+    // K: was beim Laufen im Weg ist, im Bild und in der Automap (dort im Drahtgitter)
+    const collision = [collisionView(walker), collisionView(walker)];
+    scene.add(collision[0]);
+    automap.model.add(collision[1]);
     // ?automap öffnet die Karte, ?automap=... genau so, wie sie lag (rememberPlace)
     if (params.get('automap')) automap.restore(params.get('automap'));
     else if (params.has('automap')) automap.toggle();
@@ -1468,6 +1474,10 @@ async function start() {
         water.update(now, shown, renderer.xr.isPresenting || automap.active);
         walker.update(dt);
         rememberPlace();
+        for (const view of collision) {
+            view.visible = parts.collision;
+            if (view.visible) view.update();
+        }
         // Welche Räume von hier aus zu sehen sind; die Automap zeigt es mit U
         player.updateMatrixWorld(true);
         const start = level.roomAtPoint(player.position.x, player.position.z, player.position.y + 0.1);

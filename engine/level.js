@@ -1039,8 +1039,8 @@ function checkClosed(level) {
                 const room = rooms[level.roomAt(x, z, k)];
                 for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
                     if (kindAt(x + dx, z + dz, k) !== 'void') continue;
-                    const here = level.floorAt(x + 0.5, z + 0.5, room.index);
-                    const across = slabs(x + dx, z + dz).some((slab) => Math.abs(level.floorAt(x + dx + 0.5, z + dz + 0.5, slab.room) - here) < 1.0);
+                    const here = level.floorAt(x + 0.5, z + 0.5, room.index) - level.sunk(x, z, k) + level.lift(x, z, k);   // auf einem Podest: dessen Höhe
+                    const across = slabs(x + dx, z + dz).some((slab) => Math.abs(level.floorAt(x + dx + 0.5, z + dz + 0.5, slab.room) - level.sunk(x + dx, z + dz, slab.layer) + level.lift(x + dx, z + dz, slab.layer) - here) < 1.0);
                     if (across) continue;
                     throw new LevelError(room.file, null, `at column ${x - room.ox + 1}, row ${z - room.oz + 1} of the floor plan the floor has no wall next to it. Close the room with #.`);
                 }
