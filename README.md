@@ -219,6 +219,8 @@ just as a door places its neighbour. Whoever steps onto the hole falls.
 <tr><td><code>wallpaper</code>, <code>carpet</code>, <code>ceiling</code></td><td>colours, such as <code>#c9b458</code></td></tr>
 <tr><td><code>baseboard</code></td><td>the skirting board: height and colour, such as <code>0.08, #86763c</code>; without it, 8 cm and half as bright as the wallpaper; <code>none</code>: no skirting board</td></tr>
 <tr><td><code>dado</code></td><td>the lower part of the walls different: height and colour, such as <code>dado = 1.2, #1a1a1a</code>; <code>dado_material</code> says what it is made of (without: like the walls)</td></tr>
+<tr><td><code>dado_rail</code></td><td>a strip along the top of the dado: height and colour, such as <code>dado_rail = 0.05, #d8d0b8</code></td></tr>
+<tr><td><code>cornice</code></td><td>a crown moulding where wall and ceiling meet, slanted at 45°: height and colour, such as <code>cornice = 0.12, #e8e2d0</code></td></tr>
 <tr><td><code>look</code></td><td>where you look at the <code>@</code>: <code>north</code>, <code>east</code>, <code>south</code>, <code>west</code> or degrees, clockwise from north (<code>look = 30</code>: a little east of north)</td></tr>
 <tr><td><code>ambient</code></td><td>light from everywhere in this room (0 to 1), usually not needed</td></tr>
 </table>

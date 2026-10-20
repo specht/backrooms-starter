@@ -36,6 +36,8 @@ const ROOM_DEFAULTS = {
     baseboard: 'auto',    // Sockelleiste: höhe, farbe, zum Beispiel 0.08, #5a4626; ohne: 8 cm, dunkler als die Wand; none: keine
     dado: null,           // die Wand unten anders: höhe, farbe, zum Beispiel 1.2, #1a1a1a (dado_material: woraus, ohne: wie die Wände)
     dado_material: null,
+    dado_rail: null,      // eine Leiste auf der Höhe von dado: höhe, farbe, zum Beispiel 0.05, #d8d0b8
+    cornice: null,        // eine Leiste oben, wo Wand und Decke sich treffen: höhe, farbe, zum Beispiel 0.12, #e8e2d0
     ambient: null,        // Umgebungslicht nur in diesem Raum, sonst das aus level.ini
     look: null,           // wohin du am @ schaust: north, east, south, west oder Grad (0 = Norden, 90 = Osten)
 };
@@ -165,6 +167,16 @@ function parseRoom(id, source) {
         if (!BLOCK_MATERIALS.includes(material)) throw new LevelError(file, null, `dado_material = ${settings.dado_material} does not exist. Possible: ${BLOCK_MATERIALS.join(', ')}.`);
         settings.dado = { height: Number(height), color, material };
     }
+    // eine Leiste: höhe, farbe
+    for (const [key, example] of [['dado_rail', '0.05, #d8d0b8'], ['cornice', '0.12, #e8e2d0']]) {
+        if (settings[key] === null || settings[key] === undefined) continue;
+        const [height, color] = String(settings[key]).split(',').map((part) => part.trim());
+        if (!(Number(height) >= 0.01 && Number(height) <= 1) || !/^#[0-9a-f]{6}$/i.test(color ?? '')) {
+            throw new LevelError(file, null, `${key} = ${settings[key]}: expected how high the strip is (0.01 to 1 m) and its colour, for example ${key} = ${example}.`);
+        }
+        settings[key] = { height: Number(height), color };
+    }
+    if (settings.dado_rail && !settings.dado) throw new LevelError(file, null, 'dado_rail needs dado: the strip runs along its upper edge.');
     if (!SLOPES.includes(settings.slope)) throw new LevelError(file, null, `slope = ${settings.slope} does not exist. Possible: ${SLOPES.join(', ')}.`);
     if (settings.slope !== 'flat' && heights.length !== 2) throw new LevelError(file, null, 'a sloped ceiling needs two heights: height = low, high');
     if (settings.ramp !== null && settings.ramp !== undefined) {
@@ -223,6 +235,8 @@ function parseRoom(id, source) {
                 things.push(thing);
                 // pool bei einer Leuchte, einem Block oder einem Modell: das Feld liegt außerdem im Becken
                 if (thing.type !== 'pool' && values(entry).pool !== undefined) things.push(makePool(file, char, entry, values(entry), x, z));
+                // raise oder stairs bei einer Leuchte, einem Block oder einem Modell: das Feld liegt außerdem so hoch
+                if (thing.type !== 'lift' && (values(entry).raise !== undefined || values(entry).stairs !== undefined)) things.push(makeLift(file, char, entry, values(entry), x, z));
                 // pedestal = breite, höhe, tiefe: ein Sockel unter der Statue, im selben Feld
                 if (thing.type === 'model' && thing.pedestal !== undefined) {
                     const size = [thing.pedestal].flat();
@@ -335,22 +349,26 @@ function makeThing(file, char, section, x, z) {
         return block;
     }
     if (entries.pool !== undefined) return makePool(file, char, section, entries, x, z);
-    if (entries.stairs !== undefined || entries.raise !== undefined) {
-        // stairs = richtung, höhe: eine Treppe über diese Felder; raise = höhe: ein Podest
-        const lift = { type: 'lift', char, x, z, railing: String(entries.railing ?? 'off') === 'on', material: entries.material ?? null, color: entries.color ?? null, stairs: null, raise: null };
-        if (entries.stairs !== undefined) {
-            const [direction, rise] = String(entries.stairs).split(',').map((part) => part.trim());
-            if (!RAMPS.includes(direction) || !(Number(rise) > 0.1 && Number(rise) <= 20)) throw new LevelError(file, section.line, `stairs = ${entries.stairs}: expected a direction (${RAMPS.join(', ')}) and how many metres the stairs climb that way, for example stairs = east, 3.`);
-            lift.stairs = { direction, rise: Number(rise) };
-        } else {
-            if (!(typeof entries.raise === 'number' && entries.raise > 0.02 && entries.raise <= 20)) throw new LevelError(file, section.line, `raise = ${entries.raise}: expected how high the platform is, in metres, for example raise = 1.5.`);
-            lift.raise = entries.raise;
-        }
-        if (!['on', 'off'].includes(String(entries.railing ?? 'off'))) throw new LevelError(file, section.line, `railing = ${entries.railing}: expected on or off.`);
-        if (lift.material !== null && !BLOCK_MATERIALS.includes(lift.material)) throw new LevelError(file, section.line, `material = ${lift.material} does not exist. Possible: ${BLOCK_MATERIALS.join(', ')}.`);
-        return lift;
-    }
+    if (entries.stairs !== undefined || entries.raise !== undefined) return makeLift(file, char, section, entries, x, z);
     throw new LevelError(file, section.line, `[${char}] needs light = ... (a lamp), block = ... (a block), model = ... (a statue), pool = ... (a pool), stairs = ... or raise = ... (stairs, a platform).`);
+}
+
+// stairs = richtung, höhe: eine Treppe über diese Felder; raise = höhe: ein
+// Podest. Steht es bei einer Leuchte, einem Block oder einem Modell, liegt das
+// Feld außerdem so hoch (ein Stuhl auf einem Podest).
+function makeLift(file, char, section, entries, x, z) {
+    const lift = { type: 'lift', char, x, z, railing: String(entries.railing ?? 'off') === 'on', material: entries.material ?? null, color: entries.color ?? null, stairs: null, raise: null };
+    if (entries.stairs !== undefined) {
+        const [direction, rise] = String(entries.stairs).split(',').map((part) => part.trim());
+        if (!RAMPS.includes(direction) || !(Number(rise) > 0.1 && Number(rise) <= 20)) throw new LevelError(file, section.line, `stairs = ${entries.stairs}: expected a direction (${RAMPS.join(', ')}) and how many metres the stairs climb that way, for example stairs = east, 3.`);
+        lift.stairs = { direction, rise: Number(rise) };
+    } else {
+        if (!(typeof entries.raise === 'number' && entries.raise > 0.02 && entries.raise <= 20)) throw new LevelError(file, section.line, `raise = ${entries.raise}: expected how high the platform is, in metres, for example raise = 1.5.`);
+        lift.raise = entries.raise;
+    }
+    if (!['on', 'off'].includes(String(entries.railing ?? 'off'))) throw new LevelError(file, section.line, `railing = ${entries.railing}: expected on or off.`);
+    if (lift.material !== null && !BLOCK_MATERIALS.includes(lift.material)) throw new LevelError(file, section.line, `material = ${lift.material} does not exist. Possible: ${BLOCK_MATERIALS.join(', ')}.`);
+    return lift;
 }
 
 // pool = tiefe: ein Becken, so tief unter dem Boden (in Metern); water = so
@@ -742,12 +760,29 @@ export async function loadLevel(levelFile, fetchText) {
                 if (group.cells.length !== (group.x1 - group.x0 + 1) * (group.z1 - group.z0 + 1)) throw new LevelError(room.file, null, `the stairs ${thing.char} need a rectangle of fields.`);
                 const alongX = ['east', 'west'].includes(group.stairs.direction);
                 group.length = ((alongX ? group.x1 - group.x0 : group.z1 - group.z0) + 1) * settings.cell;
-                group.steps = Math.max(1, Math.round(group.stairs.rise / STAIR_STEP));
-                group.stepHeight = group.stairs.rise / group.steps;
-                group.tread = group.length / group.steps;
+                group.base = 0;
             }
             lifts.push(group);
         }
+    }
+    // Eine Treppe beginnt auf der Höhe dessen, was an ihrem unteren Ende liegt:
+    // dem Boden oder einem Podest (einem Absatz). stairs = richtung, höhe heißt
+    // dann: hinauf bis auf diese Höhe. So geht es um eine Ecke weiter.
+    for (const group of lifts.filter((g) => g.stairs)) {
+        const { direction } = group.stairs;
+        const before = { east: [group.x0 - 1, null], west: [group.x1 + 1, null], south: [null, group.z0 - 1], north: [null, group.z1 + 1] }[direction];
+        const xs = before[0] === null ? [...Array(group.x1 - group.x0 + 1).keys()].map((i) => group.x0 + i) : [before[0]];
+        const zs = before[1] === null ? [...Array(group.z1 - group.z0 + 1).keys()].map((i) => group.z0 + i) : [before[1]];
+        let base = 0;
+        for (const x of xs) for (const z of zs) {
+            const below = lifted.get(index(x, z, group.layer));
+            if (below?.raise) base = Math.max(base, below.raise);
+        }
+        if (base >= group.stairs.rise - 0.05) throw new LevelError(roomList[group.room].file, null, `the stairs ${group.char} start at ${base} m (on the platform at their lower end) and so cannot climb to ${group.stairs.rise} m.`);
+        group.base = base;
+        group.steps = Math.max(1, Math.round((group.stairs.rise - base) / STAIR_STEP));
+        group.stepHeight = (group.stairs.rise - base) / group.steps;
+        group.tread = group.length / group.steps;
     }
     // Wie weit eine Stelle (px, pz in Feldern) über dem Boden ihres Raums liegt:
     // auf einem Podest, einer Stufe oder dem Rand eines Beckens (rim)
@@ -755,7 +790,7 @@ export async function loadLevel(levelFile, fetchText) {
         const { direction } = group.stairs, cell = settings.cell;
         const u = direction === 'east' ? (px - group.x0) * cell : direction === 'west' ? (group.x1 + 1 - px) * cell
             : direction === 'south' ? (pz - group.z0) * cell : (group.z1 + 1 - pz) * cell;
-        return Math.min(group.stairs.rise, (Math.floor(Math.max(0, u) / group.tread + 1e-6) + 1) * group.stepHeight);
+        return Math.min(group.stairs.rise, group.base + (Math.floor(Math.max(0, u) / group.tread + 1e-6) + 1) * group.stepHeight);
     };
     const lift = (x, z, k, px = x + 0.5, pz = z + 0.5) => {
         const group = lifted.get(index(x, z, k));

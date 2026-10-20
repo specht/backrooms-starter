@@ -250,6 +250,21 @@ export function buildGeometry(level, statueBoxes = []) {
             faces.push({ kind: 'baseboard', color: board.color, room, corners: c, normal: faceNormal(c), w: texels(sw), h: texels(sh) });
         }
     };
+    // Eine Leiste oben (cornice), wo die Wand von p nach q (in Feldern) an die
+    // Decke stößt (bei topP und topQ): ein Streifen schräg, 45° zwischen Wand und Decke
+    const crown = (room, direction, p, q, topP, topQ) => {
+        const cornice = level.rooms[room].settings.cornice;
+        if (!cornice) return;
+        const n = INWARD[direction], hgt = cornice.height;
+        const length = Math.hypot(q[0] - p[0], q[1] - p[1]) * cell;
+        let c = [[p[0] * cell, topP - hgt, p[1] * cell], [q[0] * cell, topQ - hgt, q[1] * cell],
+            [q[0] * cell + n[0] * hgt, topQ, q[1] * cell + n[2] * hgt], [p[0] * cell + n[0] * hgt, topP, p[1] * cell + n[2] * hgt]];
+        // zeigt schräg nach unten in den Raum
+        const want = [n[0], -1, n[2]];
+        if (faceNormal(c).reduce((sum, v, k) => sum + v * want[k], 0) < 0) c = [c[0], c[3], c[2], c[1]];
+        const normal = faceNormal(c);
+        if (normal.some((v) => v !== 0)) faces.push({ kind: 'baseboard', color: cornice.color, room, corners: c, normal, w: texels(length), h: texels(hgt * 1.42) });
+    };
     // Die Wand vor einer runden Tür, auf der Seite des Raums room (die Kante
     // direction/line/along, top: die Decke dort): neben dem Bogen ganz Wand,
     // mit Sockelleiste, über ihm eine Fläche, deren Unterkante ihm folgt.
@@ -271,6 +286,7 @@ export function buildGeometry(level, statueBoxes = []) {
                     [q[0] * cell, top(q[0], q[1]), q[1] * cell], [p[0] * cell, top(p[0], p[1]), p[1] * cell]];
                 add('wall', room, corners, texels(length), texels(Math.max(top(p[0], p[1]), top(q[0], q[1])) - arch.floor));
                 skirting(room, direction, p, q, arch.floor);
+                crown(room, direction, p, q, top(p[0], p[1]), top(q[0], q[1]));
                 continue;
             }
             // über dem Bogen: unten rund, oben die Decke
@@ -282,6 +298,7 @@ export function buildGeometry(level, statueBoxes = []) {
             const steps = Math.max(8, Math.ceil(ARCH_STEPS * (t1 - t0) * cell / (2 * arch.radius)));
             const highest = Math.max(top(p[0], p[1]), top(q[0], q[1])) - arch.spring;
             curved('wall', room, shape, steps, length, Math.max(highest, 0.2));
+            crown(room, direction, p, q, top(p[0], p[1]), top(q[0], q[1]));
         }
     };
     for (let k = 0; k < layers; k++) {
@@ -342,6 +359,8 @@ export function buildGeometry(level, statueBoxes = []) {
                         if (slab && normal.some((v) => v !== 0)) faces.push({ kind: 'block', color: SLAB_COLOR, material: 'plain', room, corners, normal, w, h });
                         else if (!slab) {
                             add('wall', room, corners, w, h);
+                            // reicht die Wand bis an die eigene Decke (über einer Tür): oben die Leiste
+                            if (Math.abs(high[0] - top[0]) < 1e-3 && Math.abs(high[1] - top[1]) < 1e-3) crown(room, direction, a, b, high[0], high[1]);
                             // die Wand unter einer hohen Tür steht auf dem Boden: mit Sockelleiste
                             const flat = Math.abs(bottom[0] - bottom[1]) < 1e-3 && Math.abs(low[0] - bottom[0]) < 1e-3 && Math.abs(low[1] - bottom[1]) < 1e-3;
                             if (flat && high[0] - low[0] > 1 && !level.poolAt(x, z, k)) skirting(room, direction, a, b, bottom[0]);
@@ -379,6 +398,7 @@ export function buildGeometry(level, statueBoxes = []) {
                 [b[0] * cell, hb, b[1] * cell], [a[0] * cell, ha, a[1] * cell]],
                 texels(length), texels(Math.max(ha - fa0, hb - fb0)));
             // Sockelleiste: vorne und oben, 1,5 cm vor der Wand
+            crown(room, direction, a, b, ha, hb);
             const board = pool ? null : level.rooms[room].settings.baseboard;
             if (board) {
                 const n = INWARD[direction], depthOut = 0.015, y = board.height;
@@ -470,9 +490,12 @@ export function buildGeometry(level, statueBoxes = []) {
             if (normal.some((v) => v !== 0)) faces.push({ kind, room, corners, normal, w: texels(sw), h: texels(sh), material, color });
         };
         const inGroup = (x, z) => level.liftAt(x, z, k) === group;
-        // wie hoch der Boden auf der anderen Seite einer Kante liegt (oder null: Wand)
+        // wie hoch der Boden auf der anderen Seite einer Kante liegt (oder null:
+        // Wand); neben einem Becken nur bis zu seinem Rand: Darunter baut das
+        // Becken seine Wand
         const across = (x, z, px, pz) => {
             if (level.kindAt(x, z, k) !== 'floor') return null;
+            if (level.poolAt(x, z, k)) return level.floorAt(px, pz, level.roomAt(x, z, k));
             return level.floorAt(px, pz, level.roomAt(x, z, k)) - level.sunk(x, z, k) + level.lift(x, z, k, px, pz);
         };
         if (group.raise !== null) {
@@ -503,7 +526,7 @@ export function buildGeometry(level, statueBoxes = []) {
         const facing = (corners, want) => (faceNormal(corners).reduce((sum, v, i) => sum + v * want[i], 0) < 0 ? [corners[0], corners[3], corners[2], corners[1]] : corners);
         const forward = alongX ? [sign, 0, 0] : [0, 0, sign];
         for (let i = 0; i < group.steps; i++) {
-            const u0 = i * group.tread, u1 = (i + 1) * group.tread, y0 = floor + i * group.stepHeight, y1 = floor + (i + 1) * group.stepHeight;
+            const u0 = i * group.tread, u1 = (i + 1) * group.tread, y0 = floor + group.base + i * group.stepHeight, y1 = floor + group.base + (i + 1) * group.stepHeight;
             // Tritt (oben) und Stirn (vorn, zur unteren Seite hin)
             put(facing([at(u0, y1, w0), at(u1, y1, w0), at(u1, y1, w1), at(u0, y1, w1)], [0, 1, 0]), group.tread, w1 - w0, true);
             put(facing([at(u0, y0, w0), at(u0, y0, w1), at(u0, y1, w1), at(u0, y1, w0)], forward.map((v) => -v)), w1 - w0, group.stepHeight, true);
@@ -581,7 +604,7 @@ export function buildGeometry(level, statueBoxes = []) {
         // Streifen entlang x um die Ecke, an einer Ecke nach innen hört er früher auf.
         if (pool.rim) {
             const [rh, rw] = pool.rim, y0 = level.rooms[room].elevation, y1 = y0 + rh;
-            const standing = (x, z) => level.kindAt(x, z, k) === 'floor' && !level.poolAt(x, z, k);
+            const standing = (x, z) => level.kindAt(x, z, k) === 'floor' && !level.poolAt(x, z, k) && !level.liftAt(x, z, k);
             for (const { x, z } of pool.cells) {
                 for (const [dx, dz] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
                     if (!standing(x + dx, z + dz)) continue;
@@ -669,7 +692,20 @@ export function buildGeometry(level, statueBoxes = []) {
         const length = Math.hypot(c1[0] - c0[0], c1[2] - c0[2]);
         const lower = { ...face, kind: 'block', color: dado.color, material: dado.material, corners: [c0, c1, lift(c1), lift(c0)], w: texels(length), h: texels(dado.height) };
         const upper = { ...face, corners: [lift(c0), lift(c1), c2, c3], h: texels(Math.max(c3[1] - c0[1], c2[1] - c1[1]) - dado.height) };
-        return [lower, upper];
+        const rail = level.rooms[face.room].settings.dado_rail;
+        if (!rail) return [lower, upper];
+        // die Leiste auf der Kante: vorn, oben und unten, 2 cm vor der Wand
+        const n = face.normal, o = 0.02, half = rail.height / 2;
+        const at = (c, dy, out) => [c[0] + n[0] * out, c[1] + dado.height + dy, c[2] + n[2] * out];
+        const strip = (corners, want, sh) => {
+            let c = corners;
+            if (faceNormal(c).reduce((sum, v, k) => sum + v * want[k], 0) < 0) c = [c[0], c[3], c[2], c[1]];
+            return { kind: 'baseboard', color: rail.color, material: null, room: face.room, corners: c, normal: faceNormal(c), w: texels(length), h: texels(sh) };
+        };
+        return [lower, upper,
+            strip([at(c0, -half, o), at(c1, -half, o), at(c1, half, o), at(c0, half, o)], n, rail.height),
+            strip([at(c0, half, 0), at(c1, half, 0), at(c1, half, o), at(c0, half, o)], [0, 1, 0], 0.2),
+            strip([at(c0, -half, 0), at(c1, -half, 0), at(c1, -half, o), at(c0, -half, o)], [0, -1, 0], 0.2)];
     });
     faces = addDetail(faces, statueBoxes);
     const atlasSize = packRectangles(faces);

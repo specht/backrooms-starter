@@ -69,12 +69,13 @@ export function buildGrid(level, statues, maxHeight, maxTextureSize = 2048) {
                     const start = direction === 'east' ? lift.x0 * cell : direction === 'west' ? (lift.x1 + 1) * cell
                         : direction === 'south' ? lift.z0 * cell : (lift.z1 + 1) * cell;
                     stairInfo.set([axis, start, lift.tread, lift.stepHeight], i);
+                    floors.set([0, 1, 2, 3].map(() => lift.floor + lift.base), i);   // die Stufen beginnen auf dem Absatz
                 }
                 // ein Becken: der Boden tief unten, im ganzen Feld gleich
                 const pool = level.poolAt(x, z, k);
                 if (pool) floors.set([pool.bottom, pool.bottom, pool.bottom, pool.bottom], i);
                 else if (lift?.raise) floors.set([0, 1, 2, 3].map(() => lift.floor + lift.raise), i);
-                else floors.set([level.floorAt(x, z, room), level.floorAt(x + 1, z, room),
+                else if (!lift?.stairs) floors.set([level.floorAt(x, z, room), level.floorAt(x + 1, z, room),
                     level.floorAt(x, z + 1, room), level.floorAt(x + 1, z + 1, room)], i);
             }
         }

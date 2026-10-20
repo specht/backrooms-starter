@@ -17,7 +17,7 @@ export function railing(level, pool) {
     const k = pool.layer;
     const inPool = (x, z) => level.poolAt(x, z, k) === pool;
     // am Rand stehen kann man auf Boden, der nicht zu einem Becken gehört
-    const standing = (x, z) => level.kindAt(x, z, k) === 'floor' && !level.poolAt(x, z, k);
+    const standing = (x, z) => level.kindAt(x, z, k) === 'floor' && !level.poolAt(x, z, k) && !level.liftAt(x, z, k);   // nicht an der Seite einer Treppe oder eines Podests
     const floor = level.rooms[pool.room].elevation + (pool.rim?.[0] ?? 0);   // mit einem Rand: auf ihm
     // die Kanten des Beckens, an denen man steht: Stücke einer Linie in Metern
     const runs = [];
@@ -200,14 +200,14 @@ export function liftRailing(level, group) {
         const start = sign > 0 ? (alongX ? group.x0 : group.z0) * cell : ((alongX ? group.x1 : group.z1) + 1) * cell;
         const w0 = (alongX ? group.z0 : group.x0) * cell, w1 = ((alongX ? group.z1 : group.x1) + 1) * cell;
         const at = (u, w) => (alongX ? [start + sign * u, w] : [w, start + sign * u]);
-        const stepTop = (u) => group.floor + Math.min(group.stairs.rise, (Math.floor(Math.max(0, u) / group.tread + 1e-6) + 1) * group.stepHeight);
+        const stepTop = (u) => group.floor + Math.min(group.stairs.rise, group.base + (Math.floor(Math.max(0, u) / group.tread + 1e-6) + 1) * group.stepHeight);
         for (const [w, outward] of [[w0 + inside, -1], [w1 - inside, 1]]) {
             // offen, wenn es neben der Mitte der Treppe tief genug hinuntergeht
             const [mx, mz] = at(group.length / 2, w + outward * (inside + 0.01));
             if (drop(stepTop(group.length / 2), Math.floor(mx / cell), Math.floor(mz / cell), mx / cell, mz / cell) < 0.5) continue;
             const u0 = group.tread / 2, u1 = group.length - group.tread / 2;
             const count = Math.max(1, Math.ceil((u1 - u0) / 1.2));
-            const height = (u) => group.floor + group.stepHeight + (u - u0) / (u1 - u0) * (group.stairs.rise - group.stepHeight);
+            const height = (u) => group.floor + group.base + group.stepHeight + (u - u0) / (u1 - u0) * (group.stairs.rise - group.base - group.stepHeight);
             for (const [lift, radius] of [[0.95, 0.024], [0.5, 0.014]]) {
                 const [ax, az] = at(u0, w), [bx, bz] = at(u1, w);
                 pipe(new THREE.Vector3(ax, height(u0) + lift, az), new THREE.Vector3(bx, height(u1) + lift, bz), radius);
