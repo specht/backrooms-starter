@@ -56,16 +56,16 @@ function wallEnds(direction, line, from, to) {
     }
 }
 
-// Wo eine Statue nah an einer Fläche steht, wirft sie feine Schatten, die
+// Wo ein Modell nah an einer Fläche steht, wirft es feine Schatten, die
 // das normale Raster der Lichtkarte nicht fassen kann. Dort bekommt die
 // Fläche zusätzlich ein Detailstück Lichtkarte mit bis zu FINE-mal so vielen
-// Punkten, über den Umriss der Statue (plus MARGIN). Die Fläche bleibt ganz;
+// Punkten, über den Umriss des Modells (plus MARGIN). Die Fläche bleibt ganz;
 // das Detailstück wird darüber gemischt und blendet am Rand über FADE Meter
-// aus: kein Sprung, keine Naht. Mehrere Statuen an einer Fläche teilen sich
+// aus: kein Sprung, keine Naht. Mehrere Modelle an einer Fläche teilen sich
 // ein Stück, höchstens DETAIL_BUDGET Punkte groß (sonst gröber). Gezeichnet
 // wird so schnell wie vorher, nur das Backen hat ein paar Punkte mehr.
 const FINE = 4;
-const MARGIN = 0.6;   // Meter um die Statue: so weit reichen ihre weichen Schatten
+const MARGIN = 0.6;   // Meter um das Modell: so weit reichen seine weichen Schatten
 const FADE = 0.3;
 const DETAIL_BUDGET = 400000;
 
@@ -84,7 +84,7 @@ function addDetail(faces, boxes) {
             const lo = [box.min.x - MARGIN, box.min.y - MARGIN, box.min.z - MARGIN];
             const hi = [box.max.x + MARGIN, box.max.y + MARGIN, box.max.z + MARGIN];
             const corners = [0, 1, 2, 3, 4, 5, 6, 7].map((k) => [k & 1 ? hi[0] : lo[0], k & 2 ? hi[1] : lo[1], k & 4 ? hi[2] : lo[2]]);
-            // liegt die Ebene der Fläche im erweiterten Kasten der Statue?
+            // liegt die Ebene der Fläche im erweiterten Kasten des Modells?
             const sides = corners.map((p) => dot(sub(p, c0), face.normal));
             if (Math.min(...sides) > 0 || Math.max(...sides) < 0) continue;
             // der Kasten in Koordinaten der Fläche: s entlang c0 -> c1, t entlang c0 -> c3
@@ -119,12 +119,12 @@ function addDetail(faces, boxes) {
     return faces.concat(extra);
 }
 
-// statueBoxes: der Kasten um jede Statue, für feinere Lichtkarte in ihrer Nähe
+// modelBoxes: der Kasten um jedes Modell, für feinere Lichtkarte in ihrer Nähe
 const SLAB_COLOR = '#8e8a80';   // die Decke zwischen zwei Räumen übereinander, am Rand eines Lochs
 const ROUND_SIDES = 32;         // so viele schmale Flächen hat eine runde Säule ringsum
 const ARCH_STEPS = 64;          // so viele Stücke hat der Halbkreis eines Bogens, wie breit er auch ist
 
-export function buildGeometry(level, statueBoxes = []) {
+export function buildGeometry(level, modelBoxes = []) {
     const { width, depth, layers, settings } = level;
     const cell = settings.cell;
     // Räume können übereinander liegen (Schichten, level.js): at und roomOf
@@ -707,7 +707,7 @@ export function buildGeometry(level, statueBoxes = []) {
             strip([at(c0, half, 0), at(c1, half, 0), at(c1, half, o), at(c0, half, o)], [0, 1, 0], 0.2),
             strip([at(c0, -half, 0), at(c1, -half, 0), at(c1, -half, o), at(c0, -half, o)], [0, -1, 0], 0.2)];
     });
-    faces = addDetail(faces, statueBoxes);
+    faces = addDetail(faces, modelBoxes);
     const atlasSize = packRectangles(faces);
 
     // Eine Geometrie für jede Sorte Fläche in jedem Raum (eigene Tapete, eigener Teppich)

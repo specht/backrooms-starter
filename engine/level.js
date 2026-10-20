@@ -5,7 +5,7 @@
 //
 //   #  Wand          .  Boden          @  hier startest du (nur einmal im Level)
 //   Leerzeichen: nichts, außerhalb des Raums
-//   ein Buchstabe: eine Leuchte, ein Block, eine Statue oder Wasser, erklärt in [Buchstabe]
+//   ein Buchstabe: eine Leuchte, ein Block, ein Modell oder Wasser, erklärt in [Buchstabe]
 //   eine Ziffer: eine Tür zu einem anderen Raum, erklärt in [Ziffer]
 //
 // Eine Tür ist ein Feld, das zwei Räumen gehört: [1] mit door = flur 2
@@ -140,7 +140,7 @@ function values(section) {
     return Object.fromEntries(Object.entries(section?.entries ?? {}).map(([key, { value }]) => [key, value]));
 }
 
-// Ein Raum: sein Grundriss, seine Leuchten, Statuen und Türen, noch ohne Lage
+// Ein Raum: sein Grundriss, seine Leuchten, Modelle und Türen, noch ohne Lage
 function parseRoom(id, source) {
     const file = `rooms/${id}.room`;
     const sections = parseSections(source, file);
@@ -233,11 +233,25 @@ function parseRoom(id, source) {
                 if (!entry) throw new LevelError(file, row.line, `${char} is in the floor plan, but there is no section [${char}] saying what it is.`);
                 const thing = makeThing(file, char, entry, x, z);
                 things.push(thing);
-                // pool bei einer Leuchte, einem Block oder einem Modell: das Feld liegt außerdem im Becken
-                if (thing.type !== 'pool' && values(entry).pool !== undefined) things.push(makePool(file, char, entry, values(entry), x, z));
-                // raise oder stairs bei einer Leuchte, einem Block oder einem Modell: das Feld liegt außerdem so hoch
-                if (thing.type !== 'lift' && (values(entry).raise !== undefined || values(entry).stairs !== undefined)) things.push(makeLift(file, char, entry, values(entry), x, z));
-                // pedestal = breite, höhe, tiefe: ein Sockel unter der Statue, im selben Feld
+                // in = W bei einer Leuchte, einem Block oder einem Modell: Das Feld
+                // gehört zum Becken der W (eine Säule im Wasser, eine Leuchte
+                // darüber); on = P: zum Podest der P (ein Stuhl darauf)
+                if (thing.type !== 'pool' && thing.type !== 'lift') {
+                    const own = values(entry);
+                    if (own.pool !== undefined) throw new LevelError(file, entry.line, `pool = ${own.pool} next to ${thing.type} = ...: to put this ${thing.type} into a pool, name the pool's letter instead, such as in = W.`);
+                    if (own.raise !== undefined || own.stairs !== undefined) throw new LevelError(file, entry.line, `${own.raise !== undefined ? 'raise' : 'stairs'} next to ${thing.type} = ...: to put this ${thing.type} on a platform, name the platform's letter instead, such as on = P.`);
+                    if (own.in !== undefined) {
+                        const other = String(own.in), section = legend[other];
+                        if (!section || values(section).pool === undefined) throw new LevelError(file, entry.line, `in = ${other}: expected the letter of a pool in this room, such as in = W with [W] saying pool = ...`);
+                        things.push(makePool(file, other, section, values(section), x, z));
+                    }
+                    if (own.on !== undefined) {
+                        const other = String(own.on), section = legend[other];
+                        if (!section || values(section).raise === undefined) throw new LevelError(file, entry.line, `on = ${other}: expected the letter of a platform in this room, such as on = P with [P] saying raise = ...`);
+                        things.push(makeLift(file, other, section, values(section), x, z));
+                    }
+                }
+                // pedestal = breite, höhe, tiefe: ein Sockel unter dem Modell, im selben Feld
                 if (thing.type === 'model' && thing.pedestal !== undefined) {
                     const size = [thing.pedestal].flat();
                     if (size.length !== 3) throw new LevelError(file, entry.line, `pedestal = ${thing.pedestal}: expected width, height, depth in metres.`);
@@ -309,6 +323,13 @@ function makeThing(file, char, section, x, z) {
     const entries = values(section);
     if (entries.model !== undefined) {
         const model = { type: 'model', char, x, z, ...MODEL_DEFAULTS, ...entries, offset: offsetOf(file, section, entries) };
+        // rotation = grad: um die senkrechte Achse; rotation = x, y, z: um alle
+        // drei Achsen, in Grad, dieselben wie bei offset
+        const turn = [model.rotation].flat();
+        if (!(turn.length === 1 || turn.length === 3) || turn.some((v) => typeof v !== 'number')) {
+            throw new LevelError(file, section.line, `rotation = ${model.rotation}: expected degrees around the vertical axis, such as rotation = 270, or x, y, z in degrees, such as rotation = 0, 270, 15.`);
+        }
+        model.rotation = turn.length === 1 ? [0, turn[0], 0] : turn;
         // light = Farbe beim Modell: Es ist eine Lampe (eine Wandlampe, eine
         // Stehlampe). Ihr Licht kommt aus ihren leuchtenden Teilen.
         if (entries.light !== undefined) {
@@ -350,7 +371,7 @@ function makeThing(file, char, section, x, z) {
     }
     if (entries.pool !== undefined) return makePool(file, char, section, entries, x, z);
     if (entries.stairs !== undefined || entries.raise !== undefined) return makeLift(file, char, section, entries, x, z);
-    throw new LevelError(file, section.line, `[${char}] needs light = ... (a lamp), block = ... (a block), model = ... (a statue), pool = ... (a pool), stairs = ... or raise = ... (stairs, a platform).`);
+    throw new LevelError(file, section.line, `[${char}] needs light = ... (a lamp), block = ... (a block), model = ... (a model), pool = ... (a pool), stairs = ... or raise = ... (stairs, a platform).`);
 }
 
 // stairs = richtung, höhe: eine Treppe über diese Felder; raise = höhe: ein
@@ -876,7 +897,7 @@ export async function loadLevel(levelFile, fetchText) {
         }
     }
 
-    // Leuchten, Statuen und der Start in Feldern des ganzen Bauwerks
+    // Leuchten, Modelle und der Start in Feldern des ganzen Bauwerks
     const things = [];
     let start = null;
     for (const room of roomList) {

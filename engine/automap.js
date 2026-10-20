@@ -1,6 +1,6 @@
 // Die Automap (M oder Tab): das ganze Bauwerk als Drahtgitter, schräg von oben.
 // Jeder Raum hat seinen Namen, Leuchten sind gelbe Punkte,
-// Statuen weiße, der Pfeil bist du. Ziehen mit der Maus dreht, das Mausrad
+// Modelle weiße, der Pfeil bist du. Ziehen mit der Maus dreht, das Mausrad
 // zoomt.
 import * as THREE from 'three';
 import { EDGE_ANGLE } from './geometry.js';
@@ -65,7 +65,7 @@ function label(text, color) {
 }
 
 export class Automap {
-    constructor(level, geometry, lights, statues, player, renderer, pitch = () => 0) {
+    constructor(level, geometry, lights, models, player, renderer, pitch = () => 0) {
         this.pitch = pitch;   // wie weit du nach oben oder unten schaust
         this.renderer = renderer;
         this.player = player;
@@ -144,8 +144,8 @@ export class Automap {
             marker.position.copy(light.position);
             this.overlay.add(marker);
         }
-        for (const statue of statues) {
-            const box = new THREE.Box3().setFromObject(statue);
+        for (const model of models) {
+            const box = new THREE.Box3().setFromObject(model);
             const marker = dot('#ffffff', 0.2);
             box.getCenter(marker.position);
             marker.position.y = box.max.y;

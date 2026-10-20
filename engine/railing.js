@@ -160,16 +160,20 @@ function wallBox(a, b) {
         y0: Math.min(a.y, b.y) - 1.05, y1: Math.max(a.y, b.y) };
 }
 
-// Ein Geländer an einer Treppe oder um ein Podest (railing = on bei
+// Das Geländer an den Treppen und Podesten eines Raums (railing = on bei
 // stairs oder raise): wo es an der Seite mehr als einen halben Meter
-// hinuntergeht. An einer Treppe läuft es schräg mit den Stufen hinauf, um
-// ein Podest gerade entlang seiner Kanten, 6 cm innerhalb.
-export function liftRailing(level, group) {
-    const cell = level.settings.cell, k = group.layer;
+// hinuntergeht, 6 cm innerhalb der Kante, 1 m über dem, worauf man steht. Es
+// ist ein Geländer für alle zusammen, wie um ein Becken: Kanten auf einer
+// Linie werden ein Rohr, an einer Ecke biegt es um (beide waagerecht) oder
+// trifft sich auf einem Pfosten (eine Treppe oben an einem Podest, ein
+// Absatz). An einer Treppe läuft es schräg mit den Stufen hinauf.
+export function liftRailing(level, groups) {
+    const cell = level.settings.cell, k = groups[0].layer;
     const metal = new THREE.MeshStandardMaterial({ color: '#c4c9cd', metalness: 1, roughness: 0.12 });
     const out = new THREE.Group();
     const walls = [];
-    const up = new THREE.Vector3(0, 1, 0);
+    const v3 = (x, y, z) => new THREE.Vector3(x, y, z);
+    const up = v3(0, 1, 0);
     const pipe = (a, b, radius) => {
         const length = a.distanceTo(b);
         if (length < 1e-3) return;
@@ -178,14 +182,37 @@ export function liftRailing(level, group) {
         mesh.quaternion.setFromUnitVectors(up, b.clone().sub(a).normalize());
         out.add(mesh);
     };
+    const ball = (at, radius) => { const joint = new THREE.Mesh(new THREE.SphereGeometry(radius, 14, 10), metal); joint.position.copy(at); out.add(joint); };
     const post = (x, y, z, top) => {
-        pipe(new THREE.Vector3(x, y, z), new THREE.Vector3(x, top, z), 0.022);
-        const ball = new THREE.Mesh(new THREE.SphereGeometry(0.026, 14, 10), metal);
-        ball.position.set(x, top, z);
-        out.add(ball);
+        pipe(v3(x, y, z), v3(x, top, z), 0.022);
+        ball(v3(x, top, z), 0.026);
         const foot = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.046, 0.014, 18), metal);
         foot.position.set(x, y + 0.007, z);
         out.add(foot);
+    };
+    class Quarter extends THREE.Curve {
+        constructor(center, from, to, r) { super(); Object.assign(this, { center, from, to, r }); }
+        getPoint(t, target = new THREE.Vector3()) {
+            const a = t * Math.PI / 2;
+            return target.copy(this.center).addScaledVector(this.from, this.r * Math.cos(a)).addScaledVector(this.to, this.r * Math.sin(a));
+        }
+    }
+    const bend = (center, from, to, r, radius) => out.add(new THREE.Mesh(new THREE.TubeGeometry(new Quarter(center, from, to, r), 10, radius, 14, false), metal));
+
+    // Worauf man an einer Stelle (Meter) einer Gruppe steht, und wo ihr
+    // Geländer verläuft: auf einem Podest gleich hoch, an einer Treppe
+    // gleichmäßig von unten nach oben (die Stelle wird in die Treppe gerückt)
+    const climb = (g, x, z) => {
+        const { direction } = g.stairs;
+        const cx = Math.min(Math.max(x / cell, g.x0), g.x1 + 1), cz = Math.min(Math.max(z / cell, g.z0), g.z1 + 1);
+        const u = direction === 'east' ? cx - g.x0 : direction === 'west' ? g.x1 + 1 - cx : direction === 'south' ? cz - g.z0 : g.z1 + 1 - cz;
+        return u * cell;
+    };
+    const railBase = (g, x, z) => (g.stairs ? g.floor + g.base + climb(g, x, z) / g.length * (g.stairs.rise - g.base) : g.floor + g.raise);
+    const surface = (g, x, z) => {
+        if (!g.stairs) return g.floor + g.raise;
+        const u = Math.min(climb(g, x, z), g.length - 1e-6);
+        return g.floor + Math.min(g.stairs.rise, g.base + (Math.floor(Math.max(0, u) / g.tread + 1e-6) + 1) * g.stepHeight);
     };
     // wie tief es neben einer Stelle (px, pz in Feldern) hinuntergeht, auf der Seite des Felds nx, nz
     const drop = (here, nx, nz, px, pz) => {
@@ -193,56 +220,109 @@ export function liftRailing(level, group) {
         return here - (level.floorAt(px, pz, level.roomAt(nx, nz, k)) - level.sunk(nx, nz, k) + level.lift(nx, nz, k, px, pz));
     };
     const inside = 0.06;
-    if (group.stairs) {
-        const { direction } = group.stairs;
-        const alongX = direction === 'east' || direction === 'west';
-        const sign = direction === 'east' || direction === 'south' ? 1 : -1;
-        const start = sign > 0 ? (alongX ? group.x0 : group.z0) * cell : ((alongX ? group.x1 : group.z1) + 1) * cell;
-        const w0 = (alongX ? group.z0 : group.x0) * cell, w1 = ((alongX ? group.z1 : group.x1) + 1) * cell;
-        const at = (u, w) => (alongX ? [start + sign * u, w] : [w, start + sign * u]);
-        const stepTop = (u) => group.floor + Math.min(group.stairs.rise, group.base + (Math.floor(Math.max(0, u) / group.tread + 1e-6) + 1) * group.stepHeight);
-        for (const [w, outward] of [[w0 + inside, -1], [w1 - inside, 1]]) {
-            // offen, wenn es neben der Mitte der Treppe tief genug hinuntergeht
-            const [mx, mz] = at(group.length / 2, w + outward * (inside + 0.01));
-            if (drop(stepTop(group.length / 2), Math.floor(mx / cell), Math.floor(mz / cell), mx / cell, mz / cell) < 0.5) continue;
-            const u0 = group.tread / 2, u1 = group.length - group.tread / 2;
-            const count = Math.max(1, Math.ceil((u1 - u0) / 1.2));
-            const height = (u) => group.floor + group.base + group.stepHeight + (u - u0) / (u1 - u0) * (group.stairs.rise - group.base - group.stepHeight);
-            for (const [lift, radius] of [[0.95, 0.024], [0.5, 0.014]]) {
-                const [ax, az] = at(u0, w), [bx, bz] = at(u1, w);
-                pipe(new THREE.Vector3(ax, height(u0) + lift, az), new THREE.Vector3(bx, height(u1) + lift, bz), radius);
-                if (lift > 0.9) {
-                    // die schräge Stange als Hindernis: in Stücken, jedes nur so hoch, wie es dort ist
-                    for (let k = 0; k < 8; k++) {
-                        const p = new THREE.Vector3(ax + (bx - ax) * k / 8, height(u0 + (u1 - u0) * k / 8) + lift, az + (bz - az) * k / 8);
-                        const q = new THREE.Vector3(ax + (bx - ax) * (k + 1) / 8, height(u0 + (u1 - u0) * (k + 1) / 8) + lift, az + (bz - az) * (k + 1) / 8);
-                        walls.push(wallBox(p, q));
-                    }
-                }
-            }
-            for (let i = 0; i <= count; i++) {
-                const u = u0 + (u1 - u0) * i / count, [px, pz] = at(u, w);
-                post(px, stepTop(u), pz, height(u) + 0.95);
-            }
-        }
-    } else {
-        const top = group.floor + group.raise;
-        for (const { x, z } of group.cells) {
+
+    // die offenen Kanten jeder Gruppe, auf jeder Linie zu Stücken zusammengelegt
+    // (fixed: die Linie in Metern, n: nach außen, s0..s1: entlang)
+    const lines = new Map();
+    for (const g of groups) {
+        for (const { x, z } of g.cells) {
             for (const [dx, dz] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
-                if (level.liftAt(x + dx, z + dz, k) === group) continue;
+                if (level.liftAt(x + dx, z + dz, k) === g) continue;
                 const mx = x + 0.5 + dx * 0.51, mz = z + 0.5 + dz * 0.51;
-                if (drop(top, x + dx, z + dz, mx, mz) < 0.5) continue;
-                // die Kante, 6 cm nach innen
-                const t = [Math.abs(dz), Math.abs(dx)];
-                const cx = (x + 0.5 + dx * 0.5) * cell - dx * inside, cz = (z + 0.5 + dz * 0.5) * cell - dz * inside;
-                const a = new THREE.Vector3(cx - t[0] * cell / 2, 0, cz - t[1] * cell / 2), b = new THREE.Vector3(cx + t[0] * cell / 2, 0, cz + t[1] * cell / 2);
-                for (const [lift, radius] of [[1, 0.024], [0.5, 0.014]]) pipe(a.clone().setY(top + lift), b.clone().setY(top + lift), radius);
-                walls.push(wallBox(a.clone().setY(top + 1), b.clone().setY(top + 1)));
-                post(a.x, top, a.z, top + 1);
-                post(b.x, top, b.z, top + 1);
+                const here = level.lift(x, z, k, x + 0.5 + dx * 0.49, z + 0.5 + dz * 0.49) + g.floor;
+                if (drop(here, x + dx, z + dz, mx, mz) < 0.5) continue;
+                const alongX = dz !== 0;
+                const fixed = (alongX ? z + (dz > 0 ? 1 : 0) : x + (dx > 0 ? 1 : 0)) * cell;
+                const s = (alongX ? x : z) * cell;
+                const key = `${alongX ? 'x' : 'z'}${fixed}:${dx}${dz}:${groups.indexOf(g)}`;
+                if (!lines.has(key)) lines.set(key, { g, alongX, fixed, n: [dx, dz], spans: [] });
+                lines.get(key).spans.push([s, s + cell]);
             }
         }
     }
+    const runs = [];
+    for (const line of lines.values()) {
+        line.spans.sort((p, q) => p[0] - q[0]);
+        for (const span of line.spans) {
+            const last = runs[runs.length - 1];
+            if (last && last.line === line && Math.abs(span[0] - last.s1) < 1e-6) last.s1 = span[1];
+            else runs.push({ line, s0: span[0], s1: span[1] });
+        }
+    }
+    // Die Rohre liegen 6 cm innen; jede Ecke (x, z in Metern) einer Kante
+    const offsetOf = (line) => line.fixed - (line.alongX ? line.n[1] : line.n[0]) * inside;
+    const point = (run, s) => (run.line.alongX ? [s, offsetOf(run.line)] : [offsetOf(run.line), s]);
+    const corner = (run, end) => (run.line.alongX ? [end ? run.s1 : run.s0, run.line.fixed] : [run.line.fixed, end ? run.s1 : run.s0]);
+    const same = (p, q) => Math.abs(p[0] - q[0]) < 1e-6 && Math.abs(p[1] - q[1]) < 1e-6;
+    // an jedem Ende: trifft es ein Stück quer dazu, reicht es bis zu dessen Linie
+    for (const run of runs) {
+        run.ends = [0, 1].map((end) => {
+            const p = corner(run, end);
+            const across = runs.find((other) => other !== run && other.line.alongX !== run.line.alongX && [0, 1].some((e) => same(corner(other, e), p)));
+            const along = runs.find((other) => other !== run && other.line.alongX === run.line.alongX && other.line.fixed === run.line.fixed && [0, 1].some((e) => same(corner(other, e), p)));
+            const s = across ? offsetOf(across.line) : end ? run.s1 : run.s0;
+            return { s, across, along };
+        });
+    }
+    const y = (run, s, lift) => {
+        const [x, z] = point(run, s);
+        return railBase(run.line.g, x, z) + lift;
+    };
+    const posts = new Map();   // Stelle -> [x, z, Fuß, Kopf]
+    const addPost = (run, s, top) => {
+        const [x, z] = point(run, s);
+        const id = `${x.toFixed(3)},${z.toFixed(3)}`;
+        if (!posts.has(id)) posts.set(id, [x, z, surface(run.line.g, x, z), top]);
+    };
+    const bends = new Set();
+    const tops = [1, 0.024], mids = [0.5, 0.014];
+    for (const run of runs) {
+        const [e0, e1] = run.ends;
+        const length = Math.abs(e1.s - e0.s);
+        const level0 = !run.line.g.stairs || !run.line.alongX === ['east', 'west'].includes(run.line.g.stairs.direction);
+        // waagerecht um eine Ecke (beide Stücke ohne Steigung): ein Bogen
+        const flat = (other) => other && (!other.line.g.stairs || !other.line.alongX === ['east', 'west'].includes(other.line.g.stairs.direction));
+        const r = Math.min(0.14, length / 3);
+        const trim = [0, 0];
+        run.ends.forEach((end, i) => {
+            const dir = i === 0 ? Math.sign(e1.s - e0.s) : Math.sign(e0.s - e1.s);   // ins Stück hinein
+            if (end.across && level0 && flat(end.across) && Math.abs(y(run, end.s, 0) - y(end.across, offsetOf(run.line), 0)) < 0.01) {
+                trim[i] = dir * r;
+                const [px, pz] = point(run, end.s);
+                const id = `${px.toFixed(3)},${pz.toFixed(3)}`;
+                if (!bends.has(id)) {
+                    bends.add(id);
+                    const other = end.across;
+                    const otherFar = Math.abs(other.ends[0].s - offsetOf(run.line)) > Math.abs(other.ends[1].s - offsetOf(run.line)) ? other.ends[0].s : other.ends[1].s;
+                    const u = run.line.alongX ? v3(dir, 0, 0) : v3(0, 0, dir);
+                    const vs = Math.sign(otherFar - offsetOf(run.line));
+                    const v = other.line.alongX ? v3(vs, 0, 0) : v3(0, 0, vs);
+                    const center = v3(px, 0, pz).addScaledVector(u, r).addScaledVector(v, r);
+                    for (const [lift, radius] of [tops, mids]) bend(center.clone().setY(y(run, end.s, lift)), v.clone().negate(), u.clone().negate(), r, radius);
+                    const middle = center.clone().addScaledVector(u.clone().add(v), -r / Math.SQRT2);
+                    posts.set(id, [middle.x, middle.z, surface(run.line.g, middle.x, middle.z), y(run, end.s, 1)]);
+                }
+            } else {
+                addPost(run, end.s, y(run, end.s, 1));   // ein freies Ende, ein Absatz oder eine Treppe am Podest: ein Pfosten
+            }
+        });
+        const a = e0.s + trim[0], b = e1.s + trim[1];
+        for (const [lift, radius] of [tops, mids]) {
+            const [ax, az] = point(run, a), [bx, bz] = point(run, b);
+            pipe(v3(ax, y(run, a, lift), az), v3(bx, y(run, b, lift), bz), radius);
+        }
+        // das obere Rohr als Hindernis, in Stücken, jedes nur so hoch, wie es dort ist
+        const pieces = level0 ? 1 : 8;
+        for (let i = 0; i < pieces; i++) {
+            const s = a + (b - a) * i / pieces, t = a + (b - a) * (i + 1) / pieces;
+            const [px, pz] = point(run, s), [qx, qz] = point(run, t);
+            walls.push(wallBox(v3(px, y(run, s, 1), pz), v3(qx, y(run, t, 1), qz)));
+        }
+        // Pfosten dazwischen, höchstens 1,2 m auseinander
+        const count = Math.max(1, Math.ceil(length / POST_SPACING));
+        for (let i = 1; i < count; i++) addPost(run, e0.s + (e1.s - e0.s) * i / count, y(run, e0.s + (e1.s - e0.s) * i / count, 1));
+    }
+    for (const [x, z, foot, top] of posts.values()) post(x, foot, z, top);
     out.userData.walls = walls;
     out.updateMatrixWorld(true);
     return out.children.length ? out : null;

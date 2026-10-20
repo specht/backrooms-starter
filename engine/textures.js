@@ -160,7 +160,7 @@ export function plainTexture(base) {
 // Marmor: cremeweiß mit feinen grauen Adern. Die Adern sind Sinuswellen,
 // deren Verlauf ein Rauschen in mehreren Größen verbiegt (Turbulenz). Jede
 // Größe wiederholt sich genau über die Breite der Textur: nahtlos.
-// size: 512 für Statuen; meters: auf Wänden und Böden so viele Meter pro Wiederholung
+// size: 512 für Modelle; meters: auf Wänden und Böden so viele Meter pro Wiederholung
 // step 1: nur das Rauschen, 2: die Turbulenz, 3: Streifen aus dem Sinus, 4: von der Turbulenz verbogen
 export function marbleTexture(size = 512, meters = 1, step = Infinity) {
     const texture = canvasTexture(size, (context, size) => {

@@ -1,7 +1,7 @@
 // Backt das Licht in eine Lichtkarte, im Browser auf der Grafikkarte.
 //
 // Das Level wird ein 3D-Raster aus kleinen Würfeln (Voxeln): voll, wo eine
-// Wand, eine Decke, ein Block oder eine Statue ist. Gebacken wird in Stufen:
+// Wand, eine Decke, ein Block oder ein Modell ist. Gebacken wird in Stufen:
 //
 // 1. Direktes Licht: Für jeden Punkt der Lichtkarte schickt ein Shader
 //    Strahlen zu zufälligen Punkten auf den Leuchten und läuft das Raster
@@ -16,13 +16,13 @@
 // Mal ab. So werden auch Decken hell, die keine Leuchte direkt sieht.
 import * as THREE from 'three';
 
-// Statuen kommen in Raster aus Voxeln, jede in ihr eigenes: so fein, wie es
+// Modelle kommen in Raster aus Voxeln, jedes in sein eigenes: so fein, wie es
 // der Speicher erlaubt, damit ihre Schatten an Wand und Boden glatt werden
-// (ein Voxel gilt als voll, sobald die Statue es berührt: Grobe Voxel machen
-// sie dicker und stufig). Nie feiner als VOXEL_MIN, je Statue höchstens
-// VOXELS_PER_STATUE, alle zusammen höchstens VOXELS_TOTAL (je ein Byte).
+// (ein Voxel gilt als voll, sobald das Modell es berührt: Grobe Voxel machen
+// es dicker und stufig). Nie feiner als VOXEL_MIN, je Modell höchstens
+// VOXELS_PER_MODEL, alle zusammen höchstens VOXELS_TOTAL (je ein Byte).
 const VOXEL_MIN = 0.01;
-const VOXELS_PER_STATUE = 6e6;
+const VOXELS_PER_MODEL = 6e6;
 const VOXELS_TOTAL = 24e6;
 const CELL = 0.25;                    // Zellen für das abprallende Licht
 const DIRECT_PASSES = 64;             // Durchgänge für das direkte Licht
@@ -32,15 +32,15 @@ const LIGHT_SCALE = 30;               // macht power = 1 zu »hell unter der Lam
 
 // Das Raster für die Strahlen: für jedes Feld, was es ist, wie hoch seine
 // Decke an den vier Ecken ist und welcher Block darauf steht, alles genau.
-// Nur Statuen kommen in ein feines Raster aus Voxeln.
+// Nur Modelle kommen in ein feines Raster aus Voxeln.
 // maxTextureSize: wie viele Voxel eine 3D-Textur je Richtung haben darf
-export function buildGrid(level, statues, maxHeight, maxTextureSize = 2048) {
+export function buildGrid(level, models, maxHeight, maxTextureSize = 2048) {
     const { width, depth, layers, settings } = level;
     const cell = settings.cell;
     // Jede Schicht (Räume übereinander, level.js) ist ein ganzer Grundriss:
     // in den Texturen untereinander, Schicht k ab Zeile k * depth
     const count = width * depth * layers;
-    const info = new Float32Array(count * 4);      // Art, Statue, Block
+    const info = new Float32Array(count * 4);      // Art, Modell, Block
     const ceilings = new Float32Array(count * 4);  // Deckenhöhe an den vier Ecken
     const floors = new Float32Array(count * 4);    // Bodenhöhe an den vier Ecken
     const blockMin = new Float32Array(count * 4);
@@ -99,20 +99,20 @@ export function buildGrid(level, statues, maxHeight, maxTextureSize = 2048) {
         }
     }
 
-    // Statuen: ihre Oberfläche in feine Voxel, so dicht abgetastet, dass kein
-    // Strahl durchschlüpft. Jede Statue hat ihr eigenes Raster über ihrem
+    // Modelle: ihre Oberfläche in feine Voxel, so dicht abgetastet, dass kein
+    // Strahl durchschlüpft. Jedes Modell hat sein eigenes Raster über seinem
     // Kasten; alle liegen nebeneinander in einer 3D-Textur (Regalbretter in
-    // x und y), statueGrids sagt, wo.
-    const boxes = statues.map((object) => new THREE.Box3().setFromObject(object));
+    // x und y), modelGrids sagt, wo.
+    const boxes = models.map((object) => new THREE.Box3().setFromObject(object));
     const sizes = boxes.map((box) => box.getSize(new THREE.Vector3()));
-    const voxelSize = sizes.map((size) => Math.max(VOXEL_MIN, Math.cbrt(Math.max(size.x * size.y * size.z, 1e-6) / VOXELS_PER_STATUE),
+    const voxelSize = sizes.map((size) => Math.max(VOXEL_MIN, Math.cbrt(Math.max(size.x * size.y * size.z, 1e-6) / VOXELS_PER_MODEL),
         Math.max(size.x, size.y, size.z) / (maxTextureSize - 2)));
     const countOf = (i, v) => sizes[i].toArray().map((extent) => Math.ceil(extent / v) + 2);   // ein Voxel Rand ringsum
     const total = voxelSize.reduce((sum, v, i) => sum + countOf(i, v).reduce((a, b) => a * b, 1), 0);
     if (total > VOXELS_TOTAL) voxelSize.forEach((v, i) => { voxelSize[i] = v * Math.cbrt(total / VOXELS_TOTAL); });
     let grids, atlas;
     for (let attempt = 0; ; attempt++) {
-        grids = statues.map((_, i) => ({ voxel: voxelSize[i], count: countOf(i, voxelSize[i]), origin: boxes[i].min.clone().subScalar(voxelSize[i]) }));
+        grids = models.map((_, i) => ({ voxel: voxelSize[i], count: countOf(i, voxelSize[i]), origin: boxes[i].min.clone().subScalar(voxelSize[i]) }));
         // Regalbretter: nebeneinander in x, Reihen übereinander in y
         let x = 0, y = 0, row = 0, depthMax = 1, widthMax = 1;
         for (const grid of grids) {
@@ -130,14 +130,14 @@ export function buildGrid(level, statues, maxHeight, maxTextureSize = 2048) {
     const data = new Uint8Array(ax * ay * az);
     const gridInfo = new Float32Array(Math.max(1, grids.length) * 3 * 4);
     const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), p = new THREE.Vector3();
-    statues.forEach((object, index) => {
+    models.forEach((object, index) => {
         const { voxel, count: [nx, ny, nz], origin, offset: [ox, oy] } = grids[index];
         gridInfo.set([origin.x, origin.y, origin.z, voxel, ox, oy, 0, 0, nx, ny, nz, 0], index * 12);
         const set = (vx, vy, vz) => {
             if (vx < 0 || vy < 0 || vz < 0 || vx >= nx || vy >= ny || vz >= nz) return;
             data[(vz * ay + oy + vy) * ax + ox + vx] = 255;
             const fx = Math.floor((origin.x + (vx + 0.5) * voxel) / cell), fz = Math.floor((origin.z + (vz + 0.5) * voxel) / cell);
-            // eine Statue: in jeder Schicht vermerkt (geprüft wird ohnehin nur ihr Kasten)
+            // ein Modell: in jeder Schicht vermerkt (geprüft wird ohnehin nur sein Kasten)
             if (fx >= 0 && fz >= 0 && fx < width && fz < depth) for (let k = 0; k < layers; k++) info[level.index(fx, fz, k) * 4 + 1] = 1;
         };
         object.updateMatrixWorld(true);
@@ -169,8 +169,8 @@ export function buildGrid(level, statues, maxHeight, maxTextureSize = 2048) {
     voxels.minFilter = voxels.magFilter = THREE.NearestFilter;
     voxels.unpackAlignment = 1;
     voxels.needsUpdate = true;
-    const statueGrids = new THREE.DataTexture(gridInfo, Math.max(1, grids.length) * 3, 1, THREE.RGBAFormat, THREE.FloatType);
-    statueGrids.needsUpdate = true;
+    const modelGrids = new THREE.DataTexture(gridInfo, Math.max(1, grids.length) * 3, 1, THREE.RGBAFormat, THREE.FloatType);
+    modelGrids.needsUpdate = true;
 
     const texture = (array) => {
         const t = new THREE.DataTexture(array, width, depth * layers, THREE.RGBAFormat, THREE.FloatType);
@@ -179,7 +179,7 @@ export function buildGrid(level, statues, maxHeight, maxTextureSize = 2048) {
     };
     return {
         info: texture(info), ceilings: texture(ceilings), floors: texture(floors), blockMin: texture(blockMin), blockMax: texture(blockMax), arches: texture(archInfo), stairs: texture(stairInfo),
-        voxels, statueGrids, statueCount: grids.length, cells: new THREE.Vector2(width, depth), layers, cell,
+        voxels, modelGrids, modelCount: grids.length, cells: new THREE.Vector2(width, depth), layers, cell,
     };
 }
 
@@ -273,12 +273,12 @@ in vec3 vMin;
 in vec3 vMax;
 in float vAmbient;
 in vec3 vAlbedo;
-in float vDensity;             // wie viel feiner als sonst die Lichtkarte hier ist (bei Statuen)
+in float vDensity;             // wie viel feiner als sonst die Lichtkarte hier ist (bei Modellen)
 
-uniform sampler3D voxels;      // die Raster aller Statuen nebeneinander
-uniform sampler2D statueGrids; // je Statue drei Texel: Ecke und Voxelgröße, Stelle in voxels, Voxel in x, y, z
-uniform int statueCount;
-uniform sampler2D cellInfo;    // r: 0 nichts, 1 Boden, 2 Wand; g: Statue; b: Block
+uniform sampler3D voxels;      // die Raster aller Modelle nebeneinander
+uniform sampler2D modelGrids; // je Modell drei Texel: Ecke und Voxelgröße, Stelle in voxels, Voxel in x, y, z
+uniform int modelCount;
+uniform sampler2D cellInfo;    // r: 0 nichts, 1 Boden, 2 Wand; g: Modell; b: Block
 uniform sampler2D cellCeiling; // Deckenhöhe an den Ecken (x0z0, x1z0, x0z1, x1z1)
 uniform sampler2D cellFloor;   // Bodenhöhe an den Ecken, ebenso
 uniform float bottom;          // der tiefste Boden
@@ -291,10 +291,10 @@ uniform int layerCount;        // Räume übereinander: so viele Grundrisse unte
 uniform float cellMeters;
 uniform float top;
 uniform uint pass;
-uniform bool withStatues;   // die Lichtproben für Statuen sehen durch die Statuen hindurch
-// Statuen-Voxel so nah am Anfang eines Strahls zählen nicht (gegen Schatten
-// einer Fläche auf sich selbst); nur für die Ecken der Statuen gesetzt.
-float statueSkip = 0.0;
+uniform bool withModels;   // die Lichtproben für Modelle sehen durch die Modelle hindurch
+// Modell-Voxel so nah am Anfang eines Strahls zählen nicht (gegen Schatten
+// einer Fläche auf sich selbst); nur für die Ecken der Modelle gesetzt.
+float modelSkip = 0.0;
 
 uint state;
 uint pcg() {
@@ -346,17 +346,17 @@ vec3 safeDirection(vec3 d) {
     return vec3(abs(d.x) < 1e-6 ? 1e-6 : d.x, abs(d.y) < 1e-6 ? 1e-6 : d.y, abs(d.z) < 1e-6 ? 1e-6 : d.z);
 }
 
-bool statueVoxel(ivec3 v, ivec3 offset, ivec3 size) {
+bool modelVoxel(ivec3 v, ivec3 offset, ivec3 size) {
     if (any(lessThan(v, ivec3(0))) || any(greaterThanEqual(v, size))) return false;
     return texelFetch(voxels, offset + v, 0).r > 0.5;
 }
 
-// Durch das Raster einer Statue, von t0 bis t1 entlang des Strahls (3D-DDA).
+// Durch das Raster eines Modells, von t0 bis t1 entlang des Strahls (3D-DDA).
 // Für Punkte auf Wänden und Böden liegt das Raster bei jedem Strahl um bis
 // zu einen halben Voxel anders: Über alle Durchgänge gemittelt werden die
-// Stufen der Voxel im Schatten einer Statue zu einer glatten Kante.
+// Stufen der Voxel im Schatten eines Modells zu einer glatten Kante.
 float gridTrace(vec3 a, vec3 dir, float t0, float t1, vec3 origin, float voxel, ivec3 offset, ivec3 size) {
-    vec3 shift = statueSkip > 0.0 ? vec3(0.0) : vec3(random(), random(), random()) - 0.5;
+    vec3 shift = modelSkip > 0.0 ? vec3(0.0) : vec3(random(), random(), random()) - 0.5;
     vec3 p = (a + dir * t0 - origin) / voxel + shift;
     float len = (t1 - t0) / voxel;
     ivec3 cell = ivec3(floor(p));
@@ -366,7 +366,7 @@ float gridTrace(vec3 a, vec3 dir, float t0, float t1, vec3 origin, float voxel, 
     vec3 tMax = (vec3(cell) + max(sign(dir), 0.0) - p) / safe;
     float t = 0.0;
     for (int i = 0; i < 2048; i++) {
-        if (statueVoxel(cell, offset, size) && t0 + t * voxel >= statueSkip) return t0 + t * voxel;
+        if (modelVoxel(cell, offset, size) && t0 + t * voxel >= modelSkip) return t0 + t * voxel;
         if (tMax.x < tMax.y && tMax.x < tMax.z) { t = tMax.x; tMax.x += tDelta.x; cell.x += stepDir.x; }
         else if (tMax.y < tMax.z) { t = tMax.y; tMax.y += tDelta.y; cell.y += stepDir.y; }
         else { t = tMax.z; tMax.z += tDelta.z; cell.z += stepDir.z; }
@@ -375,16 +375,16 @@ float gridTrace(vec3 a, vec3 dir, float t0, float t1, vec3 origin, float voxel, 
     return -1.0;
 }
 
-// Durch alle Statuen, deren Kasten der Strahl zwischen t0 und t1 kreuzt:
+// Durch alle Modelle, deren Kasten der Strahl zwischen t0 und t1 kreuzt:
 // das nächste Voxel, -1: keins
-float statueTrace(vec3 a, vec3 dir, float t0, float t1) {
+float modelTrace(vec3 a, vec3 dir, float t0, float t1) {
     float best = -1.0;
     vec3 inv = 1.0 / safeDirection(dir);
     for (int i = 0; i < 256; i++) {
-        if (i >= statueCount) break;
-        vec4 g0 = texelFetch(statueGrids, ivec2(3 * i, 0), 0);
-        ivec3 offset = ivec3(texelFetch(statueGrids, ivec2(3 * i + 1, 0), 0).xyz);
-        ivec3 size = ivec3(texelFetch(statueGrids, ivec2(3 * i + 2, 0), 0).xyz);
+        if (i >= modelCount) break;
+        vec4 g0 = texelFetch(modelGrids, ivec2(3 * i, 0), 0);
+        ivec3 offset = ivec3(texelFetch(modelGrids, ivec2(3 * i + 1, 0), 0).xyz);
+        ivec3 size = ivec3(texelFetch(modelGrids, ivec2(3 * i + 2, 0), 0).xyz);
         vec3 lo = g0.xyz, hi = g0.xyz + vec3(size) * g0.w;
         vec3 ta = (lo - a) * inv, tb = (hi - a) * inv;
         vec3 near = min(ta, tb), far = max(ta, tb);
@@ -397,14 +397,14 @@ float statueTrace(vec3 a, vec3 dir, float t0, float t1) {
     return best;
 }
 
-// Liegt q in einem vollen Voxel einer Statue?
-bool insideStatue(vec3 q) {
+// Liegt q in einem vollen Voxel eines Modells?
+bool insideModel(vec3 q) {
     for (int i = 0; i < 256; i++) {
-        if (i >= statueCount) break;
-        vec4 g0 = texelFetch(statueGrids, ivec2(3 * i, 0), 0);
-        ivec3 offset = ivec3(texelFetch(statueGrids, ivec2(3 * i + 1, 0), 0).xyz);
-        ivec3 size = ivec3(texelFetch(statueGrids, ivec2(3 * i + 2, 0), 0).xyz);
-        if (statueVoxel(ivec3(floor((q - g0.xyz) / g0.w)), offset, size)) return true;
+        if (i >= modelCount) break;
+        vec4 g0 = texelFetch(modelGrids, ivec2(3 * i, 0), 0);
+        ivec3 offset = ivec3(texelFetch(modelGrids, ivec2(3 * i + 1, 0), 0).xyz);
+        ivec3 size = ivec3(texelFetch(modelGrids, ivec2(3 * i + 2, 0), 0).xyz);
+        if (modelVoxel(ivec3(floor((q - g0.xyz) / g0.w)), offset, size)) return true;
     }
     return false;
 }
@@ -460,7 +460,7 @@ int layerAt(ivec2 cell, vec2 q, float y) {
 
 // Wie weit kommt ein Strahl von a in Richtung dir, bevor er auf etwas trifft?
 // Feld für Feld durch den Grundriss (2D-DDA); in jedem Feld genau: Wand,
-// Decke (auch schräg), Boden, Block, und in Feldern mit Statuen deren Voxel.
+// Decke (auch schräg), Boden, Block, und in Feldern mit Modellen deren Voxel.
 // Liegen Räume übereinander, gilt in jedem Feld der, in dessen Luft der
 // Strahl hineinkommt. -1: bis maxLength nichts im Weg.
 float trace(vec3 a, vec3 dir, float maxLength) {
@@ -525,10 +525,10 @@ float trace(vec3 a, vec3 dir, float maxLength) {
             float tBox = top.w > 1.5 ? roundHit(a, dir, texelFetch(blockMin, at, 0).xyz, top.xyz) : boxHit(a, dir, texelFetch(blockMin, at, 0).xyz, top.xyz);
             if (tBox >= 0.0 && tBox <= tExit) hit = min(hit, max(tBox, tEnter));
         }
-        // eine Statue
-        if (withStatues && info.g > 0.5) {
-            float tStatue = statueTrace(a, dir, tEnter, min(tExit, hit));
-            if (tStatue >= 0.0) hit = min(hit, tStatue);
+        // ein Modell
+        if (withModels && info.g > 0.5) {
+            float tModel = modelTrace(a, dir, tEnter, min(tExit, hit));
+            if (tModel >= 0.0) hit = min(hit, tModel);
         }
         if (hit <= tExit) return hit;
         if (tExit >= maxLength) return -1.0;
@@ -619,7 +619,7 @@ void main() {
     vec3 start = surfacePoint(n);
     vec3 light = vec3(0.0);
     vec4 flickering = vec4(0.0);
-    // Wo die Lichtkarte feiner ist (bei Statuen), hat jeder Punkt weniger
+    // Wo die Lichtkarte feiner ist (bei Modellen), hat jeder Punkt weniger
     // Nachbarn, mit denen sein Rauschen verschwimmt: dort mehr Proben je Durchgang
     int samples = int(clamp(vDensity, 1.0, 8.0) + 0.5);
 
@@ -735,7 +735,7 @@ void main() {
     bounced = vec4(light / float(${RAYS}), 1.0);
 }`;
 
-// Lichtproben für Statuen: für jede Probe sechs Richtungen (±x, ±y, ±z),
+// Lichtproben für Modelle: für jede Probe sechs Richtungen (±x, ±y, ±z),
 // in jede viele Strahlen; was sie treffen, bringt sein Licht mit.
 const probeVertexShader = /* glsl */ `
 in vec3 position;
@@ -812,7 +812,7 @@ void main() {
     outColor = vec4(weight > 0.0 ? sum / weight : own.rgb, own.a);
 }`;
 
-// Licht für die Ecken von Statuen, wie die Lichtkarte, aber mit den Statuen
+// Licht für die Ecken von Modellen, wie die Lichtkarte, aber mit den Modellen
 // selbst im Raster: Falten werfen Schatten aufeinander und bekommen weniger
 // Bounce-Licht. Jeder Bildpunkt ist eine Ecke; Stelle und Richtung kommen aus
 // zwei Texturen.
@@ -838,10 +838,10 @@ void main() {
     vec3 start = surface + n * 0.1;
     for (int k = 1; k <= 15; k++) {
         vec3 q = surface + n * (0.01 * float(k));
-        if (!insideStatue(q)) { start = q + n * 0.005; break; }
+        if (!insideModel(q)) { start = q + n * 0.005; break; }
     }
     state = uint(index) * 9781u + pass * 6271u + 13u;
-    statueSkip = 0.08;
+    modelSkip = 0.08;
     vec3 light = vec3(0.0);
     for (int i = 0; i < 1024; i++) {
         if (i >= lightCount || !wantDirect) break;
@@ -984,8 +984,8 @@ export class LightBaker {
         const ambient = new THREE.Color('#d8c890');
         const grid = {
             voxels: { value: voxels.voxels },
-            statueGrids: { value: voxels.statueGrids },
-            statueCount: { value: voxels.statueCount },
+            modelGrids: { value: voxels.modelGrids },
+            modelCount: { value: voxels.modelCount },
             cellInfo: { value: voxels.info },
             layerCount: { value: voxels.layers },
             cellCeiling: { value: voxels.ceilings },
@@ -999,7 +999,7 @@ export class LightBaker {
             cellMeters: { value: voxels.cell },
             top: { value: geometry.maxHeight + 0.01 },
             pass: { value: 0 },
-            withStatues: { value: true },
+            withModels: { value: true },
         };
         const material = (fragmentShader, uniforms, extra = {}) => new THREE.RawShaderMaterial({
             glslVersion: THREE.GLSL3,
@@ -1203,7 +1203,7 @@ export class LightBaker {
         return `bounce ${this.bounce} of ${this.bounces}, pass ${this.gatherPasses} of ${BOUNCE_PASSES}`;
     }
 
-    // Licht für die Ecken der Statuen (positions, normals: je drei Zahlen pro
+    // Licht für die Ecken der Modelle (positions, normals: je drei Zahlen pro
     // Ecke, in der Welt); 64 Durchgänge. Liefert drei Zahlen pro Ecke:
     // direktes Licht (direct = true) oder Bounce-Licht.
     vertexLight(positions, normals, direct) {
@@ -1226,7 +1226,7 @@ export class LightBaker {
                 ...this.gatherMaterial.uniforms,
                 lights: this.directMaterial.uniforms.lights,
                 lightCount: this.directMaterial.uniforms.lightCount,
-                withStatues: { value: true },
+                withModels: { value: true },
                 wantDirect: { value: direct },
                 pass: { value: 0 },
                 vertexPositions: { value: positionTexture },
@@ -1287,7 +1287,7 @@ export class LightBaker {
             fragmentShader: probeShader,
             uniforms: {
                 ...this.gatherMaterial.uniforms,
-                withStatues: { value: false },
+                withModels: { value: false },
                 pass: { value: 0 },
                 probes: { value: positions },
             },

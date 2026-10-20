@@ -17,7 +17,7 @@ export function collisionView(walker) {
     const edge = new THREE.LineBasicMaterial({ color: COLOR, toneMapped: false });
     const obstacles = new THREE.Group();
     group.add(obstacles);
-    // die Kästen neu, wenn welche dazugekommen sind (Statuen laden später)
+    // die Kästen neu, wenn welche dazugekommen sind (Modelle laden später)
     let count = -1;
     const build = () => {
         if (walker.boxes.length === count) return;

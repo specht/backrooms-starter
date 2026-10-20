@@ -1,5 +1,5 @@
 // Laufen: am Rechner mit Maus und Tastatur, auf dem Handy mit zwei Daumen,
-// mit einer VR-Brille mit den Sticks der Controller. Wände und Statuen
+// mit einer VR-Brille mit den Sticks der Controller. Wände und Modelle
 // halten dich auf.
 import * as THREE from 'three';
 
@@ -30,7 +30,7 @@ export class Walker {
         this.touched = false;
         // Blöcke, die bis unter Kopfhöhe reichen, stehen im Weg
         const cell = level.settings.cell;
-        // (Statuen kommen mit addObstacle dazu, wenn sie geladen sind)
+        // (Modelle kommen mit addObstacle dazu, wenn sie geladen sind)
         // (y0 bis y1: wie hoch er reicht, damit ein Block in einem Raum
         // darüber unten nicht im Weg steht)
         this.boxes = level.things.filter((t) => t.type === 'block' && t.base + t.offset[1] < 1.7).map((t) => {

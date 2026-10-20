@@ -124,7 +124,7 @@ its room is among them. In the automap, U shows it.
 <tr><td><code>level.ini</code></td><td>the name of the level, the room you start in, light settings</td></tr>
 <tr><td><code>rooms/NAME.room</code></td><td>one file per room: its floor plan and what is in it</td></tr>
 <tr><td><code>lobby/</code></td><td>a whole level to try, with its rooms and its baked light</td></tr>
-<tr><td><code>statues/</code></td><td>3D models (glTF or GLB): a statue, a sofa, a wall lamp</td></tr>
+<tr><td><code>models/</code></td><td>3D models (glTF or GLB): a statue, a sofa, a wall lamp</td></tr>
 <tr><td><code>level.light</code></td><td>saved light, if you saved it (»Save light«)</td></tr>
 <tr><td><code>engine/</code></td><td>the program: reading the level, building it, baking the light, walking</td></tr>
 <tr><td><code>textures.html</code></td><td>the textures on their own: <code>?show=marble</code> (also <code>wallpaper</code>, <code>wood</code>) step by step, <code>?tile=marble&amp;edges</code> nine times side by side</td></tr>
@@ -250,15 +250,15 @@ oval one when width and depth differ).
 ### A model: a statue, furniture, a lamp
 
 <table>
-<tr><td><code>model</code></td><td>a glTF file (with its <code>.bin</code> and textures next to it) or a GLB file, such as <code>statues/athena.glb</code></td></tr>
+<tr><td><code>model</code></td><td>a glTF file (with its <code>.bin</code> and textures next to it) or a GLB file, such as <code>models/athena.glb</code></td></tr>
 <tr><td><code>height</code></td><td>in metres (2.0)</td></tr>
-<tr><td><code>rotation</code></td><td>in degrees, around the vertical axis</td></tr>
+<tr><td><code>rotation</code></td><td>in degrees: one number turns it around the vertical axis (<code>rotation = 270</code>), three turn it around x, y and z as in <code>offset</code> (<code>rotation = 0, 270, 15</code>: turned 270° around the vertical, then leaning 15° to one side; first around y, then x, then z). A model that is stored lying on its back is stood up first</td></tr>
 <tr><td><code>offset</code></td><td>x, y, z in metres, out of the middle of its field, as in three.js: x east, y up, z south, such as <code>offset = 0, 1.6, -0.42</code> for a lamp on the north wall</td></tr>
+<tr><td colspan='2'>Order: the model is turned first (<code>rotation</code>, about its own middle), then placed: the middle of its outline over the middle of its field, its lowest point on the floor (or on its pedestal). Only then does <code>offset</code> move it, along the axes of the world, not those of the turned model: <code>offset = 0.42, 1.4, 0</code> always means 42 cm east, however the model is turned.</td></tr>
 <tr><td><code>light</code></td><td>a colour: the model is a lamp. Its light comes from its glowing parts (emissive in the model, or, when nothing is, the materials whose name says bulb or flame) and shines in all directions; its arm and shade cast shadows, its glass does not; <code>power</code> and <code>flicker</code> as for a lamp</td></tr>
 <tr><td><code>beam</code></td><td>for a lamp with a shade: its light falls only downwards, in a cone up to that many degrees from the vertical, such as <code>beam = 75</code>; <code>beam = up, 60</code> sends it upwards</td></tr>
 <tr><td><code>material</code></td><td><code>marble</code> instead of the model's own textures</td></tr>
 <tr><td><code>pedestal</code></td><td>a block under it: width, height, depth; <code>pedestal_color</code> paints it, <code>pedestal_material</code> makes it of marble, wood and so on</td></tr>
-<tr><td><code>tilt</code></td><td>in degrees, around the x axis, for a model that still lies down</td></tr>
 </table>
 
 ### Stairs and platforms
@@ -278,18 +278,24 @@ the door lies (`door = oben 1, 3` and `stairs = east, 3`) and end right in
 front of it. Under stairs and platforms there is no room: they are solid. A platform can
 have any shape, all neighbouring fields with its letter are one. `material`
 and `color` make them of tiles, wood and so on; without, the treads have the
-room's floor and the sides its walls.
+room's floor and the sides its walls. Stairs that start at a platform start
+at its height (a landing): `stairs = north, 3` from a platform at 1.5 m climbs
+from 1.5 m to 3 m, so a staircase can turn a corner.
+
+A lamp, a block or a model can stand on a platform: its section says
+`on = P`, with the platform's letter, and its field becomes part of that
+platform (a chair on a lifeguard's platform).
 
 ### A pool
 
 Every field with the letter is part of the pool; fields next to each other
-with the same depth and the same water are one pool. Its floor lies `pool`
+with the same depth, water and tint are one pool. Its floor lies `pool`
 below the floor of the room, lined with tiles, and the water stands `water`
 below the edge. You can't walk into water; into an empty pool you fall
-(Shift+R takes you back). A room with a pool has no ramp. `pool` may also
-stand in the section of a lamp, a block or a model: its field is part of the
-pool and still has its thing, a column standing in the water (on the floor of
-the pool) or a lamp above it.
+(Shift+R takes you back). A room with a pool has no ramp. A lamp, a block or
+a model can stand in a pool: its section says `in = W`, with the pool's
+letter, and its field is part of that pool and still has its thing, a column
+standing in the water (on the floor of the pool) or a lamp above it.
 
 ```
 [W]
@@ -340,15 +346,15 @@ In VR the water is a simple, half transparent surface.
 
 ## Statues and licences
 
-- `statues/athena.glb` (used in `lobby/rooms/halle.room`): Athena Giustiniani, a 3D scan of the plaster cast
+- `models/athena.glb` (used in `lobby/rooms/halle.room`): Athena Giustiniani, a 3D scan of the plaster cast
   KAS255 at the National Gallery of Denmark (SMK), public domain
   ([SMK Open](https://open.smk.dk/artwork/image/KAS255),
   [Public Domain Mark](https://creativecommons.org/publicdomain/mark/1.0/));
   reduced to fewer triangles.
-- `statues/sofa_03/`: [Sofa 03](https://polyhaven.com/a/sofa_03) by Fran Calvente,
-  `statues/industrial_wall_lamp/`: [Industrial Wall Lamp](https://polyhaven.com/a/industrial_wall_lamp),
-  `statues/industrial_wall_sconce/`: [Industrial Wall Sconce](https://polyhaven.com/a/industrial_wall_sconce) by Ulan Cabanilla,
-  `statues/brass_candleholders/`: the large candelabra from
+- `models/sofa_03/`: [Sofa 03](https://polyhaven.com/a/sofa_03) by Fran Calvente,
+  `models/industrial_wall_lamp/`: [Industrial Wall Lamp](https://polyhaven.com/a/industrial_wall_lamp),
+  `models/industrial_wall_sconce/`: [Industrial Wall Sconce](https://polyhaven.com/a/industrial_wall_sconce) by Ulan Cabanilla,
+  `models/brass_candleholders/`: the large candelabra from
   [Brass Candleholders](https://polyhaven.com/a/brass_candleholders) by Tina (only that one, moved to the origin),
   and, for `tiefe/`, [Metal Office Desk](https://polyhaven.com/a/metal_office_desk),
   [School Chair 01](https://polyhaven.com/a/SchoolChair_01),
@@ -367,7 +373,7 @@ In VR the water is a simple, half transparent surface.
 Other models work as well, if their licence allows it. On
 [Poly Haven](https://polyhaven.com/models) every model is CC0: choose glTF and
 1K (the program uses only the colour texture, larger ones look the same) and
-unpack the ZIP into its own folder in `statues`. More CC0 models: the
+unpack the ZIP into its own folder in `models`. More CC0 models: the
 [Smithsonian's 3D scans](https://3d.si.edu/collections) and
 [Sketchfab](https://sketchfab.com/search?features=downloadable&licenses=7c23a1ba438d4306920229c12afcb5f9&type=models)
 (download as GLB). Write down where a model comes from and under which

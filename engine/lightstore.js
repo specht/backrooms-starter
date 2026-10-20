@@ -3,7 +3,7 @@
 // neben level.ini liegt und mit dem Level veröffentlicht wird, etwa für eine
 // VR-Brille.
 //
-// Ein Fingerabdruck aus level.ini, allen Räumen, den Statuen und dem
+// Ein Fingerabdruck aus level.ini, allen Räumen, den Modellen und dem
 // Programm, das backt, sagt, ob gespeichertes Licht noch zum Level passt.
 // Ändert sich ein Zeichen, passt es nicht mehr, und das Licht wird neu
 // gebacken.
@@ -95,9 +95,9 @@ async function gunzip(bytes) {
 }
 
 // light: { size, steady, flicker, indirect } als Float32-Werte (RGBA je
-// Punkt), schon mit ihrer Helligkeit verrechnet; statues: { direct, bounced }
+// Punkt), schon mit ihrer Helligkeit verrechnet; models: { direct, bounced }
 // als Float32-Werte, drei pro Ecke. Liefert die gepackte Datei.
-export async function encodeLight(print, light, statues) {
+export async function encodeLight(print, light, models) {
     const { size } = light;
     const texels = size * size * 4;
     // direktes Licht und Flackern teilen sich einen Maßstab, die Kontaktschatten
@@ -106,15 +106,15 @@ export async function encodeLight(print, light, statues) {
     const indirectMax = maximum([[light.indirect, 3]]);
     const header = {
         format: FORMAT, fingerprint: print, size, directMax, indirectMax,
-        statueVertices: statues ? statues.direct.length / 3 : 0,
+        modelVertices: models ? models.direct.length / 3 : 0,
     };
     // mit Leerzeichen auf ein Vielfaches von 4 Bytes, damit die Zahlen der
-    // Statuen auf einer Grenze für Float32 beginnen
+    // Modelle auf einer Grenze für Float32 beginnen
     let text = JSON.stringify(header);
     while (text.length % 4) text += ' ';
     const head = new TextEncoder().encode(text);
-    const statueBytes = statues ? statues.direct.length * 4 * 2 : 0;
-    const bytes = new Uint8Array(4 + head.length + texels * 3 + statueBytes);
+    const modelBytes = models ? models.direct.length * 4 * 2 : 0;
+    const bytes = new Uint8Array(4 + head.length + texels * 3 + modelBytes);
     new DataView(bytes.buffer).setUint32(0, head.length, true);
     bytes.set(head, 4);
     let offset = 4 + head.length;
@@ -127,17 +127,17 @@ export async function encodeLight(print, light, statues) {
     offset += texels;
     quantize(light.indirect, bytes, offset, 3, indirectMax);
     offset += texels;
-    if (statues) {
-        // Statuen: wenige Werte, darum genau (Float32)
-        const floats = new Float32Array(bytes.buffer, offset, statues.direct.length * 2);
-        floats.set(statues.direct, 0);
-        floats.set(statues.bounced, statues.direct.length);
+    if (models) {
+        // Modelle: wenige Werte, darum genau (Float32)
+        const floats = new Float32Array(bytes.buffer, offset, models.direct.length * 2);
+        floats.set(models.direct, 0);
+        floats.set(models.bounced, models.direct.length);
     }
     return gzip(bytes);
 }
 
 // Liefert { header, steady, flicker, indirect (Uint8Array, RGBA je Punkt),
-// statues }, oder null, wenn die Datei nicht zu diesem Fingerabdruck passt.
+// models }, oder null, wenn die Datei nicht zu diesem Fingerabdruck passt.
 export async function decodeLight(packed, print) {
     const bytes = await gunzip(packed);
     const length = new DataView(bytes.buffer, bytes.byteOffset).getUint32(0, true);
@@ -147,15 +147,15 @@ export async function decodeLight(packed, print) {
     let offset = 4 + length;
     const take = (n) => { const part = bytes.slice(offset, offset + n); offset += n; return part; };
     const steady = take(texels), flicker = take(texels), indirect = take(texels);
-    let statues = null;
-    if (header.statueVertices > 0) {
-        const floats = new Float32Array(take(header.statueVertices * 3 * 4 * 2).buffer);
-        statues = {
-            direct: floats.subarray(0, header.statueVertices * 3),
-            bounced: floats.subarray(header.statueVertices * 3),
+    let models = null;
+    if (header.modelVertices > 0) {
+        const floats = new Float32Array(take(header.modelVertices * 3 * 4 * 2).buffer);
+        models = {
+            direct: floats.subarray(0, header.modelVertices * 3),
+            bounced: floats.subarray(header.modelVertices * 3),
         };
     }
-    return { header, steady, flicker, indirect, statues };
+    return { header, steady, flicker, indirect, models };
 }
 
 // IndexedDB: je Level-Datei das zuletzt gebackene Licht, mit Fingerabdruck
