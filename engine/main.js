@@ -1834,15 +1834,17 @@ async function start() {
             // Neue Stücke erst, wenn die Grafikkarte die letzten gezeichnet
             // hat: So sammelt sich keine Arbeit an, und der Bildschirm kommt
             // dazwischen dran. Mehr, solange sie unter 30 ms brauchte (sie
-            // sieht einmal je Bild nach), weniger, wenn über 40 ms; schon eins zu
+            // sieht einmal je Bild nach), weniger, wenn über 40 ms oder ein
+            // Bild über 80 ms dauert (ein großes, scharfes Bild allein
+            // braucht schon mehr als 30 ms, das bremst das Backen nicht); schon eins zu
             // lange, werden die Stücke kleiner, viele schnelle größer
             // (bake.js, TILE).
             if (!bakeMark || bakeMark.done) {
                 if (!baker.prepared) tilesPerFrame = 2;   // noch keine Arbeit: nicht schon hochzählen
                 else if (bakeMark) {
                     const took = bakeMark.took;
-                    if (took > 40 || frameTime > 50) tilesPerFrame = Math.max(1, Math.floor(tilesPerFrame / 2));
-                    else if (took < 30 && frameTime < 30) tilesPerFrame = Math.min(256, tilesPerFrame + Math.ceil(tilesPerFrame / 4));
+                    if (took > 40 || frameTime > 80) tilesPerFrame = Math.max(1, Math.floor(tilesPerFrame / 2));
+                    else if (took < 30) tilesPerFrame = Math.min(256, tilesPerFrame + Math.ceil(tilesPerFrame / 4));
                     if (took > 250 && tilesPerFrame === 1) baker.smallerTiles();
                     // vier Stücke werden eins: so viel Arbeit wie vorher
                     if (tilesPerFrame >= 16 && baker.largerTiles()) tilesPerFrame = Math.ceil(tilesPerFrame / 4);
