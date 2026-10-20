@@ -427,14 +427,15 @@ function bounceModels(models, baker, parts) {
 
 // Wie fleckig jede Art Fläche ist (stains in surfaceMaterial): Tapete,
 // Teppich und Decke am meisten, Glattes weniger
-const GRIME = { wallpaper: 1, carpet: 1, ceiling: 0.9, plain: 0.7, tiles: 0.45, wood: 0.4, velvet: 0.35, marble: 0.3, cardboard: 0.6 };
+const GRIME = { wallpaper: 1, carpet: 1, ceiling: 0.9, plain: 0.7, tiles: 0.45, wood: 0.4, velvet: 0.35, marble: 0.3, cardboard: 0.6,
+    concrete: 0.8, brick: 0.6, terrazzo: 0.35, carpet_tiles: 0.7, checker: 0.35 };
 
 // Wand, Boden und Decke: Textur mal Licht aus den beiden Lichtkarten
 // Holz, Fliesen und Marmor rechnet der Shader selbst, aus der Stelle in der
 // Welt: Kein Brett, keine Fliese und keine Ader wiederholt sich (SHADER_STYLES)
-const SHADER_STYLES = { wood: 1, tiles: 2, marble: 3, cardboard: 4 };
+const SHADER_STYLES = { wood: 1, tiles: 2, marble: 3, cardboard: 4, concrete: 5, brick: 6, terrazzo: 7, carpet_tiles: 8, checker: 9 };
 // Glänzende Flächen spiegeln die Leuchten ihres Raums (GLOSS: wie sehr; bis zu MIRRORED Leuchten je Raum)
-const GLOSS = { tiles: 1, marble: 0.6 };
+const GLOSS = { tiles: 1, marble: 0.6, terrazzo: 0.5, checker: 0.6 };
 const MIRRORED = 16;
 
 function surfaceMaterial(map, baker, uniforms, grime = 1, style = null, color = '#ffffff') {
@@ -597,21 +598,139 @@ function surfaceMaterial(map, baker, uniforms, grime = 1, style = null, color = 
                 float cloud = 0.94 + 0.06 * noise3(p * 4.0);
                 return pow(vec3(0.941, 0.925, 0.894) * cloud * (1.0 - strength * lines), vec3(2.2));
             }
-            // Pappe: Kraftpapier mit Flecken und feinen Fasern, und über die Mitte
-            // des Felds ein Streifen Klebeband, oben und an den Seiten nach Norden
-            // und Süden (eine Kiste steht mitten auf ihrem Feld)
-            vec3 cardboard(vec3 p, vec3 n) {
+            // zwischen a und b 1, sonst 0, über einen Bildpunkt (px) weich
+            float band(float x, float a, float b, float px) {
+                return smoothstep(a - px, a + px, x) - smoothstep(b - px, b + px, x);
+            }
+            // Pappe: Kraftpapier mit Flecken und feinen Fasern. Über die Mitte
+            // läuft Klebeband, über den Deckel und die Seiten nach Norden und
+            // Süden. Der Deckel ist heller, mit einer Falz neben dem Band, wo die
+            // Klappen zusammenstoßen; nach Osten und Westen zwei Pfeile »oben«,
+            // nach Norden und Süden ein Etikett. uv: Meter auf der Kiste, quer
+            // von der Mitte der Fläche, an den Seiten nach oben vom unteren Rand.
+            vec3 cardboard(vec3 p, vec3 n, vec2 uv) {
                 float aa = length(fwidth(p)) + 1e-5;
+                float px = max(fwidth(uv.x), fwidth(uv.y)) + 1e-5;
                 float blotch = noise3(p * 3.0);
                 float fibre = noise3(vec3(p.x * 70.0, p.y * 6.0, p.z * 70.0)) * clamp(1.0 - aa * 60.0, 0.0, 1.0);
                 vec3 color = baseColor * (0.9 + 0.08 * blotch + 0.05 * (fibre - 0.5));
-                float across = abs(fract(p.x) - 0.5);
-                float onTape = abs(n.x) < 0.5 ? 1.0 - smoothstep(0.035 - aa, 0.035 + aa, across) : 0.0;
+                float u = uv.x, v = uv.y, side = abs(u);
+                if (n.y > 0.5) {
+                    color *= 1.08;
+                    color *= 1.0 - 0.22 * band(side, 0.046, 0.05, px);   // die Falz, wo die Klappen aneinanderstoßen
+                } else if (abs(n.x) > 0.5) {
+                    float arrow = 0.0;
+                    for (int i = 0; i < 2; i++) {
+                        float du = abs(u - (float(i) - 0.5) * 0.12);
+                        float shaft = band(du, -1.0, 0.012, px) * band(v, 0.25, 0.4, px);
+                        float head = band(v, 0.4, 0.5, px) * band(du, -1.0, (0.5 - v) * 0.6, px);
+                        arrow = max(arrow, max(shaft, head));
+                    }
+                    color = mix(color, vec3(0.13, 0.1, 0.07), arrow * 0.85);
+                } else if (abs(n.y) < 0.5) {
+                    // jede Kiste ihr eigenes Etikett (aus der Nummer ihres Felds),
+                    // vergilbt und fleckig wie die Pappe; manche haben keins
+                    vec2 box = floor(p.xz) + (n.z > 0.0 ? 0.5 : 0.0);
+                    float h1 = hash2(box), h2 = hash2(box + 7.3), h3 = hash2(box + 13.1);
+                    float u0 = 0.08 + 0.08 * h1, w = 0.13 + 0.1 * h2, v0 = 0.24 + 0.14 * h3, hgt = 0.1 + 0.08 * h2;
+                    float label = band(u, u0, u0 + w, px) * band(v, v0, v0 + hgt, px) * step(0.15, h3);
+                    float rows = floor(2.0 + 3.0 * h1);
+                    float row = floor((v - v0 - 0.02) / 0.03);
+                    float print = band(fract((v - v0 - 0.02) / 0.03), 0.3, 0.65, px / 0.03) * band(row, -0.5, rows - 0.5, 0.01)
+                        * band(u, u0 + 0.015, u0 + w - 0.015 - w * 0.35 * hash2(box + row), px);
+                    vec3 paper = mix(vec3(0.78, 0.74, 0.64), baseColor * 1.25, 0.25) * (0.88 + 0.12 * blotch);
+                    color = mix(color, paper, label);
+                    color = mix(color, vec3(0.25, 0.22, 0.19), label * print * 0.7);
+                }
+                float onTape = abs(n.x) < 0.5 ? band(side, -1.0, 0.035, px) : 0.0;
                 color = mix(color, baseColor * vec3(1.2, 1.1, 0.9), onTape * 0.85);
                 return pow(min(color, vec3(1.0)), vec3(2.2));
             }
+            // Beton: grau, fleckig, mit kleinen Poren. An Wänden die Fugen der
+            // Schaltafeln (2,5 m × 1,25 m) und die Löcher ihrer Anker, an Böden
+            // alle 3 m ein Schnitt
+            vec3 concrete(vec2 uv, vec3 p, vec3 n) {
+                float px = max(fwidth(uv.x), fwidth(uv.y)) + 1e-5;
+                float f = 0.92 + 0.1 * (noise3(p * 1.3) - 0.5) + 0.05 * (noise3(p * 7.0) - 0.5);
+                vec2 cell = floor(uv * 40.0), inCell = fract(uv * 40.0);
+                float pore = step(0.93, hash2(cell)) * (1.0 - smoothstep(0.12, 0.3, length(inCell - 0.5))) * clamp(1.0 - px * 60.0, 0.0, 1.0);
+                f *= 1.0 - 0.35 * pore;
+                if (abs(n.y) < 0.5) {
+                    vec2 panel = uv / vec2(2.5, 1.25);
+                    vec2 edge = min(fract(panel), 1.0 - fract(panel)) * vec2(2.5, 1.25);
+                    f *= mix(1.0, 0.72, line(min(edge.x, edge.y), 0.004, px));
+                    vec2 tie = fract(uv / 0.625) - 0.5;
+                    f *= mix(1.0, 0.45, (1.0 - smoothstep(0.03 - px * 1.6, 0.03 + px * 1.6, length(tie) * 0.625)) * clamp(1.0 - px * 25.0, 0.0, 1.0));
+                } else {
+                    vec2 edge = min(fract(uv / 3.0), 1.0 - fract(uv / 3.0)) * 3.0;
+                    f *= mix(1.0, 0.7, line(min(edge.x, edge.y), 0.003, px));
+                }
+                return pow(min(baseColor * f, vec3(1.0)), vec3(2.2));
+            }
+            // Ziegel im Läuferverband: 24 cm × 7,1 cm, Fugen 1 cm, jede zweite
+            // Reihe um einen halben Stein versetzt, jeder Stein in seinem Ton
+            vec3 brick(vec2 uv) {
+                float px = max(fwidth(uv.x), fwidth(uv.y)) + 1e-5;
+                float row = floor(uv.y / 0.081);
+                float x = uv.x / 0.25 + 0.5 * mod(row, 2.0);
+                vec2 id = vec2(floor(x), row);
+                float tone = 0.8 + 0.3 * hash2(id) + 0.06 * (noise3(vec3(uv * 9.0, row)) - 0.5);
+                vec3 stone = baseColor * tone;
+                float ex = min(fract(x), 1.0 - fract(x)) * 0.25, ey = min(fract(uv.y / 0.081), 1.0 - fract(uv.y / 0.081)) * 0.081;
+                float mortar = max(line(ex, 0.005, px), line(ey, 0.005, px));
+                vec3 joint = mix(vec3(0.62, 0.6, 0.56), stone, 0.15) * (fract(uv.y / 0.081) > 0.5 ? 0.82 : 0.95);   // oben im Schatten des Steins darüber
+                return pow(min(mix(stone, joint, mortar), vec3(1.0)), vec3(2.2));
+            }
+            // Terrazzo: gebrochene Steinchen in Zement, eckig wie Scherben. Jedes
+            // ist eine Zelle um einen zufälligen Punkt (Voronoi): wo der nächste und
+            // der zweitnächste Punkt fast gleich weit sind, liegt Zement dazwischen.
+            // Weiß, Grau, Rotbraun und Schwarz; weit weg ihre mittlere Farbe.
+            vec3 terrazzo(vec2 uv) {
+                float px = max(fwidth(uv.x), fwidth(uv.y)) + 1e-5;
+                vec2 g = uv / 0.035;
+                vec2 i = floor(g);
+                float f1 = 9.0, f2 = 9.0; vec2 near = vec2(0.0);
+                for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+                    vec2 c = i + vec2(float(dx), float(dy));
+                    vec2 at = c + 0.15 + 0.7 * vec2(hash2(c), hash2(c + 17.0));
+                    float d = length(g - at);
+                    if (d < f1) { f2 = f1; f1 = d; near = c; } else if (d < f2) { f2 = d; }
+                }
+                float pick = hash2(near + 9.0);
+                vec3 stone = pick < 0.45 ? vec3(0.95, 0.93, 0.89) : pick < 0.68 ? vec3(0.55, 0.55, 0.56) : pick < 0.86 ? vec3(0.64, 0.34, 0.24) : vec3(0.13, 0.13, 0.14);
+                stone *= 0.92 + 0.12 * hash2(near + 3.0);
+                float gap = 0.12 + 0.25 * hash2(near + 5.0);   // breiter Zement um manche Steinchen
+                float chip = smoothstep(gap - px / 0.035, gap + px / 0.035, f2 - f1);
+                vec3 color = mix(baseColor, stone, chip);
+                vec3 mean = mix(baseColor, vec3(0.69, 0.62, 0.59), 0.7);   // die Steinchen nach ihren Anteilen, dazwischen Zement
+                return pow(min(mix(color, mean, clamp(px * 25.0 - 0.5, 0.0, 1.0)), vec3(1.0)), vec3(2.2));
+            }
+            // Teppichfliesen: 50 cm, jede um 90° gegen ihre Nachbarn gedreht, mit
+            // feinen Rippen in ihrer Richtung und ihrem eigenen Ton
+            vec3 carpetTiles(vec2 uv) {
+                float px = max(fwidth(uv.x), fwidth(uv.y)) + 1e-5;
+                vec2 id = floor(uv / 0.5), in2 = fract(uv / 0.5);
+                bool turned = mod(id.x + id.y, 2.0) > 0.5;
+                float rib = 0.5 + 0.5 * sin((turned ? uv.x : uv.y) * 6.28318 / 0.006);
+                rib = mix(0.5, rib, clamp(1.0 - px * 200.0, 0.0, 1.0));
+                float tone = 0.9 + 0.12 * hash2(id) + 0.04 * (rib - 0.5) + 0.06 * (noise3(vec3(uv * 12.0, 1.0)) - 0.5);
+                vec2 edge = min(in2, 1.0 - in2) * 0.5;
+                float seam = line(min(edge.x, edge.y), 0.002, px);
+                return pow(min(baseColor * tone * (1.0 - 0.25 * seam), vec3(1.0)), vec3(2.2));
+            }
+            // Schachbrett: 30 cm, abwechselnd in der Farbe des Bodens und fast schwarz
+            vec3 checker(vec2 uv) {
+                float px = max(fwidth(uv.x), fwidth(uv.y)) + 1e-5;
+                vec2 q = uv / 0.3;
+                vec2 s = smoothstep(-px / 0.3, px / 0.3, sin(q * 3.14159) * 0.3);
+                float dark = s.x * s.y + (1.0 - s.x) * (1.0 - s.y);
+                vec3 color = mix(baseColor, vec3(0.06, 0.06, 0.065), dark) * (0.96 + 0.06 * hash2(floor(q)));
+                return pow(min(color, vec3(1.0)), vec3(2.2));
+            }
             void main() {
-                vec3 surface = style == 1 ? wood(vUv) : style == 2 ? tiles(vUv) : style == 3 ? marble(vWorld) : style == 4 ? cardboard(vWorld, vNormal) : texture2D(map, vUv * mapScale).rgb;
+                vec3 surface = style == 1 ? wood(vUv) : style == 2 ? tiles(vUv) : style == 3 ? marble(vWorld) : style == 4 ? cardboard(vWorld, vNormal, vUv)
+                    : style == 5 ? concrete(vUv, vWorld, vNormal) : style == 6 ? brick(vUv) : style == 7 ? terrazzo(vUv) : style == 8 ? carpetTiles(vUv) : style == 9 ? checker(vUv)
+                    : texture2D(map, vUv * mapScale).rgb;
                 vec3 base = useTexture ? stains(surface, vWorld) : vec3(0.8);
                 vec4 steady = texture2D(steadyMap, vLightUv);
                 vec4 flickering = texture2D(flickerMap, vLightUv);

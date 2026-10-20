@@ -831,12 +831,18 @@ export function buildGeometry(level, modelBoxes = []) {
             }
             continue;
         }
-        put([[x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]], w, d);                 // oben
-        if (block.base > 0.001) put([[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]], w, d); // unten
-        put([[x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0]], w, h);                 // nach -z
-        put([[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]], w, h);                 // nach +z
-        put([[x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0]], d, h);                 // nach -x
-        put([[x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1]], d, h);                 // nach +x
+        // Pappe braucht Koordinaten auf der Kiste (Meter): quer von der Mitte
+        // der Fläche, an den Seiten nach oben vom unteren Rand, für Deckel,
+        // Pfeile und Etikett (main.js)
+        const box = block.material === 'cardboard';
+        const onSide = (width, height) => (box ? { uvAt: (s, t) => [(s - 0.5) * width, t * height] } : {});
+        const onTop = box ? { uvAt: (s, t) => [(s - 0.5) * w, (t - 0.5) * d] } : {};
+        put([[x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]], w, d, onTop);                 // oben
+        if (block.base > 0.001) put([[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]], w, d, onTop); // unten
+        put([[x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0]], w, h, onSide(w, h));                 // nach -z
+        put([[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]], w, h, onSide(w, h));                 // nach +z
+        put([[x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0]], d, h, onSide(d, h));                 // nach -x
+        put([[x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1]], d, h, onSide(d, h));                 // nach +x
     }
 
     // Zweifarbige Wände (dado = höhe, farbe): jede Wand, die auf dem Boden

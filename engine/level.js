@@ -63,7 +63,9 @@ const LIGHT_DEFAULTS = {
 };
 
 // Woraus ein Block sein kann (material = …): dieselben Arten wie Wände
-const BLOCK_MATERIALS = ['wallpaper', 'marble', 'wood', 'tiles', 'velvet', 'plain', 'cardboard'];
+const WALLS = ['wallpaper', 'marble', 'wood', 'tiles', 'velvet', 'plain', 'concrete', 'brick', 'terrazzo'];
+const FLOORS = ['carpet', 'marble', 'wood', 'tiles', 'plain', 'concrete', 'brick', 'terrazzo', 'carpet_tiles', 'checker'];
+const BLOCK_MATERIALS = [...WALLS, 'cardboard', 'carpet_tiles', 'checker'];
 
 const BLOCK_DEFAULTS = {
     shape: 'box',         // box: ein Quader, round: eine Säule (rund, oder oval, wenn Breite und Tiefe verschieden sind)
@@ -147,8 +149,8 @@ function parseRoom(id, source) {
     const settings = { ...ROOM_DEFAULTS, ...values(sections.find((s) => s.name === 'room')) };
     const heights = [settings.height].flat();
     if (heights.some((h) => !(h > 0.5 && h < 50))) throw new LevelError(file, null, `height = ${settings.height}: a ceiling is between 0.5 and 50 metres high.`);
-    if (!['wallpaper', 'marble', 'wood', 'tiles', 'velvet', 'plain'].includes(settings.walls)) throw new LevelError(file, null, `walls = ${settings.walls} does not exist. Possible: wallpaper, marble, wood, tiles, velvet, plain.`);
-    if (!['carpet', 'marble', 'wood', 'tiles', 'plain'].includes(settings.floor)) throw new LevelError(file, null, `floor = ${settings.floor} does not exist. Possible: carpet, marble, wood, tiles, plain.`);
+    if (!WALLS.includes(settings.walls)) throw new LevelError(file, null, `walls = ${settings.walls} does not exist. Possible: ${WALLS.join(', ')}.`);
+    if (!FLOORS.includes(settings.floor)) throw new LevelError(file, null, `floor = ${settings.floor} does not exist. Possible: ${FLOORS.join(', ')}.`);
     if (settings.baseboard === 'none') {
         settings.baseboard = null;
     } else {

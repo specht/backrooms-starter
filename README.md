@@ -221,8 +221,8 @@ just as a door places its neighbour. Whoever steps onto the hole falls.
 <tr><td><code>height</code></td><td>ceiling height above the floor in metres (2.7); two numbers for a sloped ceiling: <code>height = 2.5, 4</code></td></tr>
 <tr><td><code>ramp</code></td><td>a sloped floor: the direction it rises to and by how many metres, such as <code>ramp = east, 4</code>; it rises from the first field inside the wall to the last; a door between two floors that slope differently joins both</td></tr>
 <tr><td><code>slope</code></td><td><code>flat</code>, or the direction the ceiling rises to: <code>north</code>, <code>east</code>, <code>south</code>, <code>west</code>; <code>gable</code> is a pitched roof, highest in the middle, its ridge along the longer side of the room</td></tr>
-<tr><td><code>walls</code></td><td><code>wallpaper</code>, <code>marble</code>, <code>wood</code> (vertical boards), <code>tiles</code> (10 cm, as in a pool), <code>velvet</code> (vertical stripes, as in a cinema) or <code>plain</code>, in the colour of <code>wallpaper</code></td></tr>
-<tr><td><code>floor</code></td><td><code>carpet</code>, <code>marble</code>, <code>wood</code> (floorboards), <code>tiles</code> or <code>plain</code>, in the colour of <code>carpet</code></td></tr>
+<tr><td><code>walls</code></td><td><code>wallpaper</code>, <code>marble</code>, <code>wood</code> (vertical boards), <code>tiles</code> (10 cm, as in a pool), <code>velvet</code> (vertical stripes, as in a cinema) or <code>plain</code>, <code>concrete</code> (formwork panels with tie holes), <code>brick</code> (running bond) or <code>terrazzo</code> (stone chips in cement), in the colour of <code>wallpaper</code></td></tr>
+<tr><td><code>floor</code></td><td><code>carpet</code>, <code>marble</code>, <code>wood</code> (floorboards), <code>tiles</code>, <code>plain</code>, <code>concrete</code>, <code>brick</code>, <code>terrazzo</code>, <code>carpet_tiles</code> (office carpet tiles, each turned against its neighbours) or <code>checker</code> (black and the colour of <code>carpet</code>), in the colour of <code>carpet</code></td></tr>
 <tr><td><code>wallpaper</code>, <code>carpet</code>, <code>ceiling</code></td><td>colours, such as <code>#c9b458</code></td></tr>
 <tr><td><code>baseboard</code></td><td>the skirting board: height and colour, such as <code>0.08, #86763c</code>; without it, 8 cm and a little darker than the wallpaper; <code>none</code>: no skirting board. Along a sloping floor (a ramp) there is none</td></tr>
 <tr><td><code>dado</code></td><td>the lower part of the walls different: height and colour, such as <code>dado = 1.2, #1a1a1a</code>; <code>dado_material</code> says what it is made of (without: like the walls)</td></tr>
@@ -249,7 +249,7 @@ A lamp hangs just below the ceiling, in the middle of its field.
 wide, 6 m high and 0.9 m deep, in the middle of its field: a column.
 `base` lifts it off the floor, `color` paints it (without a colour, it has the
 room's wallpaper). `material` makes it of `marble`, `wood`, `tiles`, `velvet`,
-`wallpaper`, `plain` or `cardboard` (a box with a strip of tape over the middle of its field), whatever the room's walls are, in the colour of
+`wallpaper`, `plain` or `cardboard` (a cardboard box: tape over the lid, a label, two arrows pointing up), whatever the room's walls are, in the colour of
 `color` or the room's wallpaper. `shape = round` makes it a round column (an
 oval one when width and depth differ).
 
