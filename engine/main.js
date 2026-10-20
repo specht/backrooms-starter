@@ -12,7 +12,9 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { loadLevel } from './level.js';
 import { buildGeometry, EDGE_ANGLE } from './geometry.js';
-import { buildGrid, LightBaker, lightRange, channelColors } from './bake.js';
+import { buildGrid, LightBaker, lightRange, channelColors, gpuMark } from './bake.js';
+import { createStats } from './stats.js';
+import { atlasView } from './atlasview.js';
 import { wallpaperTexture, carpetTexture, ceilingTexture, lampTexture, plainTexture, marbleTexture, woodTexture, tileTexture, velvetTexture, glowTexture } from './textures.js';
 import { Walker } from './controls.js';
 import { Automap, LINE_COLOR } from './automap.js';
@@ -28,7 +30,6 @@ import { Portals } from './portals.js';
 import { collisionView } from './collision.js';
 
 const params = new URLSearchParams(location.search);
-const PASSES_PER_FRAME = 4;    // pro Bild, solange gebacken wird
 const DARK_SECONDS = 1.2;      // erst nur die Linien im Dunkeln
 const SWITCH_SECONDS = 2.0;    // dann gehen die Leuchten nacheinander an
 const FLICKER_CHANNELS = 4;    // so viele Gruppen flackern unabhängig voneinander
@@ -41,7 +42,9 @@ const BLOOM_THRESHOLD = 1.6;   // so leuchten vor allem die Leuchten, nicht scho
 const PANEL_HDR = 2.2;           // nicht heller: Sonst wird die ganze Leuchte weiß und verliert ihr Gitter
 const GLOW = 0.85;               // wie stark der Schein um eine Leuchte ist (auf Dunklem; auf Hellem weniger)
 
-const levelFile = params.get('level') ?? 'level.ini';
+// ?level=lobby/level.ini, oder kurz ?level=lobby: der Ordner mit seiner level.ini
+const levelParam = params.get('level') ?? 'level.ini';
+const levelFile = /\.ini$/i.test(levelParam) ? levelParam : `${levelParam.replace(/\/+$/, '')}/level.ini`;
 // Was zu sehen ist: Jede Taste schaltet einen Teil an oder aus, ein Klick
 // auf seinen Schalter auch. ?show=light, direct oder bounce wählt den Anfang.
 const PARTS = [
@@ -106,15 +109,29 @@ async function fetchText(file) {
     return response.text();
 }
 
+// Jede Datei eines Modells wird einmal geladen, auch wenn es 30 Stühle
+// davon gibt: Alle teilen sich ihre Texturen. Die Datei selbst kommt in den
+// Fingerabdruck des gespeicherten Lichts (modelFile(...).buffer).
+const modelFiles = new Map();
+function modelFile(path) {
+    if (!modelFiles.has(path)) {
+        modelFiles.set(path, (async () => {
+            const response = await fetch(path);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const buffer = await response.arrayBuffer();
+            const gltf = await new GLTFLoader().parseAsync(buffer, path.replace(/[^/]*$/, ''));
+            return { buffer, scene: gltf.scene };
+        })());
+    }
+    return modelFiles.get(path);
+}
+
 // Ein Modell: auf die gewünschte Höhe gebracht, mitten aufs Feld gestellt.
-// bytes bekommt die Datei, für den Fingerabdruck des gespeicherten Lichts.
-async function loadModel(thing, settings, bytes) {
-    const response = await fetch(thing.model);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const buffer = await response.arrayBuffer();
-    bytes.push(thing.model, buffer);
-    const gltf = await new GLTFLoader().parseAsync(buffer, thing.model.replace(/[^/]*$/, ''));
-    const object = gltf.scene;
+// Eine Kopie der geladenen Datei; ihre Geometrie bekommt jedes eigene, denn
+// in ihr steht das Licht für die Ecken (lightModel).
+async function loadModel(thing, settings) {
+    const object = (await modelFile(thing.model)).scene.clone();
+    object.traverse((node) => { if (node.isMesh) node.geometry = node.geometry.clone(); });
     // Unsichtbare Kollisionskörper, die manche Modelle mitbringen, gehören nicht ins Bild
     const colliders = [];
     object.traverse((node) => { if (/collider/i.test(node.name)) colliders.push(node); });
@@ -177,16 +194,21 @@ function addGlow(material, map, strength) {
 // Wie stark eine Stelle eines Modells spiegelt: Metall ganz, glattes Glas
 // oder Lack ein wenig, Raues gar nicht. Aus metalness und roughness des
 // Modells und ihren Texturen (Poly Haven packt beide in eine: g rau, b Metall).
-// Liefert { strength, map, most } oder null, wenn nichts spiegelt; most: wie
-// stark die am stärksten spiegelnde Stelle spiegelt.
+// Liefert { strength, map, mirror } oder null, wenn nichts spiegelt; mirror:
+// ob es ein Spiegel ist (mindestens ein Viertel spiegelt fast ganz).
+const reflectivities = new WeakMap();   // je Material einmal: Modelle derselben Datei teilen es
 function reflectivity(material) {
     if (!material?.isMeshStandardMaterial) return null;
+    if (!reflectivities.has(material)) reflectivities.set(material, measureReflectivity(material));
+    return reflectivities.get(material);
+}
+function measureReflectivity(material) {
     const metal = material.metalness ?? 0, rough = material.roughness ?? 1;
     const strength = (m, r) => (0.08 + 0.92 * m) * Math.min(1, Math.max(0, (0.55 - r) / 0.45));
     const map = material.roughnessMap ?? material.metalnessMap;
     if (!map?.image) {
         const s = strength(metal, rough);
-        return s > 0.02 ? { strength: s, map: null, most: s } : null;
+        return s > 0.02 ? { strength: s, map: null, mirror: s > 0.7 } : null;
     }
     const { width, height } = map.image;
     const canvas = document.createElement('canvas');
@@ -196,7 +218,7 @@ function reflectivity(material) {
     context.drawImage(map.image, 0, 0);
     const pixels = context.getImageData(0, 0, width, height);
     const p = pixels.data;
-    let most = 0;
+    let most = 0, shiny = 0;
     for (let i = 0; i < p.length; i += 4) {
         const r = (material.roughnessMap ? p[i + 1] / 255 : 1) * rough;
         const m = (material.metalnessMap ? p[i + 2] / 255 : 1) * metal;
@@ -204,6 +226,7 @@ function reflectivity(material) {
         p[i] = p[i + 1] = p[i + 2] = Math.round(s * 255);
         p[i + 3] = 255;
         most = Math.max(most, s);
+        if (s > 0.7) shiny += 1;
     }
     if (most < 0.02) return null;
     context.putImageData(pixels, 0, 0);
@@ -211,37 +234,65 @@ function reflectivity(material) {
     texture.flipY = map.flipY;
     texture.channel = map.channel;
     texture.colorSpace = THREE.NoColorSpace;
-    return { strength: 1, map: texture, most };
+    return { strength: 1, map: texture, mirror: shiny >= p.length / 16 };
 }
 
 // Wie fein das Rundumbild ist, je Seite: Ein Spiegel braucht es scharf, für
-// etwas Glanz genügt ein grobes (ein feines kostet etwa 48 MB auf der Grafikkarte)
+// etwas Glanz genügt ein grobes (ein feines kostet etwa 48 MB auf der
+// Grafikkarte, auf Handy und Tablet ein Viertel davon)
 const REFLECTION_SHARP = 1024;
+const REFLECTION_SHARP_SMALL = 512;
 const REFLECTION_SOFT = 256;
 
-// Spiegelungen: Ist das Licht fertig, nimmt eine Kamera aus der Mitte jedes
-// spiegelnden Modells einmal ein Rundumbild des Raums auf (eine Cube Map).
-// Das Modell zeigt es dort, wo es spiegelt. Es ist ein Bild: Was sich danach
-// bewegt (du), ist nicht darin, aber es kostet beim Laufen nichts.
-function captureReflections(renderer, scene, models, hide) {
+// Spiegelungen: Ist das Licht fertig, nimmt eine Kamera einmal ein
+// Rundumbild auf (eine Cube Map); spiegelnde Modelle zeigen es dort, wo sie
+// spiegeln. Es ist ein Bild: Was sich danach bewegt (du), ist nicht darin,
+// aber es kostet beim Laufen nichts. Ein Spiegel bekommt ein eigenes, scharfes
+// aus seiner Mitte (flach und zum großen Teil spiegelnd; Chrom an einem
+// Stuhl ist keiner); was nur etwas glänzt, teilt sich je Raum ein grobes aus
+// der Mitte dieser Modelle. Ein Bild je Bild, und nur die Räume, die man von
+// dort aus sieht (cull): Alle auf einmal, mit dem ganzen Level, hielte ein
+// Tablet nicht aus.
+const reflectingMeshes = (model) => {
+    const meshes = [];
+    model.traverse((mesh) => { if (mesh.isMesh && mesh.userData.reflect) meshes.push(mesh); });
+    return meshes;
+};
+function reflectionShots(models) {
+    const shots = [], byRoom = new Map();
     for (const model of models) {
-        const meshes = [];
-        model.traverse((mesh) => { if (mesh.isMesh && mesh.userData.reflect) meshes.push(mesh); });
+        const meshes = reflectingMeshes(model);
         if (meshes.length === 0) continue;
-        const mirror = meshes.some((mesh) => mesh.userData.reflect.most > 0.7);
-        const target = model.userData.reflection ?? new THREE.WebGLCubeRenderTarget(mirror ? REFLECTION_SHARP : REFLECTION_SOFT, { type: THREE.HalfFloatType });
-        model.userData.reflection = target;
-        const camera = new THREE.CubeCamera(0.05, 80, target);
-        new THREE.Box3().setFromObject(model).getCenter(camera.position);
-        model.visible = false;
-        const shown = hide.filter((object) => object.visible);
-        for (const object of shown) object.visible = false;
-        camera.update(renderer, scene);
-        model.visible = true;
-        for (const object of shown) object.visible = true;
-        for (const mesh of meshes) {
+        const size = new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3());
+        const flat = Math.min(size.x, size.y, size.z) <= Math.max(size.x, size.y, size.z) / 6;
+        if (flat && meshes.some((mesh) => mesh.userData.reflect.mirror)) shots.push({ models: [model], sharp: true });
+        else {
+            if (!byRoom.has(model.userData.room)) byRoom.set(model.userData.room, []);
+            byRoom.get(model.userData.room).push(model);
+        }
+    }
+    for (const list of byRoom.values()) shots.push({ models: list, sharp: false });
+    return shots;
+}
+function captureReflection(renderer, scene, shot, hide, cull) {
+    const sharp = renderer.capabilities.maxTextureSize > 4096 ? REFLECTION_SHARP : REFLECTION_SHARP_SMALL;
+    shot.target ??= new THREE.WebGLCubeRenderTarget(shot.sharp ? sharp : REFLECTION_SOFT, { type: THREE.HalfFloatType });
+    const camera = new THREE.CubeCamera(0.05, 80, shot.target);
+    const box = new THREE.Box3();
+    for (const model of shot.models) box.expandByObject(model);
+    box.getCenter(camera.position);
+    // die sechs Richtungen schon jetzt (sonst erst in update), damit cull sie kennt
+    camera.coordinateSystem = renderer.coordinateSystem;
+    camera.updateCoordinateSystem();
+    cull(camera);
+    const hidden = [...shot.models, ...hide].filter((object) => object.visible);
+    for (const object of hidden) object.visible = false;
+    camera.update(renderer, scene);
+    for (const object of hidden) object.visible = true;
+    for (const model of shot.models) {
+        for (const mesh of reflectingMeshes(model)) {
             const { strength, map } = mesh.userData.reflect;
-            mesh.material.envMap = target.texture;
+            mesh.material.envMap = shot.target.texture;
             mesh.material.combine = THREE.MixOperation;
             mesh.material.reflectivity = strength;
             mesh.material.specularMap = map;
@@ -280,7 +331,8 @@ function lightAt(p, n, lights, ambient, out, self = null) {
 
 // Modelle bekommen ihr Licht nicht aus der Lichtkarte, sondern einmal
 // ausgerechnet für jede Ecke: Leuchten in der Nähe plus Umgebungslicht.
-function lightModel(object, lights, ambient) {
+// compute: false, wenn gespeichertes Licht es gleich ersetzt (nur die Materialien)
+function lightModel(object, lights, ambient, compute = true) {
     const p = new THREE.Vector3(), n = new THREE.Vector3();
     const rgb = [0, 0, 0];
     object.traverse((mesh) => {
@@ -290,7 +342,7 @@ function lightModel(object, lights, ambient) {
         const position = geometry.attributes.position, normal = geometry.attributes.normal;
         const colors = new Float32Array(position.count * 3);
         const normalMatrix = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld);
-        for (let i = 0; i < position.count; i++) {
+        for (let i = 0; i < position.count && compute; i++) {
             p.fromBufferAttribute(position, i).applyMatrix4(mesh.matrixWorld);
             n.fromBufferAttribute(normal, i).applyMatrix3(normalMatrix).normalize();
             // manche Modelle haben Ecken ohne Richtung (Länge 0): dann nach oben
@@ -392,7 +444,7 @@ function restoreModelLight(models, saved) {
 
 // Nach dem Backen: das Licht für jede Ecke jedes Modells auf der Grafikkarte,
 // mit Schatten des Modells auf sich selbst, direktes und Bounce-Licht getrennt.
-function bounceModels(models, baker, parts) {
+async function bounceModels(models, baker, parts) {
     const meshes = [];
     for (const model of models) model.traverse((mesh) => { if (mesh.isMesh && mesh.userData.direct) meshes.push(mesh); });
     const total = meshes.reduce((sum, mesh) => sum + mesh.geometry.attributes.position.count, 0);
@@ -411,8 +463,8 @@ function bounceModels(models, baker, parts) {
             normals.set([n.x, n.y, n.z], offset * 3);
         }
     }
-    const direct = baker.vertexLight(positions, normals, true);
-    const bounced = baker.vertexLight(positions, normals, false);
+    const direct = await baker.vertexLight(positions, normals, true);
+    const bounced = await baker.vertexLight(positions, normals, false);
     // ein ungültiger Wert (NaN) machte mit Bloom das ganze Bild schwarz
     for (const values of [direct, bounced]) for (let i = 0; i < values.length; i++) if (!Number.isFinite(values[i])) values[i] = 0;
     offset = 0;
@@ -428,12 +480,12 @@ function bounceModels(models, baker, parts) {
 // Wie fleckig jede Art Fläche ist (stains in surfaceMaterial): Tapete,
 // Teppich und Decke am meisten, Glattes weniger
 const GRIME = { wallpaper: 1, carpet: 1, ceiling: 0.9, plain: 0.7, tiles: 0.45, wood: 0.4, velvet: 0.35, marble: 0.3, cardboard: 0.6,
-    concrete: 0.8, brick: 0.6, terrazzo: 0.35, carpet_tiles: 0.7, checker: 0.35 };
+    concrete: 0.8, brick: 0.6, terrazzo: 0.35, carpet_tiles: 0.7, checker: 0.35, parquet: 0.4 };
 
 // Wand, Boden und Decke: Textur mal Licht aus den beiden Lichtkarten
 // Holz, Fliesen und Marmor rechnet der Shader selbst, aus der Stelle in der
 // Welt: Kein Brett, keine Fliese und keine Ader wiederholt sich (SHADER_STYLES)
-const SHADER_STYLES = { wood: 1, tiles: 2, marble: 3, cardboard: 4, concrete: 5, brick: 6, terrazzo: 7, carpet_tiles: 8, checker: 9 };
+const SHADER_STYLES = { wood: 1, tiles: 2, marble: 3, cardboard: 4, concrete: 5, brick: 6, terrazzo: 7, carpet_tiles: 8, checker: 9, parquet: 10 };
 // Glänzende Flächen spiegeln die Leuchten ihres Raums (GLOSS: wie sehr; bis zu MIRRORED Leuchten je Raum)
 const GLOSS = { tiles: 1, marble: 0.6, terrazzo: 0.5, checker: 0.6 };
 const MIRRORED = 16;
@@ -484,6 +536,12 @@ function surfaceMaterial(map, baker, uniforms, grime = 1, style = null, color = 
             uniform sampler2D flickerMap;
             uniform sampler2D indirectMap;     // Bounce-Licht: Licht, das von Flächen zurückgeworfen wurde
             uniform float intensity;
+            uniform float lampScale;           // wie hell gespiegelte Leuchten sind
+            // beim Backen des direkten Lichts: fertige Durchgänge, wie viele Stücke
+            // des laufenden schon fertig sind, wie groß ein Stück ist (bake.js, TILE);
+            // sonst x < 0. So zählt jeder Punkt seine eigenen Durchgänge, und das
+            // Bild wird Stück für Stück hell statt erst nach einem ganzen Durchgang
+            uniform vec3 bakeTiles;
             uniform float indirectIntensity;
             uniform float occlusionScale;
             uniform bool squared;              // gespeichertes Licht steht als Wurzel in den Lightmaps
@@ -597,6 +655,14 @@ function surfaceMaterial(map, baker, uniforms, grime = 1, style = null, color = 
                 float lines = 1.0 - min(1.0, vein / width);
                 float cloud = 0.94 + 0.06 * noise3(p * 4.0);
                 return pow(vec3(0.941, 0.925, 0.894) * cloud * (1.0 - strength * lines), vec3(2.2));
+            }
+            // beim Backen: 1 durch die Zahl der Durchgänge, die an dieser Stelle schon fertig sind
+            float passScale(vec2 uv) {
+                if (bakeTiles.x < 0.0) return 1.0;
+                float n = ceil(atlasSize / bakeTiles.z);
+                vec2 t = min(floor(uv * atlasSize / bakeTiles.z), vec2(n - 1.0));
+                float count = bakeTiles.x + (t.y * n + t.x < bakeTiles.y ? 1.0 : 0.0);
+                return count > 0.0 ? 1.0 / count : 0.0;
             }
             // zwischen a und b 1, sonst 0, über einen Bildpunkt (px) weich
             float band(float x, float a, float b, float px) {
@@ -727,18 +793,52 @@ function surfaceMaterial(map, baker, uniforms, grime = 1, style = null, color = 
                 vec3 color = mix(baseColor, vec3(0.06, 0.06, 0.065), dark) * (0.96 + 0.06 * hash2(floor(q)));
                 return pow(min(color, vec3(1.0)), vec3(2.2));
             }
+            // Fischgrätparkett: Stäbe 7 cm × 42 cm, abwechselnd längs und quer.
+            // Ein Längsstab und der Querstab an seinem Ende sind ein Paar; jedes
+            // nächste Paar liegt eine Stabbreite schräg darüber, so wird eine
+            // Treppe aus Stäben, und diese Treppen liegen dicht nebeneinander:
+            // ein Gitter mit den Schritten (1, 1) und (6, -6) in Stabbreiten. Für
+            // einen Punkt: das Paar des Gitters, in dem er liegt, und seine
+            // Nachbarn; in welchem Stab er ist, sagt, wie weit vom Ende und vom
+            // Rand. Jeder Stab in seinem Ton, die Maserung längs. Um 45° gedreht:
+            // So läuft das Zickzack an den Wänden entlang.
+            vec3 parquet(vec2 uv) {
+                const float W = 0.07, N = 6.0;
+                float px = max(fwidth(uv.x), fwidth(uv.y)) + 1e-5;
+                vec2 p = mat2(0.70711, -0.70711, 0.70711, 0.70711) * uv / W;
+                vec2 base = floor(vec2((p.x + p.y) * 0.5, (p.x - p.y) / (2.0 * N)));
+                vec2 id = base;
+                float along = 0.0, across = 0.0, kind = 0.0;
+                // ein Paar reicht bis zu vier Schritte (1, 1) weit: so weit zurück suchen
+                for (int dj = -1; dj <= 1; dj++) for (int di = -5; di <= 1; di++) {
+                    vec2 c = base + vec2(float(di), float(dj));
+                    vec2 q = p - c.x * vec2(1.0, 1.0) - c.y * vec2(N, -N);
+                    if (q.x >= 0.0 && q.x < N && q.y >= 0.0 && q.y < 1.0) { id = c; along = q.x; across = q.y; kind = 0.0; }
+                    if (q.x >= N && q.x < N + 1.0 && q.y >= 1.0 - N && q.y < 1.0) { id = c; along = q.y - 1.0 + N; across = q.x - N; kind = 1.0; }
+                }
+                float tone = 0.84 + 0.22 * hash2(id + kind * 31.7);
+                float phase = hash2(id * 1.3 + kind + 4.1) * 6.28318;
+                float fine = clamp(1.0 - px * 80.0, 0.0, 1.0);   // die Maserung, nur wo man sie auflösen kann
+                float grain = mix(0.5, 0.5 + 0.5 * sin(across * 40.0 + 2.5 * sin(along * 1.1 + phase) + phase), fine);
+                float f = tone * (0.9 + 0.12 * grain);
+                float edge = min(min(along, N - along), min(across, 1.0 - across)) * W;   // Abstand zur nächsten Fuge, in Metern
+                f *= mix(1.0, 0.45, line(edge, 0.0016, px));
+                return pow(min(baseColor * f, vec3(1.0)), vec3(2.2));
+            }
             void main() {
                 vec3 surface = style == 1 ? wood(vUv) : style == 2 ? tiles(vUv) : style == 3 ? marble(vWorld) : style == 4 ? cardboard(vWorld, vNormal, vUv)
                     : style == 5 ? concrete(vUv, vWorld, vNormal) : style == 6 ? brick(vUv) : style == 7 ? terrazzo(vUv) : style == 8 ? carpetTiles(vUv) : style == 9 ? checker(vUv)
-                    : texture2D(map, vUv * mapScale).rgb;
+                    : style == 10 ? parquet(vUv) : texture2D(map, vUv * mapScale).rgb;
                 vec3 base = useTexture ? stains(surface, vWorld) : vec3(0.8);
-                vec4 steady = texture2D(steadyMap, vLightUv);
-                vec4 flickering = texture2D(flickerMap, vLightUv);
+                float scale = passScale(vLightUv);
+                vec4 steady = texture2D(steadyMap, vLightUv) * scale;
+                vec4 flickering = texture2D(flickerMap, vLightUv) * scale;
                 vec3 indirect = texture2D(indirectMap, vLightUv).rgb;
                 // nahe bei Modellen das feinere Stück darüber, zum Rand hin weich ausgeblendet
                 if (vDetailWeight > 0.0) {
-                    steady = mix(steady, texture2D(steadyMap, vDetailUv), vDetailWeight);
-                    flickering = mix(flickering, texture2D(flickerMap, vDetailUv), vDetailWeight);
+                    float fine = passScale(vDetailUv);
+                    steady = mix(steady, texture2D(steadyMap, vDetailUv) * fine, vDetailWeight);
+                    flickering = mix(flickering, texture2D(flickerMap, vDetailUv) * fine, vDetailWeight);
                     indirect = mix(indirect, texture2D(indirectMap, vDetailUv).rgb, vDetailWeight);
                 }
                 if (squared) {
@@ -785,7 +885,7 @@ function surfaceMaterial(map, baker, uniforms, grime = 1, style = null, color = 
                         seen += lampColor[i] * coverage;
                     }
                     float fresnel = 0.04 + 0.96 * pow(1.0 - max(dot(-view, n), 0.0), 5.0);
-                    gl_FragColor.rgb += seen * gloss * fresnel * intensity;
+                    gl_FragColor.rgb += seen * gloss * fresnel * lampScale;
                 }
                 // G: ein Punkt für jeden Punkt der Lichtkarte, an dem das Licht
                 // ausgerechnet wurde (nahe bei Modellen die feineren); zu kleine
@@ -866,6 +966,13 @@ function layoutPrint(level) {
     return (hash >>> 0).toString(36);
 }
 
+// Sagt, was gerade passiert, und lässt den Browser das zeigen und auf
+// Maus und Tasten reagieren, bevor es weitergeht
+const stage = (message) => {
+    report(message);
+    return new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
+};
+
 async function start() {
     let level;
     // Was gelesen wurde, kommt in den Fingerabdruck des gespeicherten Lichts
@@ -885,7 +992,15 @@ async function start() {
     title.textContent = settings.name;
     document.title = settings.name;
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    // Hat die Grafikkarte auf dieser Seite schon aufgegeben, gibt der Browser
+    // manchmal kein WebGL mehr her, bis der Tab zu ist
+    let renderer;
+    try {
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+    } catch (error) {
+        report(`The browser gives this page no WebGL (${error.message}). Close the tab and open the page in a new one; if that does not help, restart the browser.`, true);
+        return;
+    }
     // höchstens doppelt so fein wie der Bildschirm, sonst wird es langsam;
     // ?sharp: so fein, wie der Bildschirm ist (für Bilder in hoher Auflösung)
     renderer.setPixelRatio(params.has('sharp') ? window.devicePixelRatio : Math.min(window.devicePixelRatio, 2));
@@ -935,21 +1050,37 @@ async function start() {
         return { ...t, channel, tilt, position: new THREE.Vector3((t.x + 0.5) * cell, y, (t.z + 0.5) * cell) };
     });
 
-    // Modelle laden; eins, das fehlt, wird gemeldet, das Level geht trotzdem
+    // Modelle laden, alle Dateien zugleich; eins, das fehlt, wird gemeldet,
+    // das Level geht trotzdem. Solange: wie viel schon da ist
     const models = [];
     const modelThings = [];
     const missing = [];
-    for (const thing of level.things.filter((t) => t.type === 'model')) {
-        try {
-            const object = await loadModel(thing, settings, sources);
-            models.push(object);
-            modelThings.push(thing);
-            scene.add(object);
-        } catch (error) {
-            missing.push(`${thing.model} (${thing.char})`);
-            sources.push(`missing ${thing.model}`);
-        }
+    const wanted = level.things.filter((t) => t.type === 'model');
+    const files = [...new Set(wanted.map((t) => t.model))];
+    let arrived = 0;
+    for (const path of files) modelFile(path).then(() => { arrived += 1; }, () => { arrived += 1; });
+    performance.setResourceTimingBufferSize?.(2000);   // sonst zählt der Browser nur die ersten 250 Dateien
+    const loadedBytes = () => performance.getEntriesByType('resource').reduce((sum, entry) => sum + (entry.encodedBodySize || entry.transferSize || 0), 0);
+    const showLoading = () => report(`Loading models: ${arrived} of ${files.length} files, ${(loadedBytes() / 1048576).toFixed(0)} MB …`);
+    showLoading();
+    const ticker = setInterval(showLoading, 250);
+    const placed = await Promise.allSettled(wanted.map((thing) => loadModel(thing, settings)));
+    clearInterval(ticker);
+    await stage('Building the level: models …');
+    // in den Fingerabdruck: jede Datei einmal, in fester Reihenfolge
+    for (const path of files) {
+        try { sources.push(path, (await modelFile(path)).buffer); } catch { sources.push(`missing ${path}`); }
     }
+    placed.forEach((result, i) => {
+        const thing = wanted[i];
+        if (result.status === 'fulfilled') {
+            models.push(result.value);
+            modelThings.push(thing);
+            scene.add(result.value);
+        } else {
+            missing.push(`${thing.model} (${thing.char})`);
+        }
+    });
 
     // Geländer um Becken: wie Modelle aus Metall
     for (const pool of level.pools.filter((p) => p.railing)) {
@@ -999,6 +1130,7 @@ async function start() {
     });
 
     // feinere Lichtkarte um Modelle herum, auch um Lampen: Ihr Arm und ihr Schirm werfen Schatten an die Wand
+    await stage('Building the level: walls, floors and ceilings …');
     const geometry = buildGeometry(level, models.map((object) => new THREE.Box3().setFromObject(object)));
     // Schatten werfen alle Modelle, auch Lampen (ihr Schirm),
     // aber nicht Glas und nicht, was leuchtet: Das ist das Licht selbst
@@ -1008,7 +1140,8 @@ async function start() {
         const glowing = lampModels.has(object) && (material?.emissiveMap || (material?.emissive && material.emissive.getHex() !== 0) || glowsByName(material));
         if (glowing || material?.transmission > 0 || (material?.transparent && material.opacity < 0.95)) mesh.userData.noShadow = true;
     });
-    const voxels = buildGrid(level, models, geometry.maxHeight, renderer.getContext().getParameter(WebGL2RenderingContext.MAX_3D_TEXTURE_SIZE));
+    // das Raster der Modelle erst, wenn gebacken wird (mit gespeichertem Licht nie)
+    const voxels = () => buildGrid(level, models, geometry.maxHeight, renderer.getContext().getParameter(WebGL2RenderingContext.MAX_3D_TEXTURE_SIZE));
     // ?bounces=0 zum Ausprobieren, sonst aus level.ini
     const bounces = params.has('bounces') ? Number(params.get('bounces')) : settings.bounces;
     const baker = new LightBaker(renderer, level, geometry, voxels, lights, bounces);
@@ -1018,6 +1151,7 @@ async function start() {
     // Teile des Programms, die das Licht ausrechnen.
     const engineFiles = ['level.js', 'geometry.js', 'bake.js', 'railing.js'];
     const engine = await Promise.all(engineFiles.map((file) => fetchText(new URL(`./${file}`, import.meta.url)).catch(() => file)));
+    await stage('Building the level: looking for saved light …');
     const print = fingerprint([...sources, `bounces ${bounces}`, ...engine]);
     const found = params.has('rebake') ? null : await findLight(levelFile, print);
     let lightSource = null;      // woher das Licht kommt, wenn es nicht gebacken wird
@@ -1030,6 +1164,8 @@ async function start() {
     // Für alle Flächen dieselben Werte: Helligkeit und Flackern
     const shared = {
         intensity: { value: 0 },
+        lampScale: { value: 0 },
+        bakeTiles: { value: new THREE.Vector3(-1, 0, 1) },
         indirectIntensity: { value: 0 },
         occlusionScale: { value: 0 },
         squared: { value: false },
@@ -1182,16 +1318,24 @@ async function start() {
     }
 
     const modelMeshes = [];
-    models.forEach((model, i) => {
+    let rested = performance.now();
+    for (const [i, model] of models.entries()) {
+        if (performance.now() - rested > 50) {
+            await stage(`Building the level: light for the models, ${i} of ${models.length} …`);
+            rested = performance.now();
+        }
         model.userData.room = modelThings[i].room;
         // das Umgebungslicht des Raums, in dem das Modell steht
         const room = level.rooms[modelThings[i].room].settings;
-        lightModel(model, lights, (room.ambient ?? settings.ambient) * 1.2);
+        lightModel(model, lights, (room.ambient ?? settings.ambient) * 1.2, !(lightSource && found.light.models));
         model.traverse((mesh) => { if (mesh.isMesh) modelMeshes.push(mesh); });
-    });
+    }
     // Mit gespeichertem Licht haben die Modelle ihres schon
     let modelsBounced = false;
+    let bakeRound = 0, bouncing = -1;   // das wievielte Backen; für welches die Modelle gerade Licht bekommen
     let reflectionsTaken = false;   // die Rundumbilder für spiegelnde Modelle
+    let reflectionQueue = [];       // die Rundumbilder, die noch fehlen (eins je Bild)
+    let reflectionShotList = null;  // alle, mit ihren Cube Maps (beim neuen Backen dieselben)
     if (lightSource) {
         modelsBounced = found.light.models ? restoreModelLight(models, found.light.models) : models.length === 0;
     }
@@ -1206,9 +1350,12 @@ async function start() {
     // hinter einer Säule allmählich statt auf einmal.
     const glowBlockers = [
         ...level.things.filter((t) => t.type === 'block').map((t) => {
-            const [w, h, d] = t.size;
+            const [w0, h, d0] = t.size;
             const cx = (t.x + 0.5) * settings.cell + t.offset[0], cz = (t.z + 0.5) * settings.cell + t.offset[2];
             const y0 = t.floor + t.base + t.offset[1];
+            // gedreht: der Kasten um ihn herum
+            const c = Math.abs(Math.cos(t.yaw ?? 0)), s = Math.abs(Math.sin(t.yaw ?? 0));
+            const w = w0 * c + d0 * s, d = w0 * s + d0 * c;
             return new THREE.Box3(new THREE.Vector3(cx - w / 2, y0, cz - d / 2), new THREE.Vector3(cx + w / 2, y0 + h, cz + d / 2));
         }),
         ...models.filter((object) => !lampModels.has(object)).map((object) => new THREE.Box3().setFromObject(object)),
@@ -1263,7 +1410,7 @@ async function start() {
         if (!view.isArrayCamera) return portals.visible(view, start);
         const all = { rooms: new Set(), seen: [] };
         for (const eye of view.cameras) {
-            const one = portals.visible(eye, start);
+            const one = portals.visible(eye, start, true);
             one.rooms.forEach((room) => all.rooms.add(room));
             all.seen.push(...one.seen);
         }
@@ -1305,6 +1452,30 @@ async function start() {
         walker.pitch = THREE.MathUtils.degToRad(view[3] ?? 0);
         walker.stand();   // auf den Boden dort, auch auf einer Rampe
     }
+
+    // ?tour=8: alle 8 Sekunden in den nächsten Raum, dort langsam im Kreis
+    // drehen; zum Messen (mit ?stats), ob ein Raum zu viel ist oder der
+    // Speicher wächst. Jeder Raum an dem Bodenfeld, das seiner Mitte am nächsten ist.
+    const tourSeconds = Number(params.get('tour'));
+    const tourStops = !(tourSeconds > 0) ? [] : level.rooms.map((room) => {
+        const floors = [];
+        for (let z = 0; z < room.depth; z++) for (let x = 0; x < room.width; x++) if (room.cells[z * room.width + x] === 'floor') floors.push([x, z]);
+        const mx = floors.reduce((sum, [x]) => sum + x, 0) / floors.length, mz = floors.reduce((sum, [, z]) => sum + z, 0) / floors.length;
+        const [x, z] = floors.reduce((best, f) => (Math.hypot(f[0] - mx, f[1] - mz) < Math.hypot(best[0] - mx, best[1] - mz) ? f : best), floors[0]);
+        return { room: room.id, x: (room.ox + x + 0.5) * settings.cell, z: (room.oz + z + 0.5) * settings.cell };
+    });
+    let tourStop = -1, tourNext = 0;
+    const tour = (now, dt) => {
+        if (!tourStops.length) return;
+        walker.yaw += dt * (2 * Math.PI / tourSeconds);
+        if (now < tourNext) return;
+        tourStop = (tourStop + 1) % tourStops.length;
+        tourNext = now + tourSeconds;
+        const stop = tourStops[tourStop];
+        player.position.set(stop.x, -1e6, stop.z);
+        walker.stand();
+        console.info(`tour: ${stop.room}`);
+    };
 
     const automap = new Automap(level, geometry, lights, models, player, renderer, () => walker.pitch);
     // K: was beim Laufen im Weg ist, im Bild und in der Automap (dort im Drahtgitter)
@@ -1375,6 +1546,18 @@ async function start() {
     const togglePanel = () => document.body.classList.toggle('panel-hidden');
     // ☰ oben rechts bringt den Kasten wieder (auf dem Handy gibt es kein P)
     document.getElementById('panel-button').addEventListener('click', togglePanel);
+    // ⛶ oder »Fullscreen«: der ganze Bildschirm, ohne Adressleiste (vor allem auf Handy und Tablet)
+    const canFullscreen = Boolean(document.fullscreenEnabled || document.webkitFullscreenEnabled);
+    const inFullscreen = () => Boolean(document.fullscreenElement || document.webkitFullscreenElement);
+    const toggleFullscreen = () => {
+        const page = document.documentElement;
+        if (inFullscreen()) (document.exitFullscreen ?? document.webkitExitFullscreen).call(document);
+        else (page.requestFullscreen ?? page.webkitRequestFullscreen).call(page);
+    };
+    if (canFullscreen) {
+        document.body.classList.add('can-fullscreen');
+        document.getElementById('fullscreen-button').addEventListener('click', toggleFullscreen);
+    }
     const rebake = () => { restart = true; };
     // Save light: das Licht als Datei, die neben level.ini gehört
     const saveLight = async () => {
@@ -1390,12 +1573,21 @@ async function start() {
         download(levelFile, packedLight);
         report(`Saved ${lightFileName(levelFile)}: put it next to ${levelFile}, then the level loads it instead of baking.`);
     };
+    // Shift+G oder ?show=atlas: die Lightmap selbst (atlasview.js)
+    const atlas = atlasView(renderer, baker, shared, geometry, level, params.get('face'));
+    if (params.get('show') === 'atlas') atlas.toggle();
+    // I oder ?stats: Zahlen zur Leistung (stats.js)
+    const stats = createStats(renderer, { models, geometry, baker, level });
+    if (params.has('stats')) stats.toggle();
     const refreshers = [
         ...PARTS.map((part) => addControl(part.label, part.key.slice(3), () => togglePart(part), () => parts[part.name])),
         addControl('Anaglyph', '3', toggleAnaglyph, () => useAnaglyph),
         addControl('Automap', 'M', toggleAutomap, () => automap.active),
+        addControl('Light map', 'Shift+G', () => atlas.toggle(), () => atlas.active),
+        addControl('Stats', 'I', () => stats.toggle(), () => stats.active),
         addControl('Rebake light', 'Shift+L', rebake),
         addControl('Save light', '', saveLight),
+        ...(canFullscreen ? [addControl('Fullscreen', '', toggleFullscreen, inFullscreen)] : []),
         addControl('Hide panel', 'P', () => togglePanel()),
         addControl('Back to start', 'Shift+R', () => walker.toStart()),
     ];
@@ -1411,9 +1603,12 @@ async function start() {
         const part = PARTS.find((p) => p.key === event.code);
         // Shift+L backt das Licht neu, L allein schaltet das direkte Licht
         if (event.code === 'KeyL' && event.shiftKey) rebake();
+        // Shift+G die ganze Lightmap, G allein ihre Punkte auf den Flächen
+        else if (event.code === 'KeyG' && event.shiftKey) atlas.toggle();
         else if (part) togglePart(part);
         if (event.code === 'Digit3') toggleAnaglyph();
         if (event.code === 'KeyP') togglePanel();
+        if (event.code === 'KeyI') stats.toggle();
         // mit Shift, damit man nicht aus Versehen den Weg verliert
         if (event.code === 'KeyR' && event.shiftKey) walker.toStart();
         // V: in der Automap die Räume statt des Drahtgitters, und zurück
@@ -1430,6 +1625,7 @@ async function start() {
     // die Grifftaste in VR schaltet die Automap auch um
     for (let i = 0; i < 2; i++) renderer.xr.getController(i).addEventListener('squeezestart', refreshControls);
     controls.addEventListener('click', refreshControls);
+    for (const event of ['fullscreenchange', 'webkitfullscreenchange']) document.addEventListener(event, refreshControls);
 
     window.addEventListener('resize', () => {
         camera.aspect = window.innerWidth / window.innerHeight;
@@ -1458,7 +1654,7 @@ async function start() {
     const keepLight = () => {
         packing ??= (async () => {
             try {
-                packedLight = await encodeLight(print, baker.readLight(), collectModelLight(models));
+                packedLight = await encodeLight(print, await baker.readLight(), collectModelLight(models));
                 await writeCache(levelFile, print, packedLight);
             } catch (error) {
                 console.warn('The baked light could not be kept:', error);
@@ -1493,7 +1689,68 @@ async function start() {
 
     const clock = new THREE.Timer();
     let startedAt = performance.now();
+    // Wird es zu langsam (im Mittel unter 25 Bilder pro Sekunde), zeichnet das
+    // Programm mit weniger Pixeln, bis 60 % in jeder Richtung; ist wieder
+    // Luft (über 40 Bilder pro Sekunde), mit mehr. Nicht beim Backen (das hält
+    // die Bilder absichtlich bei 30 bis 50 ms), nicht in VR, nicht mit ?sharp
+    // (Bilder für die Website); ?resolution=0.8 legt den Anteil fest.
+    const fullRatio = renderer.getPixelRatio();
+    const fixedResolution = Number(params.get('resolution'));
+    let ratioScale = 1, frameSum = 0, frameCount = 0, ratioChecked = performance.now();
+    if (fixedResolution > 0 && fixedResolution <= 1 && !params.has('sharp')) {
+        renderer.setPixelRatio(fullRatio * fixedResolution);
+        composer.setPixelRatio(renderer.getPixelRatio());
+        composer.setSize(window.innerWidth, window.innerHeight);
+        blueprint.linewidth = 1.25 * renderer.getPixelRatio();
+    }
+    const adaptResolution = (frameTime) => {
+        if (params.has('sharp') || fixedResolution > 0 || renderer.xr.isPresenting || !baker.done || !modelsBounced) return;
+        frameSum += frameTime;
+        frameCount += 1;
+        if (performance.now() - ratioChecked < 2000) return;
+        const average = frameSum / frameCount;
+        frameSum = 0; frameCount = 0; ratioChecked = performance.now();
+        const next = average > 40 ? Math.max(0.6, ratioScale * 0.9) : average < 25 ? Math.min(1, ratioScale / 0.9) : ratioScale;
+        if (Math.abs(next - ratioScale) < 0.01) return;
+        ratioScale = next;
+        renderer.setPixelRatio(fullRatio * ratioScale);
+        composer.setPixelRatio(renderer.getPixelRatio());
+        composer.setSize(window.innerWidth, window.innerHeight);
+        anaglyph.setSize(window.innerWidth, window.innerHeight);
+        blueprint.linewidth = 1.25 * renderer.getPixelRatio();
+        automap.resize();
+    };
+
+    let tilesPerFrame = 4, lastFrame = performance.now(), lastFrameTime = 0;
+    let bakeMark = null;   // bis wohin die Grafikkarte das Backen schon gezeichnet hat (bake.js, gpuMark)
+    let drawnRooms = null;   // welche Räume das letzte Bild gezeichnet hat
+    // Gibt die Grafikkarte auf (zu wenig Speicher, ein Bild dauert ihr zu
+    // lange), ist das Bild weiß oder schwarz: Dann steht hier, was gerade lief
+    const glInfo = renderer.getContext().getExtension('WEBGL_debug_renderer_info');
+    const gpu = glInfo ? renderer.getContext().getParameter(glInfo.UNMASKED_RENDERER_WEBGL) : 'unknown';
+    renderer.domElement.addEventListener('webglcontextlost', (event) => {
+        event.preventDefault();
+        renderer.setAnimationLoop(null);
+        const box = document.createElement('div');
+        box.id = 'context-lost';
+        box.textContent = [
+            'The graphics card gave up (WebGL context lost). Reload the page to try again.',
+            '',
+            `light       ${lightSource ? `loaded (${lightSource})` : baker.done ? 'baked' : baker.prepared ? `baking: ${baker.stage}` : 'preparing the bake'}`,
+            `light map   ${geometry.atlasSize} × ${geometry.atlasSize}, tile ${baker.tile + 1} of ${baker.tilesPerPass} (${baker.tileSize} pixels), ${tilesPerFrame} per frame`,
+            `models      ${models.length}, textures ${renderer.info.memory.textures}, geometries ${renderer.info.memory.geometries}`,
+            `last frame  ${lastFrameTime.toFixed(0)} ms, after ${(performance.now() / 1000).toFixed(0)} s`,
+            `screen      ${renderer.domElement.width} × ${renderer.domElement.height} pixels`,
+            `GPU         ${gpu}, textures up to ${renderer.capabilities.maxTextureSize} pixels`,
+        ].join('\n');
+        document.body.append(box);
+        report('The graphics card gave up (WebGL context lost)', true);
+    });
     renderer.setAnimationLoop(() => {
+        stats.beginFrame();
+        const frameTime = lastFrameTime = performance.now() - lastFrame;   // wie lange das letzte Bild gedauert hat, in ms
+        lastFrame = performance.now();
+        adaptResolution(frameTime);
         clock.update();
         const dt = Math.min(clock.getDelta(), 0.05);
         const now = clock.getElapsed();
@@ -1508,7 +1765,9 @@ async function start() {
             bar.parentElement.classList.remove('done');
             startedAt = performance.now();
             modelsBounced = false;
+            bakeRound += 1;
             reflectionsTaken = false;
+            reflectionQueue = [];
         }
         const t = now - sequenceStart;   // Zeit seit dem Anfang des Lichts
 
@@ -1517,6 +1776,13 @@ async function start() {
         lights.forEach((light, i) => {
             if (!on[i] && t >= switchAt[i]) { on[i] = true; switched = true; }
         });
+        // Backt die Grafikkarte langsam (ein Durchgang dauert über 0,3 s), finge
+        // das Backen mit jeder Leuchte von vorn an und käme kaum voran: dann
+        // gehen alle übrigen zugleich an
+        if (!lightSource && baker.prepared && t >= DARK_SECONDS && !on.every(Boolean) && performance.now() - baker.passStarted > 300) {
+            on.fill(true);
+            switched = true;
+        }
         if (switched) baker.switchLights(on);
         const allOn = on.every(Boolean);
 
@@ -1545,9 +1811,29 @@ async function start() {
             }
         } else if (!baker.done) {
             // Solange Leuchten angehen, nur direktes Licht: Abprallen lohnt erst, wenn alle an sind
-            for (let i = 0; i < PASSES_PER_FRAME && !baker.done; i++) {
-                if (!allOn && baker.bouncing) break;
-                baker.step();
+            // Stücke je Bild: so viele, dass ein Bild etwa 30 bis 50 ms dauert;
+            // schon eins zu lange, werden die Stücke kleiner (bake.js, TILE)
+            // Neue Stücke erst, wenn die Grafikkarte die letzten gezeichnet
+            // hat: So sammelt sich keine Arbeit an, und der Bildschirm kommt
+            // dazwischen dran. Mehr, solange sie unter 30 ms brauchte (sie
+            // sieht einmal je Bild nach), weniger, wenn über 40 ms; schon eins zu
+            // lange, werden die Stücke kleiner, viele schnelle größer
+            // (bake.js, TILE).
+            if (!bakeMark || bakeMark.done) {
+                if (!baker.prepared) tilesPerFrame = 2;   // noch keine Arbeit: nicht schon hochzählen
+                else if (bakeMark) {
+                    const took = bakeMark.took;
+                    if (took > 40 || frameTime > 50) tilesPerFrame = Math.max(1, Math.floor(tilesPerFrame / 2));
+                    else if (took < 30 && frameTime < 30) tilesPerFrame = Math.min(256, tilesPerFrame + Math.ceil(tilesPerFrame / 4));
+                    if (took > 250 && tilesPerFrame === 1) baker.smallerTiles();
+                    // vier Stücke werden eins: so viel Arbeit wie vorher
+                    if (tilesPerFrame >= 16 && baker.largerTiles()) tilesPerFrame = Math.ceil(tilesPerFrame / 4);
+                }
+                for (let i = 0; i < tilesPerFrame && !baker.done; i++) {
+                    if (!allOn && baker.bouncing) break;
+                    baker.step();
+                }
+                bakeMark = baker.prepared ? gpuMark(renderer) : null;
             }
             bar.style.width = `${baker.progress * 100}%`;
             report(!allOn
@@ -1561,16 +1847,24 @@ async function start() {
         }
         // gespeichertes Licht wird mit den Leuchten hell, gebackenes ist es von selbst
         const fade = lightSource ? shown : 1;
-        shared.intensity.value = baker.intensity * fade;
+        // beim Backen des direkten Lichts zählt jedes Stück der Lightmap seine Durchgänge selbst
+        const tiling = !lightSource && baker.prepared && !baker.bouncing;
+        shared.bakeTiles.value.set(tiling ? baker.directPasses : -1, baker.tile, baker.tileSize);
+        shared.intensity.value = tiling ? 1 : baker.intensity * fade;
+        shared.lampScale.value = baker.intensity * fade;
         shared.indirectIntensity.value = baker.indirectIntensity * fade;
-        shared.occlusionScale.value = baker.occlusionScale;
+        shared.occlusionScale.value = tiling ? 1 : baker.occlusionScale;
         shared.squared.value = baker.squared;
         // fertig gebacken: die Modelle bekommen das Bounce-Licht vor ihren
         // Flächen, und das Licht kommt in den Browser
-        if (baker.done && !modelsBounced) {
-            modelsBounced = true;
-            bounceModels(models, baker, parts);
-            setTimeout(keepLight, 200);
+        if (baker.done && !modelsBounced && bouncing !== bakeRound) {
+            // über mehrere Bilder; fängt das Licht inzwischen neu an (Shift+L), zählt es nicht
+            const round = bouncing = bakeRound;
+            bounceModels(models, baker, parts).then(() => {
+                if (round !== bakeRound) return;
+                modelsBounced = true;
+                setTimeout(keepLight, 200);
+            });
         }
         // die Lightmaps: die letzte fertige Reflexion wechselt mit jeder,
         // gespeichertes Licht ersetzt alle drei
@@ -1604,7 +1898,8 @@ async function start() {
                 for (const glowing of light.glowMaterials) glowing.userData.glow.value = glowing.userData.glowBase * brightness;
             }
             // der Schein blendet weich ein und aus, wenn eine Wand dazwischenkommt
-            const seen = glowVisible(eye, light);
+            // in einem Raum, der gar nicht gezeichnet wird, sieht man sie nicht: nicht erst prüfen
+            const seen = drawnRooms && !drawnRooms.has(light.room) ? 0 : glowVisible(eye, light);
             glow.userData.seen += (seen - glow.userData.seen) * Math.min(1, dt * 10);
             // die Stärke steckt in der Farbe; mit Bloom strahlt die Leuchte selbst
             glow.material.color.setScalar(on[i] && !blooming ? GLOW * brightness * glow.userData.seen : 0);
@@ -1613,12 +1908,24 @@ async function start() {
         // Spiegelungen, wenn alles fertig ist und alle Leuchten an sind (ohne den Schein der Leuchten)
         if (!reflectionsTaken && baker.done && modelsBounced && allOn && shown >= 1) {
             reflectionsTaken = true;
-            showRooms(null);   // in einem Rundumbild ist alles zu sehen
-            captureReflections(renderer, scene, models, panels.map(({ glow }) => glow));
+            reflectionShotList ??= reflectionShots(models);
+            reflectionQueue = [...reflectionShotList];
+        }
+        if (reflectionQueue.length) {
+            // die Räume, die eine der sechs Seiten sieht (die Räume fürs Bild kommen danach)
+            const cull = (cube) => {
+                cube.updateMatrixWorld(true);
+                const start = level.roomAtPoint(cube.position.x, cube.position.z, cube.position.y);
+                const rooms = new Set();
+                for (const side of cube.children) portals.visible(side, start ?? -1).rooms.forEach((room) => rooms.add(room));
+                showRooms(rooms);
+            };
+            captureReflection(renderer, scene, reflectionQueue.shift(), panels.map(({ glow }) => glow), cull);
         }
 
         // das Wasser: Wellen, Licht; in VR und in der Automap nur einfach
         water.update(now, shown, renderer.xr.isPresenting || automap.active);
+        if (lightSource || baker.done) tour(now, dt);
         walker.update(dt);
         rememberPlace();
         for (const view of collision) {
@@ -1631,8 +1938,10 @@ async function start() {
         const sight = sightOf(renderer.xr.isPresenting ? renderer.xr.getCamera() : camera, start);
         sight.camera = camera;
         showRooms(automap.active ? null : sight.rooms);
+        drawnRooms = automap.active ? null : sight.rooms;
         automap.showSight(automap.active ? sight : null);
-        if (automap.active) {
+        if (atlas.active) atlas.render();
+        else if (automap.active) {
             automap.render({
                 rooms: { scene, hide: aboveRooms },
                 anaglyph: useAnaglyph && !renderer.xr.isPresenting ? anaglyph : null,
@@ -1654,7 +1963,11 @@ async function start() {
             composer.render(dt);
         }
         else renderer.render(scene, camera);
+        stats.endFrame({ rooms: automap.active ? null : sight.rooms?.size, lightSource });
     });
 }
 
-start();
+start().catch((error) => {
+    console.error(error);
+    report(`Something went wrong: ${error.message}`, true);
+});

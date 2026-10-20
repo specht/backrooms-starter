@@ -64,8 +64,8 @@ const LIGHT_DEFAULTS = {
 
 // Woraus ein Block sein kann (material = …): dieselben Arten wie Wände
 const WALLS = ['wallpaper', 'marble', 'wood', 'tiles', 'velvet', 'plain', 'concrete', 'brick', 'terrazzo'];
-const FLOORS = ['carpet', 'marble', 'wood', 'tiles', 'plain', 'concrete', 'brick', 'terrazzo', 'carpet_tiles', 'checker'];
-const BLOCK_MATERIALS = [...WALLS, 'cardboard', 'carpet_tiles', 'checker'];
+const FLOORS = ['carpet', 'marble', 'wood', 'tiles', 'plain', 'concrete', 'brick', 'terrazzo', 'carpet_tiles', 'checker', 'parquet'];
+const BLOCK_MATERIALS = [...WALLS, 'cardboard', 'carpet_tiles', 'checker', 'parquet'];
 
 const BLOCK_DEFAULTS = {
     shape: 'box',         // box: ein Quader, round: eine Säule (rund, oder oval, wenn Breite und Tiefe verschieden sind)
@@ -375,6 +375,12 @@ function makeThing(file, char, section, x, z) {
         const block = { type: 'block', char, x, z, ...BLOCK_DEFAULTS, ...entries, size: [w, h, d], offset: offsetOf(file, section, entries) };
         if (block.material !== null && !BLOCK_MATERIALS.includes(block.material)) throw new LevelError(file, section.line, `material = ${block.material} does not exist. Possible: ${BLOCK_MATERIALS.join(', ')}.`);
         if (!['box', 'round'].includes(String(block.shape))) throw new LevelError(file, section.line, `shape = ${block.shape} does not exist. Possible: box, round.`);
+        // rotation = grad: um die senkrechte Achse gedreht, wie ein Modell
+        // (eine Kiste etwas schief); nur um diese Achse, sonst stünde er nicht mehr
+        if (entries.rotation !== undefined && !(typeof entries.rotation === 'number' && Math.abs(entries.rotation) <= 360)) {
+            throw new LevelError(file, section.line, `rotation = ${entries.rotation}: a block only turns around the vertical axis: expected degrees, such as rotation = 8.`);
+        }
+        block.yaw = ((entries.rotation ?? 0) * Math.PI) / 180;
         return block;
     }
     if (entries.pool !== undefined) return makePool(file, char, section, entries, x, z);

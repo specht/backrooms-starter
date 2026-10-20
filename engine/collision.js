@@ -36,6 +36,7 @@ export function collisionView(walker) {
             const lines = new THREE.LineSegments(new THREE.EdgesGeometry(shape, 30), edge);
             for (const object of [mesh, lines]) {
                 object.position.set((box.x0 + box.x1) / 2, (y0 + y1) / 2, (box.z0 + box.z1) / 2);
+                object.rotation.y = box.yaw ?? 0;
                 obstacles.add(object);
             }
         }

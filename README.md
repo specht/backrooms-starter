@@ -75,10 +75,12 @@ Shift+L, or `?rebake` in the address, bakes the light again in any case.
 <tr><td>»Save light«</td><td>download the baked light as <code>level.light</code> (see below)</td></tr>
 <tr><td>Shift+R</td><td>back to the start</td></tr>
 <tr><td>P</td><td>hide the panel at the top left, and show it again</td></tr>
+<tr><td>I</td><td>stats: frames per second, how long a frame takes, draw calls, triangles, how many rooms are drawn, how big the light map is and roughly how much memory textures take; for trying the level on a phone, a tablet or a VR headset (<code>?stats</code> starts with it)</td></tr>
 </table>
 
 Every switch is also shown at the top left and can be clicked; ☰ at the top
-right hides the panel and brings it back. In VR the left thumbstick walks, the
+right hides the panel and brings it back. »Fullscreen« in the panel, and ⛶
+next to ☰ on a phone or tablet, fills the whole screen. In VR the left thumbstick walks, the
 right one turns, the grip button opens the automap.
 
 On a phone or tablet the left thumb walks: where it touches the picture, a
@@ -222,9 +224,9 @@ just as a door places its neighbour. Whoever steps onto the hole falls.
 <tr><td><code>ramp</code></td><td>a sloped floor: the direction it rises to and by how many metres, such as <code>ramp = east, 4</code>; it rises from the first field inside the wall to the last; a door between two floors that slope differently joins both</td></tr>
 <tr><td><code>slope</code></td><td><code>flat</code>, or the direction the ceiling rises to: <code>north</code>, <code>east</code>, <code>south</code>, <code>west</code>; <code>gable</code> is a pitched roof, highest in the middle, its ridge along the longer side of the room</td></tr>
 <tr><td><code>walls</code></td><td><code>wallpaper</code>, <code>marble</code>, <code>wood</code> (vertical boards), <code>tiles</code> (10 cm, as in a pool), <code>velvet</code> (vertical stripes, as in a cinema) or <code>plain</code>, <code>concrete</code> (formwork panels with tie holes), <code>brick</code> (running bond) or <code>terrazzo</code> (stone chips in cement), in the colour of <code>wallpaper</code></td></tr>
-<tr><td><code>floor</code></td><td><code>carpet</code>, <code>marble</code>, <code>wood</code> (floorboards), <code>tiles</code>, <code>plain</code>, <code>concrete</code>, <code>brick</code>, <code>terrazzo</code>, <code>carpet_tiles</code> (office carpet tiles, each turned against its neighbours) or <code>checker</code> (black and the colour of <code>carpet</code>), in the colour of <code>carpet</code></td></tr>
+<tr><td><code>floor</code></td><td><code>carpet</code>, <code>marble</code>, <code>wood</code> (floorboards), <code>tiles</code>, <code>plain</code>, <code>concrete</code>, <code>brick</code>, <code>terrazzo</code>, <code>carpet_tiles</code> (office carpet tiles, each turned against its neighbours) or <code>checker</code> (black and the colour of <code>carpet</code>) or <code>parquet</code> (herringbone: short staves, alternately along and across), in the colour of <code>carpet</code></td></tr>
 <tr><td><code>wallpaper</code>, <code>carpet</code>, <code>ceiling</code></td><td>colours, such as <code>#c9b458</code></td></tr>
-<tr><td><code>baseboard</code></td><td>the skirting board: height and colour, such as <code>0.08, #86763c</code>; without it, 8 cm and a little darker than the wallpaper; <code>none</code>: no skirting board. Along a sloping floor (a ramp) there is none</td></tr>
+<tr><td><code>baseboard</code></td><td>the skirting board: height and colour, such as <code>0.08, #86763c</code>; without it, 8 cm and a little darker than the wallpaper; <code>none</code>: no skirting board. Along a sloping floor (a ramp) it slopes with the floor</td></tr>
 <tr><td><code>dado</code></td><td>the lower part of the walls different: height and colour, such as <code>dado = 1.2, #1a1a1a</code>; <code>dado_material</code> says what it is made of (without: like the walls)</td></tr>
 <tr><td><code>dado_rail</code></td><td>a strip along the top of the dado: height and colour, such as <code>dado_rail = 0.05, #d8d0b8</code></td></tr>
 <tr><td><code>cornice</code></td><td>a crown moulding where wall and ceiling meet, slanted at 45°: height and colour, such as <code>cornice = 0.12, #e8e2d0</code></td></tr>
@@ -251,7 +253,9 @@ wide, 6 m high and 0.9 m deep, in the middle of its field: a column.
 room's wallpaper). `material` makes it of `marble`, `wood`, `tiles`, `velvet`,
 `wallpaper`, `plain` or `cardboard` (a cardboard box: tape over the lid, a label, two arrows pointing up), whatever the room's walls are, in the colour of
 `color` or the room's wallpaper. `shape = round` makes it a round column (an
-oval one when width and depth differ).
+oval one when width and depth differ). `rotation = 8` turns it by 8° around the vertical axis,
+about its middle, such as a box that doesn't stand quite straight; a block
+only turns around that axis. Turned, it had best stay inside its field.
 
 ### A model: a statue, furniture, a lamp
 
@@ -341,12 +345,14 @@ In VR the water is a simple, half transparent surface.
 ## Address parameters
 
 <table>
-<tr><td><code>?level=other.ini</code></td><td>load another level file</td></tr>
+<tr><td><code>?level=other.ini</code></td><td>load another level file; <code>?level=lobby</code> loads <code>lobby/level.ini</code></td></tr>
 <tr><td><code>?show=light</code>, <code>direct</code>, <code>bounce</code></td><td>start with light only (no textures), or with only one part of it</td></tr>
 <tr><td><code>?bounces=0</code></td><td>bake with a different number of bounces</td></tr>
 <tr><td><code>?anaglyph</code>, <code>?automap</code>, <code>?vhs</code>, <code>?aberration</code></td><td>start with anaglyph, with the automap, with the VHS look or with chromatic aberration</td></tr>
 <tr><td><code>?automap=-40,35,12.0,0.0,0.0,0.0,rooms</code></td><td>the automap as it was: turned and tilted (degrees), distance and shift (metres), <code>follow</code> (turns with you) and <code>rooms</code> (rooms instead of wireframe); written by the program itself</td></tr>
 <tr><td><code>?rebake</code></td><td>bake the light even if saved light fits</td></tr>
+<tr><td><code>?stats</code></td><td>start with the stats (I)</td></tr>
+<tr><td><code>?resolution=0.8</code></td><td>draw with this share of the screen's pixels in each direction (otherwise the program lowers it by itself, down to 0.6, when it gets slower than 25 frames per second, and raises it again)</td></tr>
 <tr><td><code>?sharp</code></td><td>render at the full resolution of the screen, for pictures (otherwise at most twice the page's pixels)</td></tr>
 </table>
 
@@ -371,6 +377,24 @@ In VR the water is a simple, half transparent surface.
   [Rockingchair 01](https://polyhaven.com/a/Rockingchair_01) and
   [Small Wooden Table 01](https://polyhaven.com/a/small_wooden_table_01),
   all from [Poly Haven](https://polyhaven.com/models), CC0, glTF at 1K.
+- for `nachtschicht/`: [Barrel 01](https://polyhaven.com/a/Barrel_01),
+  [Cash Register 01](https://polyhaven.com/a/CashRegister_01),
+  [Chandelier 02](https://polyhaven.com/a/Chandelier_02),
+  [Green Chair 01](https://polyhaven.com/a/GreenChair_01),
+  [Bar Chair Round 01](https://polyhaven.com/a/bar_chair_round_01),
+  [Caged Hanging Light](https://polyhaven.com/a/caged_hanging_light),
+  [Classic Laptop](https://polyhaven.com/a/classic_laptop),
+  [Desk Lamp Arm 01](https://polyhaven.com/a/desk_lamp_arm_01),
+  [Filmstrip Projector 8mm](https://polyhaven.com/a/filmstrip_projector_8mm),
+  [Horse Statue 01](https://polyhaven.com/a/horse_statue_01),
+  [Marble Bust 01](https://polyhaven.com/a/marble_bust_01),
+  [Metal Tool Chest](https://polyhaven.com/a/metal_tool_chest),
+  [Ornate Mirror 01](https://polyhaven.com/a/ornate_mirror_01),
+  [Potted Plant 02](https://polyhaven.com/a/potted_plant_02),
+  [Round Wooden Table 01](https://polyhaven.com/a/round_wooden_table_01),
+  [Steel Frame Shelves 02](https://polyhaven.com/a/steel_frame_shelves_02) and
+  [Wall Clock](https://polyhaven.com/a/wall_clock),
+  also from Poly Haven, CC0, glTF at 1K.
 - `vendor/three/`: [three.js](https://threejs.org/), MIT licence, see
   `vendor/three/LICENSE`.
 - `engine/fonts/vcr-osd-mono.ttf`: [VCR OSD Mono](https://www.dafont.com/vcr-osd-mono.font)

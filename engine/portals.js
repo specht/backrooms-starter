@@ -123,15 +123,17 @@ export class Portals {
 
     // Welche Räume sieht die Kamera, die im Raum start steht? { rooms, seen }:
     // die Räume (eine Menge) und die Portale, durch die man schaut, mit ihren
-    // Rechtecken (für die Automap). start < 0: alle.
-    visible(camera, start) {
+    // Rechtecken (für die Automap). start < 0: alle. fresh: Die Matrizen der
+    // Kamera stimmen schon (ein Auge in VR: three.js rechnet sie aus der Brille
+    // und dem Platz des Spielers; neu ausgerechnet fehlte der Platz).
+    visible(camera, start, fresh = false) {
         const rooms = new Set();
         const seen = [];
         if (start < 0) {
             this.level.rooms.forEach((room) => rooms.add(room.index));
             return { rooms, seen };
         }
-        camera.updateMatrixWorld();
+        if (!fresh) camera.updateMatrixWorld();
         this.matrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
         const window = new Map();   // je Raum: das Rechteck, durch das man ihn schon sieht (alle zusammen)
         const visit = (room, view, depth) => {

@@ -42,38 +42,74 @@ export function lightFileName(levelFile) {
     return levelFile.replace(/\.[^./]*$/, '') + '.light';
 }
 
-// Werte von 0 bis max als Wurzel in 0 bis 255, mit Rauschen gerundet
-function quantize(values, out, offset, stride, max) {
-    const scale = max > 0 ? 1 / max : 0;
-    for (let i = 0; i < values.length; i += 4) {
-        for (let k = 0; k < stride; k++) {
-            const v = Math.min(1, Math.max(0, values[i + k] * scale));
-            const dither = Math.random() + Math.random() - 1;   // -1 bis 1, meist nahe 0
-            out[offset + i + k] = Math.min(255, Math.max(0, Math.round(Math.sqrt(v) * 255 + dither * 0.5)));
+// Half Float (16 Bit, wie die Grafikkarte rechnet) als Zahl: einmal für
+// alle 65536 Werte, danach ist jeder Wert ein Griff in die Tabelle
+let halfTable = null;
+function halves() {
+    if (halfTable) return halfTable;
+    halfTable = new Float32Array(65536);
+    for (let h = 0; h < 65536; h++) {
+        const sign = h & 0x8000 ? -1 : 1, exponent = (h >> 10) & 0x1f, fraction = h & 0x3ff;
+        const value = exponent === 0 ? sign * 2 ** -14 * (fraction / 1024)
+            : exponent === 31 ? 0   // unendlich oder keine Zahl: nichts
+            : sign * 2 ** (exponent - 15) * (1 + fraction / 1024);
+        halfTable[h] = value;
+    }
+    return halfTable;
+}
+
+// alle so viele Werte darf der Browser zwischendurch Maus und Bild bedienen
+const CHUNK = 1 << 20;
+const breathe = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+// Werte (map: { half, scale }) von 0 bis max als Wurzel in 0 bis 255, mit Rauschen gerundet
+async function quantize(map, out, offset, stride, max) {
+    const table = halves(), { half } = map;
+    const scale = max > 0 ? map.scale / max : 0;
+    for (let start = 0; start < half.length; start += CHUNK) {
+        const end = Math.min(half.length, start + CHUNK);
+        for (let i = start; i < end; i += 4) {
+            for (let k = 0; k < stride; k++) {
+                const v = Math.min(1, Math.max(0, table[half[i + k]] * scale));
+                const dither = Math.random() + Math.random() - 1;   // -1 bis 1, meist nahe 0
+                out[offset + i + k] = Math.min(255, Math.max(0, Math.round(Math.sqrt(v) * 255 + dither * 0.5)));
+            }
         }
+        await breathe();
     }
 }
 
 // Der Wert, über dem nur noch der Anteil 1 - CLIP aller Werte liegt (über
 // mehrere Lightmaps zusammen); gesucht über ein Histogramm
-function maximum(lists) {
+async function maximum(lists) {
+    const table = halves();
     let max = 0, count = 0;
-    for (const [values, channels] of lists) {
-        for (let i = 0; i < values.length; i += 4) {
-            for (let k = 0; k < channels; k++) if (values[i + k] > max) max = values[i + k];
+    for (const [map, channels] of lists) {
+        const { half, scale } = map;
+        for (let start = 0; start < half.length; start += CHUNK) {
+            const end = Math.min(half.length, start + CHUNK);
+            for (let i = start; i < end; i += 4) {
+                for (let k = 0; k < channels; k++) { const v = table[half[i + k]] * scale; if (v > max) max = v; }
+            }
+            await breathe();
         }
     }
     if (max <= 0) return 0;
     const BINS = 4096;
     const histogram = new Uint32Array(BINS);
-    for (const [values, channels] of lists) {
-        for (let i = 0; i < values.length; i += 4) {
-            for (let k = 0; k < channels; k++) {
-                const v = values[i + k];
-                if (v <= 0) continue;
-                histogram[Math.min(BINS - 1, Math.floor(v / max * BINS))] += 1;
-                count += 1;
+    for (const [map, channels] of lists) {
+        const { half, scale } = map;
+        for (let start = 0; start < half.length; start += CHUNK) {
+            const end = Math.min(half.length, start + CHUNK);
+            for (let i = start; i < end; i += 4) {
+                for (let k = 0; k < channels; k++) {
+                    const v = table[half[i + k]] * scale;
+                    if (v <= 0) continue;
+                    histogram[Math.min(BINS - 1, Math.floor(v / max * BINS))] += 1;
+                    count += 1;
+                }
             }
+            await breathe();
         }
     }
     let seen = 0;
@@ -94,16 +130,16 @@ async function gunzip(bytes) {
     return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
-// light: { size, steady, flicker, indirect } als Float32-Werte (RGBA je
-// Punkt), schon mit ihrer Helligkeit verrechnet; models: { direct, bounced }
+// light: { size, steady, flicker, indirect }, jede { half: Half Float, RGBA
+// je Punkt, scale: womit malnehmen, wie in baker.readLight }; models: { direct, bounced }
 // als Float32-Werte, drei pro Ecke. Liefert die gepackte Datei.
 export async function encodeLight(print, light, models) {
     const { size } = light;
     const texels = size * size * 4;
     // direktes Licht und Flackern teilen sich einen Maßstab, die Kontaktschatten
     // (Alphakanal) liegen ohnehin zwischen 0 und 1
-    const directMax = maximum([[light.steady, 3], [light.flicker, 4]]);
-    const indirectMax = maximum([[light.indirect, 3]]);
+    const directMax = await maximum([[light.steady, 3], [light.flicker, 4]]);
+    const indirectMax = await maximum([[light.indirect, 3]]);
     const header = {
         format: FORMAT, fingerprint: print, size, directMax, indirectMax,
         modelVertices: models ? models.direct.length / 3 : 0,
@@ -118,14 +154,16 @@ export async function encodeLight(print, light, models) {
     new DataView(bytes.buffer).setUint32(0, head.length, true);
     bytes.set(head, 4);
     let offset = 4 + head.length;
-    quantize(light.steady, bytes, offset, 3, directMax);
+    await quantize(light.steady, bytes, offset, 3, directMax);
+    const table = halves(), { half, scale } = light.steady;
     for (let i = 0; i < texels; i += 4) {
-        bytes[offset + i + 3] = Math.round(Math.sqrt(Math.min(1, Math.max(0, light.steady[i + 3]))) * 255);
+        bytes[offset + i + 3] = Math.round(Math.sqrt(Math.min(1, Math.max(0, table[half[i + 3]] * scale))) * 255);
+        if (i % CHUNK === 0) await breathe();
     }
     offset += texels;
-    quantize(light.flicker, bytes, offset, 4, directMax);
+    await quantize(light.flicker, bytes, offset, 4, directMax);
     offset += texels;
-    quantize(light.indirect, bytes, offset, 3, indirectMax);
+    await quantize(light.indirect, bytes, offset, 3, indirectMax);
     offset += texels;
     if (models) {
         // Modelle: wenige Werte, darum genau (Float32)

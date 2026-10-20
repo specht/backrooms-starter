@@ -137,7 +137,8 @@ body.panel-hidden #info {
 
 /* ☰ oben rechts: blendet den Kasten aus und wieder ein. Auf dem Handy immer
    da (dort gibt es kein P), am Rechner nur, wenn der Kasten weg ist. */
-#panel-button {
+#panel-button,
+#fullscreen-button {
     position: fixed;
     top: 1rem;
     right: 1rem;
@@ -154,6 +155,15 @@ body.panel-hidden #info {
 
 body.panel-hidden #panel-button,
 body.touch #panel-button {
+    display: block;
+}
+
+/* ⛶ links daneben: der ganze Bildschirm, auf Handy und Tablet, wenn der Browser es kann */
+#fullscreen-button {
+    right: 4.1rem;
+}
+
+body.touch.can-fullscreen #fullscreen-button {
     display: block;
 }
 
@@ -200,4 +210,12 @@ body.touch canvas {
     margin: -23px 0 0 -23px;
     border-radius: 50%;
     background: rgb(255 255 255 / 45%);
+}
+
+/* die Grafikkarte hat aufgegeben (main.js, webglcontextlost) */
+#context-lost {
+    position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 30;
+    max-width: calc(100vw - 32px); box-sizing: border-box; padding: 16px 18px; border-radius: 8px;
+    background: #2a0d0d; color: #ffe2e2; border: 1px solid #c55;
+    font: 13px/1.5 ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere;
 }

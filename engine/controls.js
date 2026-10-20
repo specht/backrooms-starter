@@ -36,7 +36,7 @@ export class Walker {
         this.boxes = level.things.filter((t) => t.type === 'block' && t.base + t.offset[1] < 1.7).map((t) => {
             const cx = (t.x + 0.5) * cell + t.offset[0], cz = (t.z + 0.5) * cell + t.offset[2];
             const y0 = t.floor + t.base + t.offset[1];
-            return { x0: cx - t.size[0] / 2, x1: cx + t.size[0] / 2, z0: cz - t.size[2] / 2, z1: cz + t.size[2] / 2, y0, y1: y0 + t.size[1], round: t.shape === 'round' };
+            return { x0: cx - t.size[0] / 2, x1: cx + t.size[0] / 2, z0: cz - t.size[2] / 2, z1: cz + t.size[2] / 2, y0, y1: y0 + t.size[1], round: t.shape === 'round', yaw: t.yaw ?? 0 };
         });
         // Eine runde Tür, schmaler als die Tür: neben ihrem Bogen ist Wand
         for (let k = 0; k < level.layers; k++) {
@@ -176,11 +176,17 @@ export class Walker {
     }
 
     // Passt ein Kreis mit RADIUS an diese Stelle? Geprüft an acht Punkten des Rands.
-    free(x, z) {
-        if (this.solid(x, z)) return false;
+    free(px, pz) {
+        if (this.solid(px, pz)) return false;
         const y = this.player.position.y;
         for (const box of this.boxes) {
             if (box.y0 !== undefined && (box.y1 < y + 0.1 || box.y0 > y + 1.7)) continue;
+            // ein gedrehter Block: die Stelle zurückgedreht, dann wie ein gerader
+            let [x, z] = [px, pz];
+            if (box.yaw) {
+                const mx = (box.x0 + box.x1) / 2, mz = (box.z0 + box.z1) / 2, c = Math.cos(box.yaw), s = Math.sin(box.yaw);
+                [x, z] = [mx + (px - mx) * c - (pz - mz) * s, mz + (px - mx) * s + (pz - mz) * c];
+            }
             if (box.round) {
                 // eine runde Säule: Abstand zur Mitte, im Verhältnis zu ihrem Radius (um RADIUS größer)
                 const rx = (box.x1 - box.x0) / 2 + RADIUS, rz = (box.z1 - box.z0) / 2 + RADIUS;
@@ -192,7 +198,7 @@ export class Walker {
         }
         for (let i = 0; i < 8; i++) {
             const angle = (i / 8) * Math.PI * 2;
-            if (this.solid(x + Math.cos(angle) * RADIUS, z + Math.sin(angle) * RADIUS)) return false;
+            if (this.solid(px + Math.cos(angle) * RADIUS, pz + Math.sin(angle) * RADIUS)) return false;
         }
         return true;
     }
@@ -214,6 +220,17 @@ export class Walker {
         p.y = Math.max(floor, p.y - this.falling * dt);
     }
 
+    // Treppen: Die Füße stehen sofort auf der nächsten Stufe, die Augen
+    // gleiten hinterher (in etwa 0,1 s); sonst springt das Bild bei jeder
+    // Stufe. Beim Fallen und nach einem großen Sprung (an eine andere Stelle
+    // gesetzt) sofort.
+    glide(dt) {
+        const y = this.player.position.y;
+        if (this.eyeFloor === undefined || this.falling > 0 || Math.abs(y - this.eyeFloor) > 0.6) this.eyeFloor = y;
+        else this.eyeFloor += (y - this.eyeFloor) * (1 - Math.exp(-dt / 0.1));
+        this.camera.position.y = EYE_HEIGHT + this.eyeFloor - y;
+    }
+
     update(dt) {
         if (!this.enabled()) return;
         this.fall(dt);
@@ -221,6 +238,7 @@ export class Walker {
             this.updateVR(dt);
             return;
         }
+        this.glide(dt);
         // Pfeiltasten drehen, für alle ohne Maus
         if (this.keys.has('ArrowLeft')) this.yaw += 1.8 * dt;
         if (this.keys.has('ArrowRight')) this.yaw -= 1.8 * dt;

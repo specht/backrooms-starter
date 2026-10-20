@@ -56,35 +56,87 @@ function wallEnds(direction, line, from, to) {
     }
 }
 
-// Wo ein Modell nah an einer Fläche steht, wirft es feine Schatten, die
-// das normale Raster der Lichtkarte nicht fassen kann. Dort bekommt die
-// Fläche zusätzlich ein Detailstück Lichtkarte mit bis zu FINE-mal so vielen
-// Punkten, über den Umriss des Modells (plus MARGIN). Die Fläche bleibt ganz;
-// das Detailstück wird darüber gemischt und blendet am Rand über FADE Meter
-// aus: kein Sprung, keine Naht. Mehrere Modelle an einer Fläche teilen sich
-// ein Stück, höchstens DETAIL_BUDGET Punkte groß (sonst gröber). Gezeichnet
-// wird so schnell wie vorher, nur das Backen hat ein paar Punkte mehr.
+// Wo ein Modell oder ein Block nah an einer Fläche steht, wirft es feine
+// Schatten, die das normale Raster der Lichtkarte nicht fassen kann. Dort
+// bekommt die Fläche zusätzlich ein Detailstück Lichtkarte mit bis zu
+// FINE-mal so vielen Punkten, über den Umriss (plus MARGIN). Das Detailstück
+// wird über die Fläche gemischt und blendet am Rand über FADE Meter aus:
+// kein Sprung, keine Naht. Liegen auf einer Fläche mehrere Gruppen weit
+// auseinander (Säulen in einer Halle), wird sie zwischen ihnen geteilt, jedes
+// Stück mit eigenem Detailstück; sonst teilen sie sich eins, höchstens
+// DETAIL_BUDGET Punkte groß (sonst gröber). Gezeichnet wird so schnell wie
+// vorher, nur das Backen hat ein paar Punkte mehr.
 const FINE = 4;
+const FINE_BLOCK = 3;   // bei Blöcken: Ihre Kanten sind gerade, ihre Schatten einfacher
 const MARGIN = 0.6;   // Meter um das Modell: so weit reichen seine weichen Schatten
 const FADE = 0.3;
 const DETAIL_BUDGET = 400000;
+const ATLAS_LIMIT = 2048;   // so groß soll die Lightmap höchstens werden, wenn es irgend geht
+
+// Rechtecke [s0, s1, t0, t1, wie fein], die sich überlappen, zu einem zusammengefasst
+function mergeRectangles(list) {
+    const rects = list.map((r) => r.slice());
+    for (let changed = true; changed;) {
+        changed = false;
+        for (let i = 0; i < rects.length && !changed; i++) {
+            for (let j = i + 1; j < rects.length && !changed; j++) {
+                const a = rects[i], b = rects[j];
+                if (a[0] > b[1] || b[0] > a[1] || a[2] > b[3] || b[2] > a[3]) continue;
+                rects[i] = [Math.min(a[0], b[0]), Math.max(a[1], b[1]), Math.min(a[2], b[2]), Math.max(a[3], b[3]), Math.max(a[4], b[4])];
+                rects.splice(j, 1);
+                changed = true;
+            }
+        }
+    }
+    return rects;
+}
+
+// Teilt [0, 1]² zwischen den Rechtecken, mit geraden Schnitten durch das
+// ganze Stück, solange einer zwischen ihnen hindurchpasst. Ergibt Stücke
+// { s0, s1, t0, t1, rect } (rect in Koordinaten der ganzen Fläche).
+function cutBetween(rects, piece = { s0: 0, s1: 1, t0: 0, t1: 1 }) {
+    if (rects.length > 1) {
+        for (const [lo, hi, from, to] of [[0, 1, 's0', 's1'], [2, 3, 't0', 't1']]) {
+            const sorted = rects.slice().sort((a, b) => a[lo] - b[lo]);
+            let reach = sorted[0][hi];
+            for (let i = 1; i < sorted.length; i++) {
+                if (sorted[i][lo] > reach + 1e-6) {
+                    const at = (reach + sorted[i][lo]) / 2;
+                    return [...cutBetween(sorted.slice(0, i), { ...piece, [to]: at }),
+                        ...cutBetween(sorted.slice(i), { ...piece, [from]: at })];
+                }
+                reach = Math.max(reach, sorted[i][hi]);
+            }
+        }
+    }
+    const box = rects.reduce((a, r) => [Math.min(a[0], r[0]), Math.max(a[1], r[1]), Math.min(a[2], r[2]), Math.max(a[3], r[3]), Math.max(a[4], r[4])]);
+    return [{ ...piece, rect: box }];
+}
 
 function addDetail(faces, boxes) {
     if (boxes.length === 0) return faces;
     const sub = (a, b) => a.map((v, i) => v - b[i]);
     const dot = (a, b) => a.reduce((sum, v, i) => sum + v * b[i], 0);
     const lerp = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
-    const extra = [];
+    const result = [], extra = [], plans = [];
     for (const face of faces) {
-        if ((face.subdivide ?? 1) > 1 || face.shape) continue;
+        if ((face.subdivide ?? 1) > 1 || face.shape) { result.push(face); continue; }
         const [c0, c1, c2, c3] = face.corners;
         const e1 = sub(c1, c0), e3 = sub(c3, c0);
-        let s0 = 1, s1 = 0, t0 = 1, t1 = 0;
+        // eine Seite eines Blocks, die an einem anderen anliegt, sieht niemand
+        const middle = lerp(lerp(c0, c2, 0.5), face.normal, 0.01 / Math.hypot(...face.normal));
+        const inside = (box, p) => p[0] > box.min.x && p[0] < box.max.x && p[1] > box.min.y && p[1] < box.max.y && p[2] > box.min.z && p[2] < box.max.z;
+        if (face.owner !== undefined && boxes.some((box) => box.owner !== undefined && !box.turned && inside(box, middle))) { result.push(face); continue; }
+        const rects = [];
         for (const box of boxes) {
+            if (box.owner !== undefined && box.owner === face.owner) continue;   // ein Block braucht für sich selbst keins
+            // nur was vor der Fläche aufragt, wirft Schatten auf sie
+            const own = [0, 1, 2, 3, 4, 5, 6, 7].map((k) => [k & 1 ? box.max.x : box.min.x, k & 2 ? box.max.y : box.min.y, k & 4 ? box.max.z : box.min.z]);
+            if (Math.max(...own.map((p) => dot(sub(p, c0), face.normal))) < 1e-3) continue;
             const lo = [box.min.x - MARGIN, box.min.y - MARGIN, box.min.z - MARGIN];
             const hi = [box.max.x + MARGIN, box.max.y + MARGIN, box.max.z + MARGIN];
             const corners = [0, 1, 2, 3, 4, 5, 6, 7].map((k) => [k & 1 ? hi[0] : lo[0], k & 2 ? hi[1] : lo[1], k & 4 ? hi[2] : lo[2]]);
-            // liegt die Ebene der Fläche im erweiterten Kasten des Modells?
+            // liegt die Ebene der Fläche im erweiterten Kasten?
             const sides = corners.map((p) => dot(sub(p, c0), face.normal));
             if (Math.min(...sides) > 0 || Math.max(...sides) < 0) continue;
             // der Kasten in Koordinaten der Fläche: s entlang c0 -> c1, t entlang c0 -> c3
@@ -93,33 +145,74 @@ function addDetail(faces, boxes) {
             const a = Math.max(0, Math.min(...ss)), b = Math.min(1, Math.max(...ss));
             const c = Math.max(0, Math.min(...ts)), d = Math.min(1, Math.max(...ts));
             if (b - a < 1e-3 || d - c < 1e-3) continue;
-            s0 = Math.min(s0, a); s1 = Math.max(s1, b); t0 = Math.min(t0, c); t1 = Math.max(t1, d);
+            rects.push([a, b, c, d, box.owner === undefined ? FINE : FINE_BLOCK]);
         }
-        if (s1 <= s0 || t1 <= t0) continue;
-        const coarse = face.w * (s1 - s0) * face.h * (t1 - t0);
-        const factor = Math.min(FINE, Math.sqrt(DETAIL_BUDGET / Math.max(coarse, 1)));
-        if (factor < 1.5) continue;
+        if (rects.length === 0) { result.push(face); continue; }
+        // jedes Stück der Fläche wie die Fläche selbst, nur kleiner: Ecken,
+        // Richtungen und Texturkoordinaten an seinen Rändern
         const at = (s, t) => lerp(lerp(c0, c1, s), lerp(c3, c2, s), t);
-        const detail = {
-            ...face, detailOnly: true, density: factor, normals: undefined,
-            corners: [at(s0, t0), at(s1, t0), at(s1, t1), at(s0, t1)],
-            w: Math.max(2, Math.round(face.w * (s1 - s0) * factor)), h: Math.max(2, Math.round(face.h * (t1 - t0) * factor)),
-        };
-        // wie weit das Ausblenden in Koordinaten der Fläche reicht; wo das
-        // Stück an den Rand der Fläche stößt, blendet es nicht aus
-        const lengthS = Math.sqrt(dot(e1, e1)), lengthT = Math.sqrt(dot(e3, e3));
-        const fade = (length, from, to) => Math.min(FADE / Math.max(length, 1e-6), (to - from) / 2);
-        face.detail = {
-            target: detail, s0, s1, t0, t1,
-            fadeS: [s0 > 1e-3 ? fade(lengthS, s0, s1) : 0, s1 < 1 - 1e-3 ? fade(lengthS, s0, s1) : 0],
-            fadeT: [t0 > 1e-3 ? fade(lengthT, t0, t1) : 0, t1 < 1 - 1e-3 ? fade(lengthT, t0, t1) : 0],
-        };
-        extra.push(detail);
+        const corner4 = (four, s, t) => lerp(lerp(four[0], four[1], s), lerp(four[3], four[2], s), t);
+        for (const { s0: S0, s1: S1, t0: T0, t1: T1, rect: [r0, r1, r2, r3, fine] } of cutBetween(mergeRectangles(rects))) {
+            let piece = face;
+            if (S0 > 0 || S1 < 1 || T0 > 0 || T1 < 1) {
+                const four = [[S0, T0], [S1, T0], [S1, T1], [S0, T1]];
+                const corners = four.map(([s, t]) => at(s, t));
+                piece = {
+                    ...face, corners,
+                    w: Math.max(2, Math.round(face.w * (S1 - S0))), h: Math.max(2, Math.round(face.h * (T1 - T0))),
+                    normals: face.normals && four.map(([s, t]) => corner4(face.normals, s, t)),
+                    uv4: face.uv4 && four.map(([s, t]) => corner4(face.uv4, s, t)),
+                    arc: face.arc && [face.arc[0] + (face.arc[1] - face.arc[0]) * S0, face.arc[0] + (face.arc[1] - face.arc[0]) * S1],
+                    uvAt: face.uvAt && ((s, t) => face.uvAt(S0 + s * (S1 - S0), T0 + t * (T1 - T0))),
+                };
+            }
+            result.push(piece);
+            // das Rechteck in Koordinaten des Stücks
+            const s0 = (r0 - S0) / (S1 - S0), s1 = (r1 - S0) / (S1 - S0);
+            const t0 = (r2 - T0) / (T1 - T0), t1 = (r3 - T0) / (T1 - T0);
+            const coarse = piece.w * (s1 - s0) * piece.h * (t1 - t0);
+            const factor = Math.min(fine, Math.sqrt(DETAIL_BUDGET / Math.max(coarse, 1)));
+            if (factor < 1.5) continue;
+            plans.push({ piece, s0, s1, t0, t1, r0, r1, r2, r3, factor, coarse });
+        }
     }
-    return faces.concat(extra);
+    // Alles zusammen soll in eine Lightmap von ATLAS_LIMIT passen (beim Backen
+    // acht Bilder dieser Größe: mit 2048 × 2048 rund 256 MB, mit 4096 viermal
+    // so viel, zu viel für ein Tablet). Sonst werden alle feineren Stücke
+    // gleich viel gröber, und zu grobe fallen weg.
+    const area = (w, h) => (w + 2) * (h + 2);
+    const room = ATLAS_LIMIT * ATLAS_LIMIT / 1.2 - result.reduce((sum, f) => sum + area(f.w, f.h), 0);
+    const wanted = plans.reduce((sum, plan) => sum + plan.coarse * plan.factor * plan.factor, 0);
+    const shrink = wanted > room ? Math.sqrt(Math.max(0, room) / wanted) : 1;
+    for (const plan of plans) {
+        const { piece, s0, s1, t0, t1, r0, r1, r2, r3 } = plan;
+        const factor = plan.factor * shrink;
+        if (factor < 1.5) continue;
+        {
+            const [p0, p1, p2, p3] = piece.corners;
+            const atPiece = (s, t) => lerp(lerp(p0, p1, s), lerp(p3, p2, s), t);
+            const detail = {
+                ...piece, detailOnly: true, density: factor, normals: undefined,
+                corners: [atPiece(s0, t0), atPiece(s1, t0), atPiece(s1, t1), atPiece(s0, t1)],
+                w: Math.max(2, Math.round(piece.w * (s1 - s0) * factor)), h: Math.max(2, Math.round(piece.h * (t1 - t0) * factor)),
+            };
+            // wie weit das Ausblenden in Koordinaten des Stücks reicht; wo das
+            // Detailstück an den Rand der Fläche stößt, blendet es nicht aus
+            // (an einem Schnitt schon: Dort liegt kein Rand der Fläche)
+            const lengthS = Math.hypot(...sub(p1, p0)), lengthT = Math.hypot(...sub(p3, p0));
+            const fade = (length, from, to) => Math.min(FADE / Math.max(length, 1e-6), (to - from) / 2);
+            piece.detail = {
+                target: detail, s0, s1, t0, t1,
+                fadeS: [r0 > 1e-3 ? fade(lengthS, s0, s1) : 0, r1 < 1 - 1e-3 ? fade(lengthS, s0, s1) : 0],
+                fadeT: [r2 > 1e-3 ? fade(lengthT, t0, t1) : 0, r3 < 1 - 1e-3 ? fade(lengthT, t0, t1) : 0],
+            };
+            extra.push(detail);
+        }
+    }
+    return result.concat(extra);
 }
 
-// modelBoxes: der Kasten um jedes Modell, für feinere Lichtkarte in ihrer Nähe
+// modelBoxes: der Kasten um jedes Modell, für feinere Lichtkarte in ihrer Nähe (um Blöcke auch)
 const SLAB_COLOR = '#8e8a80';   // die Decke zwischen zwei Räumen übereinander, am Rand eines Lochs
 const ROUND_SIDES = 32;         // so viele schmale Flächen hat eine runde Säule ringsum
 const ARCH_STEPS = 64;          // so viele Stücke hat der Halbkreis eines Bogens, wie breit er auch ist
@@ -280,6 +373,16 @@ export function buildGeometry(level, modelBoxes = []) {
     // in der Welt; in s steps Stücke (gebogen), in t gerade. Ein Stück
     // Lichtkarte für alles, so dicht wie jede andere Fläche (meters: wie
     // lang und breit sie ist). uvAt(s, t): Texturkoordinaten, sonst wie eine Wand.
+    // Eine Stelle auf einem runden Bogen zwischen uS und uE (Meter entlang
+    // der Tür), in gleichen Winkeln statt gleichen Abständen entlang der Tür:
+    // So sind die Stücke des Bogens auch an seinem Fuß, wo er fast senkrecht
+    // steht, so lang wie oben, und die Punkte der Lichtkarte liegen gleichmäßig
+    const angleOf = (arch, u) => Math.acos(Math.min(1, Math.max(-1, (arch.center - u) / arch.radius)));
+    const alongArc = (arch, uS, uE, s) => {
+        const a = angleOf(arch, uS), b = angleOf(arch, uE);
+        return arch.center - arch.radius * Math.cos(a + (b - a) * s);
+    };
+    const arcSteps = (arch, uS, uE) => Math.max(8, Math.ceil(ARCH_STEPS * Math.abs(angleOf(arch, uE) - angleOf(arch, uS)) / Math.PI));
     const curved = (kind, room, shape, steps, metersS, metersT, uvAt = null, extra = {}) => {
         const samples = [...Array(steps + 1).keys()].flatMap((i) => [shape(i / steps, 0), shape(i / steps, 1)]);
         const corners = [shape(0, 0), shape(1, 0), shape(1, 1), shape(0, 1)];
@@ -342,15 +445,18 @@ export function buildGeometry(level, modelBoxes = []) {
                 crown(room, direction, p, q, top(p[0], p[1]), top(q[0], q[1]));
                 continue;
             }
-            // über dem Bogen: unten rund, oben die Decke
+            // über dem Bogen: unten rund, oben die Decke. Die Ecken in gleichen
+            // Winkeln wie das Gewölbe darunter (sonst klaffte die Kante), die
+            // Lichtkarte aber gleichmäßig entlang der Wand (texelAt)
+            const uS = ua + (ub - ua) * t0, uE = ua + (ub - ua) * t1;
             const shape = (s, t) => {
-                const w = pointAt(t0 + (t1 - t0) * Math.min(1, Math.max(0, s)));
+                const w = pointAt((alongArc(arch, uS, uE, Math.min(1, Math.max(0, s))) - ua) / (ub - ua));
                 const low = arch.height(u(w)) ?? arch.spring, high = Math.max(top(w[0], w[1]), low);
                 return [w[0] * cell, low + (high - low) * t, w[1] * cell];
             };
-            const steps = Math.max(8, Math.ceil(ARCH_STEPS * (t1 - t0) * cell / (2 * arch.radius)));
+            const texelAt = (s) => (alongArc(arch, uS, uE, s) - uS) / (uE - uS);
             const highest = Math.max(top(p[0], p[1]), top(q[0], q[1])) - arch.spring;
-            curved('wall', room, shape, steps, length, Math.max(highest, 0.2));
+            curved('wall', room, shape, arcSteps(arch, uS, uE), length, Math.max(highest, 0.2), null, { texelAt });
             crown(room, direction, p, q, top(p[0], p[1]), top(q[0], q[1]));
         }
     };
@@ -463,8 +569,8 @@ export function buildGeometry(level, modelBoxes = []) {
                 texels(length), texels(Math.max(ha - fa0, hb - fb0)));
             // Sockelleiste: vorne und oben, 1,5 cm vor der Wand
             crown(room, direction, a, b, ha, hb);
-            // nur wo der Boden an der Wand waagerecht ist: an einer Rampe klettert sie nicht die Wand hinauf
-            const board = pool || Math.abs(fa0 - fb0) > 1e-3 ? null : level.rooms[room].settings.baseboard;
+            // auch an einer Rampe: Dort läuft sie schräg mit dem Boden
+            const board = pool ? null : level.rooms[room].settings.baseboard;
             if (board) {
                 const n = INWARD[direction], depthOut = 0.015, y = board.height;
                 // Die Enden: An einer äußeren Ecke (die Wand biegt weg, wie an
@@ -541,11 +647,12 @@ export function buildGeometry(level, modelBoxes = []) {
                     }
                     if (to <= from) continue;
                     // das Gewölbe: eine Fläche, gebogen, mit einem Stück Lichtkarte
-                    const vault = (s, t) => point(from + (to - from) * Math.min(1, Math.max(0, s)), arch.height(from + (to - from) * Math.min(1, Math.max(0, s))), d0 + (d1 - d0) * t);
+                    const at = (s) => alongArc(arch, from, to, Math.min(1, Math.max(0, s)));   // in gleichen Winkeln
+                    const vault = (s, t) => point(at(s), arch.height(at(s)), d0 + (d1 - d0) * t);
                     const down = faceNormal([vault(0.4, 0), vault(0.6, 0), vault(0.6, 1), vault(0.4, 1)])[1] < 0;
                     const shape = down ? vault : (s, t) => vault(s, 1 - t);
-                    curved(pass ? 'block' : 'wall', owner, shape, Math.max(8, Math.ceil(ARCH_STEPS * (to - from) / (2 * r))), around(to) - around(from), d1 - d0,
-                        (s, t) => [around(from + (to - from) * s), d0 + (d1 - d0) * (down ? t : 1 - t)], pass ? { material: 'plain', color: LINING_COLOR } : {});
+                    curved(pass ? 'block' : 'wall', owner, shape, arcSteps(arch, from, to), around(to) - around(from), d1 - d0,
+                        (s, t) => [around(at(s)), d0 + (d1 - d0) * (down ? t : 1 - t)], pass ? { material: 'plain', color: LINING_COLOR } : {});
                 }
             }
         }
@@ -796,14 +903,32 @@ export function buildGeometry(level, modelBoxes = []) {
         }
     }
 
-    // Blöcke: mitten auf ihrem Feld, oben und vier Seiten, unten nur, wenn sie schweben
+    // Blöcke: mitten auf ihrem Feld, oben und vier Seiten, unten nur, wenn sie schweben.
+    // Um sie herum wird die Lichtkarte feiner wie um Modelle (addDetail): Eine
+    // Säule nah an der Wand oder an der Decke wirft dort einen harten Schatten.
+    const blockBoxes = [];
     for (const block of level.things.filter((t) => t.type === 'block')) {
         const [w, h, d] = block.size;
         const cx = (block.x + 0.5) * cell + block.offset[0], cz = (block.z + 0.5) * cell + block.offset[2];
         const x0 = cx - w / 2, x1 = cx + w / 2, z0 = cz - d / 2, z1 = cz + d / 2;
         const y0 = block.floor + block.base + block.offset[1], y1 = y0 + h;   // auf dem Boden seines Felds (oder höher)
         const room = block.room;
-        const put = (corners, sw, sh, extra = {}) => faces.push({ kind: 'block', color: block.color, material: block.material, room, corners, normal: faceNormal(corners), w: texels(sw), h: texels(sh), ...extra });
+        const owner = blockBoxes.length;
+        // gedreht (rotation): erst gerade gebaut, dann seine Flächen um die Mitte gedreht
+        const yaw = block.yaw ?? 0, cos = Math.cos(yaw), sin = Math.sin(yaw);
+        const turn = ([x, y, z]) => [cx + (x - cx) * cos + (z - cz) * sin, y, cz - (x - cx) * sin + (z - cz) * cos];
+        const reach = (Math.abs(w * cos) + Math.abs(d * sin)) / 2, reachZ = (Math.abs(w * sin) + Math.abs(d * cos)) / 2;
+        blockBoxes.push({ min: { x: cx - reach, y: y0, z: cz - reachZ }, max: { x: cx + reach, y: y1, z: cz + reachZ }, owner, turned: yaw !== 0 });
+        const first = faces.length;
+        const turnFaces = () => {
+            if (yaw === 0) return;
+            for (const face of faces.slice(first)) {
+                face.corners = face.corners.map(turn);
+                face.normal = faceNormal(face.corners);
+                if (face.normals) face.normals = face.normals.map(([x, y, z]) => [x * cos + z * sin, y, -x * sin + z * cos]);
+            }
+        };
+        const put = (corners, sw, sh, extra = {}) => faces.push({ kind: 'block', color: block.color, material: block.material, room, corners, normal: faceNormal(corners), w: texels(sw), h: texels(sh), owner, ...extra });
         if (block.shape === 'round') {
             // eine runde Säule (oval, wenn Breite und Tiefe verschieden sind):
             // ringsum ROUND_SIDES schmale Flächen. Jede Ecke zeigt genau nach
@@ -829,6 +954,7 @@ export function buildGeometry(level, modelBoxes = []) {
                 put([[cx, y1, cz], [q.x, y1, q.z], [p.x, y1, p.z], [p.x, y1, p.z]], Math.max(rx, rz), Math.max(rx, rz));
                 if (block.base > 0.001) put([[cx, y0, cz], [p.x, y0, p.z], [q.x, y0, q.z], [q.x, y0, q.z]], Math.max(rx, rz), Math.max(rx, rz));
             }
+            turnFaces();
             continue;
         }
         // Pappe braucht Koordinaten auf der Kiste (Meter): quer von der Mitte
@@ -843,6 +969,7 @@ export function buildGeometry(level, modelBoxes = []) {
         put([[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]], w, h, onSide(w, h));                 // nach +z
         put([[x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0]], d, h, onSide(d, h));                 // nach -x
         put([[x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1]], d, h, onSide(d, h));                 // nach +x
+        turnFaces();
     }
 
     // Zweifarbige Wände (dado = höhe, farbe): jede Wand, die auf dem Boden
@@ -873,7 +1000,7 @@ export function buildGeometry(level, modelBoxes = []) {
             strip([at(c0, half, 0), at(c1, half, 0), at(c1, half, o), at(c0, half, o)], [0, 1, 0], 0.2),
             strip([at(c0, -half, 0), at(c1, -half, 0), at(c1, -half, o), at(c0, -half, o)], [0, -1, 0], 0.2)];
     });
-    faces = addDetail(faces, modelBoxes);
+    faces = addDetail(faces, [...modelBoxes, ...blockBoxes]);
     const atlasSize = packRectangles(faces);
 
     // Eine Geometrie für jede Sorte Fläche in jedem Raum (eigene Tapete, eigener Teppich)
@@ -927,7 +1054,8 @@ export function buildGeometry(level, modelBoxes = []) {
                     const normal = nS > 1 || nT > 1 ? faceNormal(quad.map(([s, t]) => world(s, t))) : face.normal;
                     quad.forEach(([s, t], corner) => {
                         const bs = edge(s, tu), bt = edge(t, tv);
-                        bakePositions.push(u0 + bs * du, v0 + bt * dv, 0);
+                        // texelAt: wo die Stelle s in ihrem Stück Lichtkarte liegt (ohne: dort, wo s sagt)
+                        bakePositions.push(u0 + (face.texelAt && s > 0 && s < 1 ? face.texelAt(s) : bs) * du, v0 + bt * dv, 0);
                         bakeWorld.push(...world(bs, bt));
                         // eine runde Säule: die Richtung an jeder Ecke, dazwischen gemischt
                         bakeNormal.push(...(face.normals && n === 1 ? face.normals[corner] : normal));
@@ -980,7 +1108,7 @@ export function buildGeometry(level, modelBoxes = []) {
                         const uv4 = face.uv4 && ((a, b) => a.map((v, i) => v + (b[i] - v) * t))(
                             face.uv4[0].map((v, i) => v + (face.uv4[1][i] - v) * s), face.uv4[3].map((v, i) => v + (face.uv4[2][i] - v) * s));
                         uvs.push(...(face.uvAt ? face.uvAt(s, t) : uv4 ?? (face.arc ? [face.arc[0] + (face.arc[1] - face.arc[0]) * s, points[k][1]] : along(points[k]))));
-                        uv1s.push(u0 + s * du, v0 + t * dv);
+                        uv1s.push(u0 + (face.texelAt ? face.texelAt(s) : s) * du, v0 + t * dv);
                         if (target) {
                             const ds = Math.min(1, Math.max(0, (s - detail.s0) / (detail.s1 - detail.s0)));
                             const dt = Math.min(1, Math.max(0, (t - detail.t0) / (detail.t1 - detail.t0)));
@@ -1019,5 +1147,10 @@ export function buildGeometry(level, modelBoxes = []) {
     }
     const maxHeight = Math.max(...faces.map((f) => Math.max(...f.corners.map((c) => c[1]))));
     const minHeight = Math.min(...faces.map((f) => Math.min(...f.corners.map((c) => c[1]))));
-    return { meshes, atlasSize, faceCount: faces.length, maxHeight, minHeight };
+    // wo jede Fläche in der Lightmap liegt, in Punkten (für ?show=atlas&face=…)
+    const rects = faces.filter((f) => !f.detailOnly).map((f) => ({
+        kind: f.kind, room: f.room, x: f.ax, y: f.ay, w: f.w, h: f.h,
+        fine: f.detail ? { x: f.detail.target.ax, y: f.detail.target.ay, w: f.detail.target.w, h: f.detail.target.h } : null,
+    }));
+    return { meshes, atlasSize, faceCount: faces.length, maxHeight, minHeight, rects };
 }

@@ -27,14 +27,32 @@ const VOXELS_TOTAL = 24e6;
 const CELL = 0.25;                    // Zellen für das abprallende Licht
 const DIRECT_PASSES = 64;             // Durchgänge für das direkte Licht
 const BOUNCE_PASSES = 64;             // Durchgänge für jede Reflexion, je vier Strahlen
+const INJECT_CHUNK = 1 << 18;         // Punkte der Lightmap je Schritt, die ihr Licht in die Zellen geben
 const RAYS = 4;
+// Ein Durchgang wird Stück für Stück gezeichnet, ein Quadrat der Lightmap
+// auf einmal: Ein Handy oder Tablet gibt sonst auf (der GL-Kontext geht
+// verloren), wenn die Grafikkarte zu lange an einem Bild rechnet. Es fängt
+// klein an (FIRST_TILE); kommt die Grafikkarte gut mit, werden die Stücke
+// größer (largerTiles, bis TILE), wird schon eins zu langsam, kleiner
+// (smallerTiles).
+const FIRST_TILE = 128;
+const TILE = 512;
+const SMALLEST_TILE = 32;
 const LIGHT_SCALE = 30;               // macht power = 1 zu »hell unter der Lampe«
 
 // Das Raster für die Strahlen: für jedes Feld, was es ist, wie hoch seine
 // Decke an den vier Ecken ist und welcher Block darauf steht, alles genau.
 // Nur Modelle kommen in ein feines Raster aus Voxeln.
 // maxTextureSize: wie viele Voxel eine 3D-Textur je Richtung haben darf
-export function buildGrid(level, models, maxHeight, maxTextureSize = 2048) {
+// Async: Zwischendurch (alle 20 ms) kommt der Browser dran, sonst stünde
+// die Seite still, solange viele Modelle in Voxel zerlegt werden.
+export async function buildGrid(level, models, maxHeight, maxTextureSize = 2048) {
+    let rested = performance.now();
+    const breathe = async () => {
+        if (performance.now() - rested < 20) return;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        rested = performance.now();
+    };
     const { width, depth, layers, settings } = level;
     const cell = settings.cell;
     // Jede Schicht (Räume übereinander, level.js) ist ein ganzer Grundriss:
@@ -87,13 +105,17 @@ export function buildGrid(level, models, maxHeight, maxTextureSize = 2048) {
         const cx = (block.x + 0.5) * cell + block.offset[0], cz = (block.z + 0.5) * cell + block.offset[2];
         const y0 = block.floor + block.base + block.offset[1];   // auf dem Boden seines Felds (oder höher)
         const min = [cx - w / 2, y0, cz - d / 2], max = [cx + w / 2, y0 + h, cz + d / 2];
-        for (let z = Math.floor(min[2] / cell); z < Math.ceil(max[2] / cell); z++) {
-            for (let x = Math.floor(min[0] / cell); x < Math.ceil(max[0] / cell); x++) {
+        // gedreht: in allen Feldern, die er gedreht berührt; der Kasten bleibt
+        // gerade, der Shader dreht Strahl und Stelle zurück (blockMin.w)
+        const yaw = block.yaw ?? 0, c = Math.abs(Math.cos(yaw)), s = Math.abs(Math.sin(yaw));
+        const reachX = (w * c + d * s) / 2, reachZ = (w * s + d * c) / 2;
+        for (let z = Math.floor((cz - reachZ) / cell); z < Math.ceil((cz + reachZ) / cell); z++) {
+            for (let x = Math.floor((cx - reachX) / cell); x < Math.ceil((cx + reachX) / cell); x++) {
                 if (x < 0 || z < 0 || x >= width || z >= depth) continue;
                 const i = level.index(x, z, k) * 4;
                 if (info[i + 2] > 0) continue;
                 info[i + 2] = 1;
-                blockMin.set([...min, 1], i);
+                blockMin.set([...min, yaw], i);
                 blockMax.set([...max, block.shape === 'round' ? 2 : 1], i);   // 2: eine runde Säule in diesem Kasten
             }
         }
@@ -130,7 +152,7 @@ export function buildGrid(level, models, maxHeight, maxTextureSize = 2048) {
     const data = new Uint8Array(ax * ay * az);
     const gridInfo = new Float32Array(Math.max(1, grids.length) * 3 * 4);
     const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), p = new THREE.Vector3();
-    models.forEach((object, index) => {
+    for (const [index, object] of models.entries()) {
         const { voxel, count: [nx, ny, nz], origin, offset: [ox, oy] } = grids[index];
         gridInfo.set([origin.x, origin.y, origin.z, voxel, ox, oy, 0, 0, nx, ny, nz, 0], index * 12);
         const set = (vx, vy, vz) => {
@@ -141,12 +163,14 @@ export function buildGrid(level, models, maxHeight, maxTextureSize = 2048) {
             if (fx >= 0 && fz >= 0 && fx < width && fz < depth) for (let k = 0; k < layers; k++) info[level.index(fx, fz, k) * 4 + 1] = 1;
         };
         object.updateMatrixWorld(true);
-        object.traverse((mesh) => {
-            if (!mesh.isMesh || mesh.userData.noShadow) return;   // Glas und leuchtende Teile (main.js)
+        const meshes = [];
+        object.traverse((mesh) => { if (mesh.isMesh && !mesh.userData.noShadow) meshes.push(mesh); });   // ohne Glas und leuchtende Teile (main.js)
+        for (const mesh of meshes) {
             const position = mesh.geometry.attributes.position;
             const index = mesh.geometry.index;
             const count = index ? index.count : position.count;
             for (let i = 0; i < count; i += 3) {
+                if (i % 3000 === 0) await breathe();
                 const ia = index ? index.getX(i) : i, ib = index ? index.getX(i + 1) : i + 1, ic = index ? index.getX(i + 2) : i + 2;
                 a.fromBufferAttribute(position, ia).applyMatrix4(mesh.matrixWorld);
                 b.fromBufferAttribute(position, ib).applyMatrix4(mesh.matrixWorld);
@@ -161,8 +185,8 @@ export function buildGrid(level, models, maxHeight, maxTextureSize = 2048) {
                     }
                 }
             }
-        });
-    });
+        }
+    }
     const voxels = new THREE.Data3DTexture(data, ax, ay, az);
     voxels.format = THREE.RedFormat;
     voxels.type = THREE.UnsignedByteType;
@@ -434,6 +458,12 @@ float roundHit(vec3 a, vec3 dir, vec3 lo, vec3 hi) {
     return tFar < max(tNear, 0.0) ? -1.0 : max(tNear, 0.0);
 }
 
+// um die senkrechte Achse gedreht, wie rotation.y in three.js
+vec3 turnY(vec3 v, float angle) {
+    float c = cos(angle), s = sin(angle);
+    return vec3(v.x * c + v.z * s, v.y, -v.x * s + v.z * c);
+}
+
 // Wo trifft ein Strahl auf einen Quader? -1: gar nicht
 float boxHit(vec3 a, vec3 dir, vec3 lo, vec3 hi) {
     vec3 inv = 1.0 / safeDirection(dir);
@@ -521,8 +551,11 @@ float trace(vec3 a, vec3 dir, float maxLength) {
         }
         // ein Block
         if (info.b > 0.5) {
-            vec4 top = texelFetch(blockMax, at, 0);
-            float tBox = top.w > 1.5 ? roundHit(a, dir, texelFetch(blockMin, at, 0).xyz, top.xyz) : boxHit(a, dir, texelFetch(blockMin, at, 0).xyz, top.xyz);
+            vec4 top = texelFetch(blockMax, at, 0), low = texelFetch(blockMin, at, 0);
+            // gedreht: der Strahl in die Richtung des geraden Blocks; t bleibt dasselbe
+            vec3 middle = (low.xyz + top.xyz) * 0.5;
+            vec3 la = middle + turnY(a - middle, -low.w), ld = turnY(dir, -low.w);
+            float tBox = top.w > 1.5 ? roundHit(la, ld, low.xyz, top.xyz) : boxHit(la, ld, low.xyz, top.xyz);
             if (tBox >= 0.0 && tBox <= tExit) hit = min(hit, max(tBox, tEnter));
         }
         // ein Modell
@@ -557,6 +590,7 @@ vec3 hemisphere(vec3 n) {
 // und Decke steckt), rückt er auf der Fläche an den Rand des Blocks. Sonst
 // wäre er schwarz, und beim Zeichnen, das benachbarte Punkte mischt, färbte
 // das Schwarz rund um die Säule herum ab wie Schimmel.
+vec3 outOfBox(vec3 p, vec3 n, vec3 lo, vec3 hi, bool isRound);
 vec3 outOfBlocks(vec3 p, vec3 n) {
     ivec2 cell = ivec2(floor(p.xz / cellMeters));
     if (any(lessThan(cell, ivec2(0))) || any(greaterThanEqual(cell, ivec2(cellCount)))) return p;
@@ -564,10 +598,17 @@ vec3 outOfBlocks(vec3 p, vec3 n) {
     if (k < 0) return p;
     ivec2 at = ivec2(cell.x, cell.y + k * int(cellCount.y));
     if (texelFetch(cellInfo, at, 0).b < 0.5) return p;
-    vec3 lo = texelFetch(blockMin, at, 0).xyz, hi = texelFetch(blockMax, at, 0).xyz;
+    vec4 low = texelFetch(blockMin, at, 0), top = texelFetch(blockMax, at, 0);
+    if (low.w == 0.0) return outOfBox(p, n, low.xyz, top.xyz, top.w > 1.5);
+    // gedreht: Stelle und Richtung zurückgedreht, das Ergebnis wieder hin
+    vec3 middle = (low.xyz + top.xyz) * 0.5;
+    vec3 q = outOfBox(middle + turnY(p - middle, -low.w), turnY(n, -low.w), low.xyz, top.xyz, top.w > 1.5);
+    return middle + turnY(q - middle, low.w);
+}
+vec3 outOfBox(vec3 p, vec3 n, vec3 lo, vec3 hi, bool isRound) {
     if (any(lessThan(p, lo - 0.001)) || any(greaterThan(p, hi + 0.001))) return p;
     // eine runde Säule: im Kasten, aber neben dem Kreis ist nichts zu tun
-    if (texelFetch(blockMax, at, 0).w > 1.5) {
+    if (isRound) {
         // ihre eigene Fläche oben oder unten bleibt
         if ((p.y > hi.y - 0.002 && n.y > 0.5) || (p.y < lo.y + 0.002 && n.y < -0.5)) return p;
         vec2 q = (p.xz - (lo.xz + hi.xz) * 0.5) / ((hi.xz - lo.xz) * 0.5);
@@ -947,6 +988,16 @@ const additive = {
     blendDst: THREE.OneFactor,
 };
 
+// eine schwarze Textur, solange es noch keine Lightmap gibt
+let black = null;
+function nothing() {
+    if (!black) {
+        black = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
+        black.needsUpdate = true;
+    }
+    return black;
+}
+
 function target(size, options = {}) {
     const [width, height] = [size].flat().length === 2 ? size : [size, size];
     return new THREE.WebGLRenderTarget(width, height, {
@@ -960,13 +1011,71 @@ function target(size, options = {}) {
     });
 }
 
+// Ein Zeichen in der Warteschlange der Grafikkarte (WebGL2-Fence): done sagt,
+// ob sie alles, was davor geschickt wurde, schon gezeichnet hat, took, wie
+// lange das gedauert hat (in ms, so genau, wie man nachsieht). Der Browser
+// schickt Arbeit nur ab; ohne dieses Zeichen sammelte sie sich an, bis die
+// Grafikkarte sekundenlang nichts anderes tut, auch nicht den Bildschirm.
+export function gpuMark(renderer) {
+    const gl = renderer.getContext();
+    const sync = gl.isContextLost() ? null : gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+    gl.flush();
+    const started = performance.now();
+    let took = sync ? null : 0;
+    return {
+        get done() {
+            if (took === null && gl.clientWaitSync(sync, 0, 0) !== gl.TIMEOUT_EXPIRED) {
+                took = performance.now() - started;
+                gl.deleteSync(sync);
+            }
+            return took !== null;
+        },
+        get took() { return took ?? performance.now() - started; },
+    };
+}
+
+// wartet, ohne den Browser anzuhalten, bis die Grafikkarte fertig ist; die Zeit in ms
+export async function gpuIdle(renderer) {
+    const mark = gpuMark(renderer);
+    while (!mark.done) await new Promise((resolve) => setTimeout(resolve, 2));
+    return mark.took;
+}
+
 export class LightBaker {
+    // voxels: das Raster aus buildGrid, oder eine Funktion, die es baut.
+    // Vorbereitet (Raster, Render-Targets, Shader) wird erst, wenn wirklich
+    // gebacken wird: Mit gespeichertem Licht braucht es nichts davon, und
+    // auf einem Handy oder einer VR-Brille spart das Zeit und Speicher.
     constructor(renderer, level, geometry, voxels, lights, bounces = 3) {
         this.bounces = bounces;   // wie oft das Licht zurückgeworfen wird (bounces in level.ini)
         this.renderer = renderer;
         this.lights = lights;
-        const size = geometry.atlasSize;
-        this.atlasSize = size;
+        this.level = level;
+        this.geometry = geometry;
+        this.voxelSource = voxels;
+        this.atlasSize = geometry.atlasSize;
+        this.tileSize = Math.min(FIRST_TILE, this.atlasSize);
+        this.wantedTile = this.tileSize;
+        this.prepared = false;
+        this.saved = null;
+        this.on = null;           // welche Leuchten an sind (switchLights)
+        this.resetCounters();
+    }
+
+    // Bereit zum Backen: erst das Raster (das dauert, aber die Seite bleibt
+    // bedienbar), dann alles für die Grafikkarte. Mehrfach gerufen: einmal.
+    prepare() {
+        this.preparing ??= (async () => {
+            const voxels = typeof this.voxelSource === 'function' ? await this.voxelSource() : this.voxelSource;
+            this.build(voxels);
+            this.prepared = true;
+        })();
+        return this.preparing;
+    }
+
+    build(voxels) {
+        const { renderer, level, geometry, lights } = this;
+        const size = this.atlasSize;
         // direktes Licht: ruhig und flackernd; abgeprallt: zwei, eines wird
         // gesammelt, das andere ist die letzte fertige Reflexion
         this.directTarget = target(size, { count: 2 });
@@ -977,8 +1086,12 @@ export class LightBaker {
         // das grobe Raster für das abgegebene Licht, Schicht für Schicht nebeneinander
         const cellCount = new THREE.Vector3(
             Math.ceil(voxels.cells.x * voxels.cell / CELL), Math.ceil((geometry.maxHeight - geometry.minHeight + 0.5) / CELL), Math.ceil(voxels.cells.y * voxels.cell / CELL));
-        const perRow = Math.max(1, Math.min(cellCount.z, Math.floor(8192 / cellCount.x)));
+        // so breit, wie die Grafikkarte Texturen erlaubt: auf Handys und Tablets
+        // oft nur 4096 Pixel; mehr ließe das Bounce-Licht stillschweigend weg
+        const widest = Math.min(8192, renderer.capabilities.maxTextureSize);
+        const perRow = Math.max(1, Math.min(cellCount.z, Math.floor(widest / cellCount.x)));
         const flatSize = new THREE.Vector2(cellCount.x * perRow, cellCount.y * Math.ceil(cellCount.z / perRow));
+        if (flatSize.x > widest || flatSize.y > widest) console.warn(`The bounce light needs ${flatSize.x} × ${flatSize.y} pixels, this graphics card allows ${widest}: the level is too big for it.`);
         this.cellTarget = target([flatSize.x, flatSize.y], { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
 
         const ambient = new THREE.Color('#d8c890');
@@ -1083,6 +1196,7 @@ export class LightBaker {
             depthWrite: false,
             ...additive,
         });
+        this.injectPoints = points;
         this.injectScene = new THREE.Scene();
         const cloud = new THREE.Points(points, this.injectMaterial);
         cloud.frustumCulled = false;
@@ -1090,11 +1204,12 @@ export class LightBaker {
 
         // Stelle, Richtung und Farbe jedes Punkts: einmal, sie ändern sich nicht
         this.draw(this.surfaceTarget, this.surfaceMaterial, true);
+        if (this.on) lightTexture(this.lights, this.on, this.directMaterial.uniforms.lights.value);
         this.reset();
     }
 
     // Zeichnet alle Flächen mit diesem Shader in dieses Ziel
-    draw(renderTarget, material, clear = false) {
+    draw(renderTarget, material, clear = false, rect = null) {
         const renderer = this.renderer;
         const xr = renderer.xr.enabled;
         renderer.xr.enabled = false;
@@ -1108,7 +1223,13 @@ export class LightBaker {
             renderer.clear();
         }
         const scene = material === this.injectMaterial ? this.injectScene : material === this.denoiseMaterial ? this.denoiseScene : this.scene;
+        if (rect) {
+            renderTarget.scissor.set(...rect);
+            renderTarget.scissorTest = true;
+            renderer.setRenderTarget(renderTarget);   // übernimmt den Ausschnitt
+        }
         renderer.render(scene, this.camera);
+        renderTarget.scissorTest = false;
         renderer.setRenderTarget(previous);
         renderer.autoClear = autoClear;
         renderer.xr.enabled = xr;
@@ -1125,17 +1246,27 @@ export class LightBaker {
 
     // Von vorn anfangen
     reset() {
-        this.clear(this.directTarget);
-        for (const t of this.indirectTargets) this.clear(t);
+        if (this.prepared) {
+            this.clear(this.directTarget);
+            for (const t of this.indirectTargets) this.clear(t);
+        }
+        this.resetCounters();
+    }
+
+    resetCounters() {
+        this.tile = 0;             // das wievielte Stück des Durchgangs als Nächstes
+        this.passStarted = performance.now();   // wann der laufende Durchgang anfing
         this.directPasses = 0;
         this.bounce = 0;           // die wievielte Reflexion gerade gesammelt wird (0: noch keine)
         this.gatherPasses = 0;
         this.finishedPasses = 0;   // Durchgänge der letzten fertigen Reflexion
+        this.injected = 0;         // wie viele Punkte ihr Licht schon in die Zellen gegeben haben
     }
 
     // Welche Leuchten an sind; danach fängt das Backen von vorn an.
     switchLights(on) {
-        lightTexture(this.lights, on, this.directMaterial.uniforms.lights.value);
+        this.on = [...on];
+        if (this.prepared) lightTexture(this.lights, on, this.directMaterial.uniforms.lights.value);
         this.reset();
     }
 
@@ -1148,18 +1279,31 @@ export class LightBaker {
         return this.saved ? true : this.bounce > this.bounces;
     }
 
-    // ein Schritt Arbeit: ein Durchgang direktes Licht oder ein Durchgang Sammeln
+    // ein Schritt Arbeit: ein Stück eines Durchgangs direktes Licht oder Sammeln
     step() {
         if (this.done) return;
+        if (!this.prepared) { this.prepare(); return; }   // noch nicht bereit: erst das Raster
+        const rect = this.tileRect();
         if (this.directPasses < DIRECT_PASSES) {
             this.directMaterial.uniforms.pass.value = this.directPasses;
-            this.draw(this.directTarget, this.directMaterial);
+            this.draw(this.directTarget, this.directMaterial, false, rect);
+            if (!this.nextTile()) return;
             this.directPasses += 1;
             if (this.directPasses === DIRECT_PASSES) this.startBounce();
             return;
         }
+        // erst geben alle Punkte ihr Licht in die Zellen, in Portionen: auf
+        // einmal (bei 2048² über vier Millionen Punkte) dauerte es manchen
+        // Grafikkarten zu lange
+        if (this.injected < this.atlasSize * this.atlasSize) {
+            this.injectPoints.setDrawRange(this.injected, INJECT_CHUNK);
+            this.draw(this.cellTarget, this.injectMaterial);
+            this.injected += INJECT_CHUNK;
+            return;
+        }
         this.gatherMaterial.uniforms.pass.value = this.bounce * 1000 + this.gatherPasses;
-        this.draw(this.indirectTargets[0], this.gatherMaterial);
+        this.draw(this.indirectTargets[0], this.gatherMaterial, false, rect);
+        if (!this.nextTile()) return;
         this.gatherPasses += 1;
         if (this.gatherPasses === BOUNCE_PASSES) {
             // fertig: entrauschen, in drei Runden mit wachsendem Abstand, in die
@@ -1177,6 +1321,41 @@ export class LightBaker {
         }
     }
 
+    // die Stücke eines Durchgangs: Reihe für Reihe über die Lightmap
+    get tilesPerPass() {
+        const n = Math.ceil(this.atlasSize / this.tileSize);
+        return n * n;
+    }
+
+    tileRect() {
+        const n = Math.ceil(this.atlasSize / this.tileSize), size = this.tileSize;
+        return [(this.tile % n) * size, Math.floor(this.tile / n) * size, size, size];
+    }
+
+    // weiter zum nächsten Stück; true, wenn damit der Durchgang fertig ist.
+    // Kleinere Stücke erst ab dem nächsten Durchgang, damit keins fehlt.
+    nextTile() {
+        this.tile += 1;
+        if (this.tile < this.tilesPerPass) return false;
+        this.tile = 0;
+        this.passStarted = performance.now();
+        this.tileSize = this.wantedTile;
+        return true;
+    }
+
+    // Ein Stück dauert zu lange: ab dem nächsten Durchgang halb so groß
+    smallerTiles() {
+        if (this.wantedTile > SMALLEST_TILE) this.wantedTile /= 2;
+    }
+
+    // Viele Stücke je Bild sind kein Problem: ab dem nächsten Durchgang
+    // doppelt so groß (weniger Aufrufe). true, wenn sie größer werden.
+    largerTiles() {
+        if (this.wantedTile !== this.tileSize || this.wantedTile >= Math.min(TILE, this.atlasSize)) return false;
+        this.wantedTile *= 2;
+        return true;
+    }
+
     startBounce() {
         this.bounce += 1;
         this.gatherPasses = 0;
@@ -1187,26 +1366,30 @@ export class LightBaker {
         u.indirect.value = this.indirectTargets[1].texture;
         u.indirectScale.value = this.finishedPasses ? 1 / this.finishedPasses : 0;
         this.clear(this.cellTarget);
-        this.draw(this.cellTarget, this.injectMaterial);
+        this.injected = 0;   // step() gibt das Licht in die Zellen
         this.clear(this.indirectTargets[0]);
     }
 
     // Wie weit, von 0 bis 1, und was gerade passiert
     get progress() {
         if (this.saved) return 1;
-        return Math.min(1, (this.directPasses + Math.max(0, this.bounce - 1) * BOUNCE_PASSES + this.gatherPasses) / (DIRECT_PASSES + this.bounces * BOUNCE_PASSES));
+        const passes = this.directPasses + Math.max(0, this.bounce - 1) * BOUNCE_PASSES + this.gatherPasses + this.tile / this.tilesPerPass;
+        return Math.min(1, passes / (DIRECT_PASSES + this.bounces * BOUNCE_PASSES));
     }
 
     get stage() {
+        if (!this.prepared) return 'preparing the models';
         if (this.directPasses < DIRECT_PASSES) return `direct light, pass ${this.directPasses} of ${DIRECT_PASSES}`;
         if (this.done) return null;
+        if (this.injected < this.atlasSize * this.atlasSize) return `bounce ${this.bounce} of ${this.bounces}, light into the cells (${Math.round(100 * this.injected / this.atlasSize ** 2)} %)`;
         return `bounce ${this.bounce} of ${this.bounces}, pass ${this.gatherPasses} of ${BOUNCE_PASSES}`;
     }
 
     // Licht für die Ecken der Modelle (positions, normals: je drei Zahlen pro
-    // Ecke, in der Welt); 64 Durchgänge. Liefert drei Zahlen pro Ecke:
-    // direktes Licht (direct = true) oder Bounce-Licht.
-    vertexLight(positions, normals, direct) {
+    // Ecke, in der Welt); 64 Durchgänge, verteilt auf mehrere Bilder, damit
+    // die Grafikkarte nie lange an einem rechnet. Liefert (async) drei Zahlen
+    // pro Ecke: direktes Licht (direct = true) oder Bounce-Licht.
+    async vertexLight(positions, normals, direct) {
         const count = positions.length / 3;
         const rowLength = 1024, rows = Math.max(1, Math.ceil(count / rowLength));
         const pack = (values) => {
@@ -1243,24 +1426,45 @@ export class LightBaker {
         quad.frustumCulled = false;
         scene.add(quad);
         const renderer = this.renderer;
-        const previous = renderer.getRenderTarget();
-        const xr = renderer.xr.enabled;
-        renderer.xr.enabled = false;
-        renderer.setRenderTarget(result);
-        renderer.setClearColor(0x000000, 0);
-        renderer.clear();
-        const autoClear = renderer.autoClear;
-        renderer.autoClear = false;
-        const passes = 64;
-        for (let i = 0; i < passes; i++) {
-            material.uniforms.pass.value = i;
-            renderer.render(scene, this.camera);
+        // Arbeit in Stücken: ein Durchgang für ein Band von Zeilen (BAND Ecken
+        // mal 1024). Ein paar Stücke, dann wartet es, bis die Grafikkarte
+        // fertig ist, und lässt ihr eine Pause für den Bildschirm; dauerten
+        // sie zu lange, das nächste Mal weniger.
+        const passes = 64, BAND = 16, bands = Math.ceil(rows / BAND), units = passes * bands;
+        const run = (from, to, clear) => {
+            const previous = renderer.getRenderTarget();
+            const xr = renderer.xr.enabled, autoClear = renderer.autoClear;
+            renderer.xr.enabled = false;
+            renderer.setRenderTarget(result);
+            if (clear) {
+                renderer.setClearColor(0x000000, 0);
+                renderer.clear();
+            }
+            renderer.autoClear = false;
+            result.scissorTest = true;
+            for (let unit = from; unit < to; unit++) {
+                const band = Math.floor(unit / passes);
+                material.uniforms.pass.value = unit % passes;
+                result.scissor.set(0, band * BAND, rowLength, BAND);
+                renderer.setRenderTarget(result);   // übernimmt den Ausschnitt
+                renderer.render(scene, this.camera);
+            }
+            result.scissorTest = false;
+            renderer.autoClear = autoClear;
+            renderer.setRenderTarget(previous);
+            renderer.xr.enabled = xr;
+        };
+        let done = 0, batch = 4;
+        while (done < units) {
+            const to = Math.min(units, done + batch);
+            run(done, to, done === 0);
+            done = to;
+            const took = await gpuIdle(renderer);
+            batch = took > 40 ? Math.max(1, batch >> 1) : took < 15 ? Math.min(4096, batch * 2) : batch;
+            await new Promise((resolve) => setTimeout(resolve, 16));
         }
-        renderer.autoClear = autoClear;
         const half = new Uint16Array(rowLength * rows * 4);
         renderer.readRenderTargetPixels(result, 0, 0, rowLength, rows, half);
-        renderer.setRenderTarget(previous);
-        renderer.xr.enabled = xr;
         result.dispose();
         material.dispose();
         positionTexture.dispose();
@@ -1328,10 +1532,11 @@ export class LightBaker {
         return light;
     }
 
-    get steady() { return this.saved?.steady ?? this.directTarget.textures[0]; }
-    get flicker() { return this.saved?.flicker ?? this.directTarget.textures[1]; }
+    // solange das Backen vorbereitet wird: schwarz
+    get steady() { return this.saved?.steady ?? (this.prepared ? this.directTarget.textures[0] : nothing()); }
+    get flicker() { return this.saved?.flicker ?? (this.prepared ? this.directTarget.textures[1] : nothing()); }
     // die letzte fertige Reflexion
-    get indirect() { return this.saved?.indirect ?? this.indirectTargets[1].texture; }
+    get indirect() { return this.saved?.indirect ?? (this.prepared ? this.indirectTargets[1].texture : nothing()); }
     // womit die Flächen die Werte der Lightmaps malnehmen: beim Backen eins
     // durch die Zahl der Durchgänge, bei gespeichertem Licht dessen Maßstab
     get intensity() {
@@ -1346,22 +1551,24 @@ export class LightBaker {
     // gespeichertes Licht steht als Wurzel in den Texturen: die Flächen quadrieren
     get squared() { return Boolean(this.saved); }
 
-    // Das fertige Licht als Zahlen, zum Speichern (lightstore.js): je Punkt
-    // RGBA, schon mit seiner Helligkeit verrechnet, wie die Flächen es zeigen.
-    readLight() {
+    // Das fertige Licht zum Speichern (lightstore.js): je Lightmap die Werte,
+    // wie die Grafikkarte sie hat (Half Float, RGBA je Punkt), und womit sie
+    // malzunehmen sind, damit sie so hell sind, wie die Flächen sie zeigen.
+    // Async: Die Grafikkarte liefert, ohne dass die Seite stehen bleibt.
+    async readLight() {
         const size = this.atlasSize;
-        const read = (renderTarget, index, scale) => {
+        const renderer = this.renderer;
+        const read = async (renderTarget, index, scale) => {
             const half = new Uint16Array(size * size * 4);
-            this.renderer.readRenderTargetPixels(renderTarget, 0, 0, size, size, half, undefined, index);
-            const values = new Float32Array(half.length);
-            for (let i = 0; i < half.length; i++) values[i] = THREE.DataUtils.fromHalfFloat(half[i]) * scale;
-            return values;
+            if (renderer.readRenderTargetPixelsAsync) await renderer.readRenderTargetPixelsAsync(renderTarget, 0, 0, size, size, half, undefined, index);
+            else renderer.readRenderTargetPixels(renderTarget, 0, 0, size, size, half, undefined, index);
+            return { half, scale };
         };
         return {
             size,
-            steady: read(this.directTarget, 0, this.intensity),
-            flicker: read(this.directTarget, 1, this.intensity),
-            indirect: read(this.indirectTargets[1], 0, this.indirectIntensity),
+            steady: await read(this.directTarget, 0, this.intensity),
+            flicker: await read(this.directTarget, 1, this.intensity),
+            indirect: await read(this.indirectTargets[1], 0, this.indirectIntensity),
         };
     }
 
