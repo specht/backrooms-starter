@@ -38,7 +38,7 @@ const main = document.getElementById('main');
 // jede Textur in einer Farbe, wie sie im Level vorkommt
 const textures = {
     wallpaper: { label: 'wallpaper', make: (step) => wallpaperTexture('#c9b458', step),
-        steps: ['one colour', 'stripes', 'diamonds', 'stains'] },
+        steps: ['one colour', 'stripes', 'diamonds'] },
     marble: { label: 'marble', make: (step) => marbleTexture(512, 1, step),
         steps: ['noise', 'turbulence: noise in four sizes', 'stripes from a sine', 'the sine bent by the turbulence'] },
     wood: { label: 'wood', make: (step) => woodTexture('#b07a48', step),
