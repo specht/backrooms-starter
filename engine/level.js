@@ -1022,6 +1022,8 @@ export async function loadLevel(levelFile, fetchText) {
         lift,
         lifts,
         // die Treppe oder das Podest an einem Feld in Schicht k, oder null
+        // ein Feld mit einer Tür (in Schicht k)
+        doorAt: (x, z, k = 0) => x >= 0 && z >= 0 && x < width && z < depth && doorCells.has(index(x, z, k)),
         liftAt: (x, z, k = 0) => (x < 0 || z < 0 || x >= width || z >= depth ? null : lifted.get(index(x, z, k)) ?? null),
         stairAt,
         // Ist an einem Punkt der Welt (in Metern) Luft, in irgendeinem Raum?

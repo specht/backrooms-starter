@@ -147,6 +147,24 @@ export function buildGeometry(level, modelBoxes = []) {
     // Raum dahinter): gezeichnet als feines Gitter, damit er genau auf der
     // Fläche liegt, mit der Strahlen und Füße rechnen
     const DOOR_GRID = 16;   // je Stück unter einem Grad Knick: Für Kanten zählt erst mehr (EDGE_ANGLE)
+    // Ein Durchgang: ein Feld mit Boden (eine Tür), quer zur Wand auf beiden
+    // Seiten der Boden zweier verschiedener Räume, gleich hoch. Seine Hälften
+    // gehören den Räumen, auf deren Seite sie liegen: Wand, Sockelleiste,
+    // Boden und Decke wie dort. So sieht man der Wand ihre Dicke an, statt
+    // dass ein Raum bis an die Tapete des anderen reicht. axis: quer durch
+    // die Wand; near: der Raum auf der Seite der kleineren Zahl, far: der andere
+    const passage = (x, z, k) => {
+        if (!level.doorAt(x, z, k) || at(x, z, k) !== 'floor' || level.twistedDoors.has(level.index(x, z, k)) || level.poolAt(x, z, k) || level.liftAt(x, z, k)) return null;
+        const own = roomOf(x, z, k);
+        for (const [axis, a, b] of [['z', [x, z - 1], [x, z + 1]], ['x', [x - 1, z], [x + 1, z]]]) {
+            if (at(a[0], a[1], k) !== 'floor' || at(b[0], b[1], k) !== 'floor') continue;
+            const near = roomOf(a[0], a[1], k), far = roomOf(b[0], b[1], k);
+            if (near === far || (near !== own && far !== own)) continue;
+            if (Math.abs(floorAt(x + 0.5, z + 0.5, near) - floorAt(x + 0.5, z + 0.5, far)) > 0.01) continue;
+            return { axis, near, far };
+        }
+        return null;
+    };
 
     // Boden und Decke: pro Raum die größten Rechtecke aus Feldern, damit
     // die Lichtkarte über eine ganze Fläche durchgeht (keine Nähte an jedem
@@ -165,7 +183,7 @@ export function buildGeometry(level, modelBoxes = []) {
         // ein Becken hat seinen eigenen Boden, tief unten (pools unten); die Decke darüber gehört dem Raum
         const mine = (x, z) => kinds.includes(at(x, z, k)) && roomOf(x, z, k) === room && !(forCeiling && level.ceilingOpen(x, z, k))
             && (forCeiling || (!level.poolAt(x, z, k) && !level.liftAt(x, z, k))) && !(forCeiling && level.archAt(x, z, k));   // Becken, Treppen und Podeste haben ihren eigenen Boden, eine runde Tür ihren Bogen
-        const inRoom = (x, z) => mine(x, z) && !used.has(z * width + x) && !door(x, z);
+        const inRoom = (x, z) => mine(x, z) && !used.has(z * width + x) && !door(x, z) && !passage(x, z, k);
         const result = [];
         for (let z = 0; z < depth; z++) {
             for (let x = 0; x < width; x++) {
@@ -200,6 +218,25 @@ export function buildGeometry(level, modelBoxes = []) {
             const x0 = x * cell, x1 = (x + w) * cell, z0 = z * cell, z1 = (z + d) * cell;
             add('ceiling', r, [[x0, h(x, z), z0], [x1, h(x + w, z), z0], [x1, h(x + w, z + d), z1], [x0, h(x, z + d), z1]],
                 texels(w * cell), texels(d * cell), door ? DOOR_GRID : 1);
+        }
+        // die Durchgänge dieses Raums: Boden und Decke in zwei Hälften, jede wie ihr Raum
+        const k = room.layer;
+        for (let z = 0; z < depth; z++) {
+            for (let x = 0; x < width; x++) {
+                if (roomOf(x, z, k) !== r) continue;
+                const pass = passage(x, z, k);
+                if (!pass) continue;
+                const top = level.ceilingOfCell(x, z, k);
+                for (const [half, owner] of [[0, pass.near], [1, pass.far]]) {
+                    const [hx0, hx1, hz0, hz1] = pass.axis === 'z' ? [x, x + 1, z + half / 2, z + (half + 1) / 2] : [x + half / 2, x + (half + 1) / 2, z, z + 1];
+                    const fl = (cx, cz) => floorAt(cx, cz, owner);
+                    add('floor', owner, [[hx0 * cell, fl(hx0, hz1), hz1 * cell], [hx1 * cell, fl(hx1, hz1), hz1 * cell], [hx1 * cell, fl(hx1, hz0), hz0 * cell], [hx0 * cell, fl(hx0, hz0), hz0 * cell]],
+                        texels((hx1 - hx0) * cell), texels((hz1 - hz0) * cell));
+                    if (level.ceilingOpen(x, z, k) || level.archAt(x, z, k)) continue;
+                    add('ceiling', owner, [[hx0 * cell, top(hx0, hz0), hz0 * cell], [hx1 * cell, top(hx1, hz0), hz0 * cell], [hx1 * cell, top(hx1, hz1), hz1 * cell], [hx0 * cell, top(hx0, hz1), hz1 * cell]],
+                        texels((hx1 - hx0) * cell), texels((hz1 - hz0) * cell));
+                }
+            }
         }
     });
 
@@ -337,6 +374,18 @@ export function buildGeometry(level, modelBoxes = []) {
                         };
                     }).filter((o) => o.ceiling[0] > bottom[0] + 0.01 || o.ceiling[1] > bottom[1] + 0.01)
                         .filter((o) => o.floor[0] < top[0] - 0.01 || o.floor[1] < top[1] - 0.01);
+                    const pass = passage(x, z, k);
+                    if (pass && !open.length && !level.ceilingOpen(x, z, k) && (pass.axis === 'z') === (direction === 'west' || direction === 'east')) {
+                        // die Seite eines Durchgangs: jede Hälfte wie ihr Raum, mit dessen Sockelleiste
+                        for (const [lo, hi, owner] of [[along, along + 0.5, pass.near], [along + 0.5, along + 1, pass.far]]) {
+                            const [p, q] = wallEnds(direction, line, lo, hi);
+                            const low = [f(p[0], p[1]), f(q[0], q[1])], high = [h(p[0], p[1]), h(q[0], q[1])];
+                            add('wall', owner, [[p[0] * cell, low[0], p[1] * cell], [q[0] * cell, low[1], q[1] * cell], [q[0] * cell, high[1], q[1] * cell], [p[0] * cell, high[0], p[1] * cell]],
+                                texels(cell / 2), texels(Math.max(high[0] - low[0], high[1] - low[1])));
+                            skirting(owner, direction, p, q, low[0]);
+                        }
+                        continue;
+                    }
                     if (!open.length && !level.ceilingOpen(x, z, k)) {
                         // eine ganze Wand: Stücke auf einer Linie werden unten zusammengelegt
                         // (nicht am Schacht unter einem Loch: die reicht bis an die Decke darüber).
@@ -455,24 +504,29 @@ export function buildGeometry(level, modelBoxes = []) {
                 const room = roomOf(x, z, k);
                 const r = arch.radius;
                 const around = (u) => r * Math.acos(Math.min(1, Math.max(-1, (arch.center - u) / r)));   // Meter entlang des Bogens
-                const d0 = (arch.alongX ? z : x) * cell, d1 = d0 + cell;   // quer durch die Wand
                 const point = (u, y, d) => (arch.alongX ? [arch.start + u, y, d] : [d, y, arch.start + u]);
                 // nur über dem Bogen; ist er schmaler als die Tür, daneben die Seiten der Öffnung
                 const from = Math.max(arch.u0, arch.center - r), to = Math.min(arch.u1, arch.center + r);
-                for (const [side, inward] of [[arch.center - r, 1], [arch.center + r, -1]]) {
-                    if (side < arch.u0 + 1e-6 || side > arch.u1 - 1e-6) continue;
-                    let corners = [point(side, arch.floor, d0), point(side, arch.floor, d1), point(side, arch.spring, d1), point(side, arch.spring, d0)];
-                    const n = faceNormal(corners);
-                    if ((arch.alongX ? n[0] : n[2]) * inward < 0) corners = [corners[0], corners[3], corners[2], corners[1]];
-                    add('wall', room, corners, texels(cell), texels(arch.spring - arch.floor));
+                // quer durch die Wand; in einem Durchgang jede Hälfte wie ihr Raum
+                const pass = passage(x, z, k);
+                const start = (arch.alongX ? z : x) * cell;
+                const halves = pass ? [[start, start + cell / 2, pass.near], [start + cell / 2, start + cell, pass.far]] : [[start, start + cell, room]];
+                for (const [d0, d1, owner] of halves) {
+                    for (const [side, inward] of [[arch.center - r, 1], [arch.center + r, -1]]) {
+                        if (side < arch.u0 + 1e-6 || side > arch.u1 - 1e-6) continue;
+                        let corners = [point(side, arch.floor, d0), point(side, arch.floor, d1), point(side, arch.spring, d1), point(side, arch.spring, d0)];
+                        const n = faceNormal(corners);
+                        if ((arch.alongX ? n[0] : n[2]) * inward < 0) corners = [corners[0], corners[3], corners[2], corners[1]];
+                        add('wall', owner, corners, texels(d1 - d0), texels(arch.spring - arch.floor));
+                    }
+                    if (to <= from) continue;
+                    // das Gewölbe: eine Fläche, gebogen, mit einem Stück Lichtkarte
+                    const vault = (s, t) => point(from + (to - from) * Math.min(1, Math.max(0, s)), arch.height(from + (to - from) * Math.min(1, Math.max(0, s))), d0 + (d1 - d0) * t);
+                    const down = faceNormal([vault(0.4, 0), vault(0.6, 0), vault(0.6, 1), vault(0.4, 1)])[1] < 0;
+                    const shape = down ? vault : (s, t) => vault(s, 1 - t);
+                    curved('wall', owner, shape, Math.max(8, Math.ceil(ARCH_STEPS * (to - from) / (2 * r))), around(to) - around(from), d1 - d0,
+                        (s, t) => [around(from + (to - from) * s), d0 + (d1 - d0) * (down ? t : 1 - t)]);
                 }
-                if (to <= from) continue;
-                // das Gewölbe: eine Fläche, gebogen, mit einem Stück Lichtkarte
-                const vault = (s, t) => point(from + (to - from) * Math.min(1, Math.max(0, s)), arch.height(from + (to - from) * Math.min(1, Math.max(0, s))), d0 + (d1 - d0) * t);
-                const down = faceNormal([vault(0.4, 0), vault(0.6, 0), vault(0.6, 1), vault(0.4, 1)])[1] < 0;
-                const shape = down ? vault : (s, t) => vault(s, 1 - t);
-                curved('wall', room, shape, Math.max(8, Math.ceil(ARCH_STEPS * (to - from) / (2 * r))), around(to) - around(from), cell,
-                    (s, t) => [around(from + (to - from) * s), d0 + (d1 - d0) * (down ? t : 1 - t)]);
             }
         }
     }
