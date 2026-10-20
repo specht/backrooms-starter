@@ -129,7 +129,7 @@ export function buildGrid(level, statues, maxHeight, maxTextureSize = 2048) {
         };
         object.updateMatrixWorld(true);
         object.traverse((mesh) => {
-            if (!mesh.isMesh) return;
+            if (!mesh.isMesh || mesh.userData.noShadow) return;   // Glas und leuchtende Teile (main.js)
             const position = mesh.geometry.attributes.position;
             const index = mesh.geometry.index;
             const count = index ? index.count : position.count;
@@ -323,6 +323,10 @@ float lightFacing(vec4 a, vec4 e, vec3 l) {
     return beamFacing(-l.y * e.b, e.a);
 }
 float lightArea(vec4 a, vec4 b) { return a.w < 0.0 ? b.w : a.w * b.w; }
+// Wo der Strahl zur Leuchte endet: bei einer Lampe aus einem Modell knapp
+// vor ihrem Licht. Ihr Schirm wirft Schatten, nur ihr Inneres um die
+// Glühbirne nicht (sonst wäre sie sofort verdeckt).
+vec3 shadowEnd(vec4 a, vec3 s, vec3 l) { return a.w < 0.0 ? s - l * (-a.w * 1.5 + 0.02) : s; }
 
 vec3 safeDirection(vec3 d) {
     return vec3(abs(d.x) < 1e-6 ? 1e-6 : d.x, abs(d.y) < 1e-6 ? 1e-6 : d.y, abs(d.z) < 1e-6 ? 1e-6 : d.z);
@@ -613,7 +617,7 @@ void main() {
         float atSurface = dot(n, l);      // wie schräg das Licht auf die Fläche fällt
         float atLamp = lightFacing(a, c, l);     // am meisten senkrecht vor der Leuchte
         if (atSurface <= 0.0 || atLamp <= 0.0) continue;
-        if (blocked(start, s)) continue;
+        if (blocked(start, shadowEnd(a, s, l))) continue;
         vec3 amount = b.rgb * atSurface * atLamp * lightArea(a, b) / (3.14159 * d2 + 0.05) * fade;
         if (channel < 0) light += amount;
         else flickering[channel] += dot(amount, vec3(0.2126, 0.7152, 0.0722));   // nur wie hell, die Farbe hat der Kanal
@@ -827,7 +831,7 @@ void main() {
         l /= sqrt(d2);
         float atSurface = dot(n, l), atLamp = lightFacing(a, e, l);
         if (atSurface <= 0.0 || atLamp <= 0.0) continue;
-        if (blocked(start, s)) continue;
+        if (blocked(start, shadowEnd(a, s, l))) continue;
         vec3 amount = b.rgb * atSurface * atLamp * lightArea(a, b) / (3.14159 * d2 + 0.05) * fade;
         light += e.r < 0.0 ? amount : amount;   // flackernde Leuchten zählen hier ruhig
     }

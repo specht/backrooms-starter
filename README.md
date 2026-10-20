@@ -97,6 +97,13 @@ stains: those would repeat with them and form a pattern on a large wall.
 Stains come in when drawing, from noise over the whole world, in three
 sizes (`stains` in `engine/main.js`), and never repeat.
 
+Wood, tiles and marble on walls and floors are not textures at all: the
+shader computes them for every pixel from its place in the world (`wood`,
+`tiles`, `marble` in `engine/main.js`). Every board has its own tone,
+length and grain, every tile its own tone, and the veins of the marble, from
+noise in space, run on round a corner. `textures.html` shows the recipes
+on a square.
+
 ## Portals
 
 Only what you can see is drawn. You see into another room only through an
@@ -241,7 +248,7 @@ oval one when width and depth differ).
 <tr><td><code>height</code></td><td>in metres (2.0)</td></tr>
 <tr><td><code>rotation</code></td><td>in degrees, around the vertical axis</td></tr>
 <tr><td><code>offset</code></td><td>x, y, z in metres, out of the middle of its field, as in three.js: x east, y up, z south, such as <code>offset = 0, 1.6, -0.42</code> for a lamp on the north wall</td></tr>
-<tr><td><code>light</code></td><td>a colour: the model is a lamp. Its light comes from its glowing parts (emissive in the model, or, when nothing is, the materials whose name says bulb or flame) and shines in all directions; <code>power</code> and <code>flicker</code> as for a lamp</td></tr>
+<tr><td><code>light</code></td><td>a colour: the model is a lamp. Its light comes from its glowing parts (emissive in the model, or, when nothing is, the materials whose name says bulb or flame) and shines in all directions; its arm and shade cast shadows, its glass does not; <code>power</code> and <code>flicker</code> as for a lamp</td></tr>
 <tr><td><code>beam</code></td><td>for a lamp with a shade: its light falls only downwards, in a cone up to that many degrees from the vertical, such as <code>beam = 75</code>; <code>beam = up, 60</code> sends it upwards</td></tr>
 <tr><td><code>material</code></td><td><code>marble</code> instead of the model's own textures</td></tr>
 <tr><td><code>pedestal</code></td><td>a block under it: width, height, depth; <code>pedestal_color</code> paints it, <code>pedestal_material</code> makes it of marble, wood and so on</td></tr>

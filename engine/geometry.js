@@ -234,6 +234,22 @@ export function buildGeometry(level, statueBoxes = []) {
         if (normal.every((v) => v === 0)) return;
         faces.push({ kind, room, corners, normal, w: texels(metersS), h: texels(metersT), shape, steps, uvAt, samples, ...extra });
     };
+    // Eine Sockelleiste vor einem Stück Wand von p nach q (in Feldern), auf
+    // dem Boden bei y: vorne und oben, 1,5 cm vor der Wand
+    const skirting = (room, direction, p, q, y0) => {
+        const board = level.rooms[room].settings.baseboard;
+        if (!board) return;
+        const n = INWARD[direction], y = y0 + board.height, o = 0.015;
+        const length = Math.hypot(q[0] - p[0], q[1] - p[1]) * cell;
+        const front = [[p[0] * cell + n[0] * o, y0, p[1] * cell + n[2] * o], [q[0] * cell + n[0] * o, y0, q[1] * cell + n[2] * o],
+            [q[0] * cell + n[0] * o, y, q[1] * cell + n[2] * o], [p[0] * cell + n[0] * o, y, p[1] * cell + n[2] * o]];
+        const upper = [[p[0] * cell, y, p[1] * cell], [q[0] * cell, y, q[1] * cell], [q[0] * cell + n[0] * o, y, q[1] * cell + n[2] * o], [p[0] * cell + n[0] * o, y, p[1] * cell + n[2] * o]];
+        for (const [face, want, sw, sh] of [[front, n, length, board.height], [upper, [0, 1, 0], length, 0.2]]) {
+            let c = face;
+            if (faceNormal(c).reduce((sum, v, k) => sum + v * want[k], 0) < 0) c = [c[0], c[3], c[2], c[1]];
+            faces.push({ kind: 'baseboard', color: board.color, room, corners: c, normal: faceNormal(c), w: texels(sw), h: texels(sh) });
+        }
+    };
     // Die Wand vor einer runden Tür, auf der Seite des Raums room (die Kante
     // direction/line/along, top: die Decke dort): neben dem Bogen ganz Wand,
     // mit Sockelleiste, über ihm eine Fläche, deren Unterkante ihm folgt.
@@ -254,18 +270,7 @@ export function buildGeometry(level, statueBoxes = []) {
                 const corners = [[p[0] * cell, arch.floor, p[1] * cell], [q[0] * cell, arch.floor, q[1] * cell],
                     [q[0] * cell, top(q[0], q[1]), q[1] * cell], [p[0] * cell, top(p[0], p[1]), p[1] * cell]];
                 add('wall', room, corners, texels(length), texels(Math.max(top(p[0], p[1]), top(q[0], q[1])) - arch.floor));
-                const board = level.rooms[room].settings.baseboard;
-                if (board) {
-                    const n = INWARD[direction], y = arch.floor + board.height, o = 0.015;
-                    const front = [[p[0] * cell + n[0] * o, arch.floor, p[1] * cell + n[2] * o], [q[0] * cell + n[0] * o, arch.floor, q[1] * cell + n[2] * o],
-                        [q[0] * cell + n[0] * o, y, q[1] * cell + n[2] * o], [p[0] * cell + n[0] * o, y, p[1] * cell + n[2] * o]];
-                    const upper = [[p[0] * cell, y, p[1] * cell], [q[0] * cell, y, q[1] * cell], [q[0] * cell + n[0] * o, y, q[1] * cell + n[2] * o], [p[0] * cell + n[0] * o, y, p[1] * cell + n[2] * o]];
-                    for (const [face, want, sw, sh] of [[front, n, length, board.height], [upper, [0, 1, 0], length, 0.2]]) {
-                        let c = face;
-                        if (faceNormal(c).reduce((sum, v, k) => sum + v * want[k], 0) < 0) c = [c[0], c[3], c[2], c[1]];
-                        faces.push({ kind: 'baseboard', color: board.color, room, corners: c, normal: faceNormal(c), w: texels(sw), h: texels(sh) });
-                    }
-                }
+                skirting(room, direction, p, q, arch.floor);
                 continue;
             }
             // über dem Bogen: unten rund, oben die Decke
@@ -335,7 +340,12 @@ export function buildGeometry(level, statueBoxes = []) {
                         // die Decke zwischen zwei Räumen: roher Beton, keine Tapete
                         const normal = faceNormal(corners);
                         if (slab && normal.some((v) => v !== 0)) faces.push({ kind: 'block', color: SLAB_COLOR, material: 'plain', room, corners, normal, w, h });
-                        else if (!slab) add('wall', room, corners, w, h);
+                        else if (!slab) {
+                            add('wall', room, corners, w, h);
+                            // die Wand unter einer hohen Tür steht auf dem Boden: mit Sockelleiste
+                            const flat = Math.abs(bottom[0] - bottom[1]) < 1e-3 && Math.abs(low[0] - bottom[0]) < 1e-3 && Math.abs(low[1] - bottom[1]) < 1e-3;
+                            if (flat && high[0] - low[0] > 1 && !level.poolAt(x, z, k)) skirting(room, direction, a, b, bottom[0]);
+                        }
                     }
                 }
             }

@@ -423,11 +423,18 @@ function bounceStatues(statues, baker, parts) {
 const GRIME = { wallpaper: 1, carpet: 1, ceiling: 0.9, plain: 0.7, tiles: 0.45, wood: 0.4, velvet: 0.35, marble: 0.3 };
 
 // Wand, Boden und Decke: Textur mal Licht aus den beiden Lichtkarten
-function surfaceMaterial(map, baker, uniforms, grime = 1) {
+// Holz, Fliesen und Marmor rechnet der Shader selbst, aus der Stelle in der
+// Welt: Kein Brett, keine Fliese und keine Ader wiederholt sich (SHADER_STYLES)
+const SHADER_STYLES = { wood: 1, tiles: 2, marble: 3 };
+
+function surfaceMaterial(map, baker, uniforms, grime = 1, style = null, color = '#ffffff') {
+    const base = new THREE.Color(color);
     return new THREE.ShaderMaterial({
         uniforms: {
             map: { value: map },
             grime: { value: grime },
+            style: { value: SHADER_STYLES[style] ?? 0 },
+            baseColor: { value: new THREE.Vector3(...base.getRGB(new THREE.Color(), THREE.SRGBColorSpace).toArray()) },   // in sRGB, wie die Texturen sie malen
             mapScale: { value: map.repeat.x },   // der Teppich wiederholt sich erst nach zwei Metern
             steadyMap: { value: baker.steady },
             flickerMap: { value: baker.flicker },
@@ -470,18 +477,34 @@ function surfaceMaterial(map, baker, uniforms, grime = 1) {
             uniform float atlasSize;
             uniform vec3 channelColor[${FLICKER_CHANNELS}];
             uniform float grime;
+            uniform int style;          // 0: die Textur, 1: Holz, 2: Fliesen, 3: Marmor (im Shader)
+            uniform vec3 baseColor;
             varying vec2 vUv;
             varying vec2 vLightUv;
             varying vec2 vDetailUv;
             varying float vDetailWeight;
             varying vec3 vWorld;
-            // Rauschen im Raum: an jedem ganzen Punkt eine Zufallszahl, dazwischen weich gemischt
+            // Rauschen im Raum (Gradientenrauschen, wie Perlins): an jedem ganzen
+            // Punkt eine zufällige Richtung, dazwischen weich (fünfter Grad)
+            // gemischt. Einfaches Rauschen (eine Zahl je Punkt) zeigt sein
+            // Gitter: Flecken daraus hätten gerade Kanten entlang der Wände.
+            // Gedreht, damit auch dieses Gitter zu keiner Wand passt. 0 bis 1.
             float hash3(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
+            vec3 gradient3(vec3 i) {
+                float a = hash3(i) * 6.28318, z = hash3(i + 19.19) * 2.0 - 1.0, r = sqrt(1.0 - z * z);
+                return vec3(r * cos(a), r * sin(a), z);
+            }
             float noise3(vec3 p) {
+                const mat3 turn = mat3(0.788, -0.379, 0.485, 0.565, 0.732, -0.380, -0.211, 0.566, 0.797);
+                p = turn * p;
                 vec3 i = floor(p), f = fract(p);
-                vec3 u = f * f * (3.0 - 2.0 * f);
-                return mix(mix(mix(hash3(i), hash3(i + vec3(1, 0, 0)), u.x), mix(hash3(i + vec3(0, 1, 0)), hash3(i + vec3(1, 1, 0)), u.x), u.y),
-                           mix(mix(hash3(i + vec3(0, 0, 1)), hash3(i + vec3(1, 0, 1)), u.x), mix(hash3(i + vec3(0, 1, 1)), hash3(i + vec3(1, 1, 1)), u.x), u.y), u.z);
+                vec3 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+                float n000 = dot(gradient3(i), f), n100 = dot(gradient3(i + vec3(1, 0, 0)), f - vec3(1, 0, 0));
+                float n010 = dot(gradient3(i + vec3(0, 1, 0)), f - vec3(0, 1, 0)), n110 = dot(gradient3(i + vec3(1, 1, 0)), f - vec3(1, 1, 0));
+                float n001 = dot(gradient3(i + vec3(0, 0, 1)), f - vec3(0, 0, 1)), n101 = dot(gradient3(i + vec3(1, 0, 1)), f - vec3(1, 0, 1));
+                float n011 = dot(gradient3(i + vec3(0, 1, 1)), f - vec3(0, 1, 1)), n111 = dot(gradient3(i + vec3(1, 1, 1)), f - vec3(1, 1, 1));
+                float n = mix(mix(mix(n000, n100, u.x), mix(n010, n110, u.x), u.y), mix(mix(n001, n101, u.x), mix(n011, n111, u.x), u.y), u.z);
+                return clamp(0.5 + n * 0.9, 0.0, 1.0);
             }
             // Flecken: Die Textur wiederholt sich jeden Meter, die Flecken nicht.
             // Sie kommen aus Rauschen über die ganze Welt, in drei Größen: vergilbte,
@@ -490,11 +513,65 @@ function surfaceMaterial(map, baker, uniforms, grime = 1) {
                 float n = 0.55 * noise3(p * 0.45) + 0.3 * noise3(p * 1.1 + 17.0) + 0.15 * noise3(p * 2.7 + 5.0);
                 float dark = smoothstep(0.5, 0.78, n);
                 float light = smoothstep(0.66, 0.9, noise3(p * 0.7 + 41.0));
-                vec3 color = mix(base, base * vec3(0.78, 0.72, 0.56), dark * 0.55 * grime);
+                vec3 color = mix(base, base * vec3(0.78, 0.72, 0.56), dark * 0.45 * grime);
                 return mix(color, min(color * 1.12, vec3(1.0)), light * 0.5 * grime);
             }
+            float hash2(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+            // eine dunkle Linie der Breite w (Meter) bei d = 0, weich gezeichnet
+            // (aa: wie viel ein Bildpunkt hier misst); weit weg verblasst sie,
+            // statt zu flimmern
+            float line(float d, float w, float aa) {
+                return (1.0 - smoothstep(w - aa, w + aa, d)) * clamp(w / aa, 0.0, 1.0);
+            }
+            // Bretter, 12,5 cm breit, quer zu u nebeneinander: Jedes Stück ist 1,2
+            // bis 3 m lang, hat seinen Ton und seine Maserung, aus der Stelle in
+            // der Welt, und keins kommt wieder
+            vec3 wood(vec2 uv) {
+                float board = floor(uv.x * 8.0), across = fract(uv.x * 8.0);
+                float len = 1.2 + 1.8 * hash2(vec2(board, 3.1));
+                float along = (uv.y + hash2(vec2(board, 7.7)) * len) / len;
+                float piece = floor(along);
+                float phase = hash2(vec2(board, piece)) * 6.28318;
+                float tone = 0.86 + 0.2 * hash2(vec2(piece, board + 0.5));
+                float t = uv.y * 6.28318;
+                float bend = sin(2.0 * t + phase) * 3.0 + sin(5.0 * t + 2.0 * phase) * 1.2;   // in Bildpunkten der alten Textur (512 je Meter)
+                float aa = max(fwidth(uv.x), fwidth(uv.y)) + 1e-5;
+                float fine = clamp(1.0 - aa * 80.0, 0.0, 1.0);   // die Maserung, nur wo man sie auflösen kann
+                float grain = mix(0.5, 0.5 + 0.5 * sin((across * 64.0 + bend) * 0.9 + 5.0 * phase), fine);
+                float f = tone * (0.9 + 0.12 * grain);
+                f *= mix(1.0, 0.55, line(min(across, 1.0 - across) / 8.0, 0.0015, aa));          // Fuge zwischen zwei Brettern
+                f *= mix(1.0, 0.6, line(min(fract(along), 1.0 - fract(along)) * len, 0.0015, aa));   // Fuge quer
+                return pow(min(baseColor * f, vec3(1.0)), vec3(2.2));
+            }
+            // Fliesen, 10 cm, jede in einem etwas anderen Ton, dazwischen Fugen
+            vec3 tiles(vec2 uv) {
+                vec2 cell = floor(uv * 10.0), inside = fract(uv * 10.0);
+                float tone = 0.95 + 0.08 * hash2(cell + vec2(floor(vWorld.y * 10.0) * 0.37, 0.0));
+                float aa = max(fwidth(uv.x), fwidth(uv.y)) + 1e-5;
+                vec2 edge = min(inside, 1.0 - inside) / 10.0;
+                float grout = max(line(edge.x, 0.003, aa), line(edge.y, 0.003, aa));
+                return pow(min(baseColor * mix(tone, 0.7, grout), vec3(1.0)), vec3(2.2));
+            }
+            // Marmor im Raum: Turbulenz aus dreidimensionalem Rauschen verbiegt
+            // einen Sinus zu Adern. Weil es im Raum gerechnet ist, laufen die
+            // Adern über Ecken weiter, von der Wand auf den Boden.
+            vec3 marble(vec3 p) {
+                float aa = length(fwidth(p)) + 1e-5;
+                float turbulence = 0.0, scale = 2.0;
+                for (int i = 1; i <= 4; i++) {
+                    turbulence += noise3(p * scale) / float(i) * clamp(1.0 - aa * scale * 2.0, 0.0, 1.0);
+                    scale *= 2.0;
+                }
+                float vein = abs(sin((p.x + p.y + p.z) * 4.7 + turbulence * 5.0));
+                float width = 0.08 + aa * 6.0;   // weit weg breiter und blasser, statt zu flimmern
+                float strength = 0.32 * clamp(0.08 / width, 0.25, 1.0);
+                float lines = 1.0 - min(1.0, vein / width);
+                float cloud = 0.94 + 0.06 * noise3(p * 4.0);
+                return pow(vec3(0.941, 0.925, 0.894) * cloud * (1.0 - strength * lines), vec3(2.2));
+            }
             void main() {
-                vec3 base = useTexture ? stains(texture2D(map, vUv * mapScale).rgb, vWorld) : vec3(0.8);
+                vec3 surface = style == 1 ? wood(vUv) : style == 2 ? tiles(vUv) : style == 3 ? marble(vWorld) : texture2D(map, vUv * mapScale).rgb;
+                vec3 base = useTexture ? stains(surface, vWorld) : vec3(0.8);
                 vec4 steady = texture2D(steadyMap, vLightUv);
                 vec4 flickering = texture2D(flickerMap, vLightUv);
                 vec3 indirect = texture2D(indirectMap, vLightUv).rgb;
@@ -694,7 +771,7 @@ async function start() {
 
     // Lampen aus Modellen (light = Farbe beim Modell): Ihr Licht sitzt in der
     // Mitte ihrer leuchtenden Teile, sonst in ihrer Mitte, und strahlt nach
-    // allen Seiten. Das Modell selbst hält sein Licht nicht auf.
+    // allen Seiten. Glas und die leuchtenden Teile halten es nicht auf, Arm und Schirm werfen Schatten (bake.js, shadowEnd).
     const lampModels = new Set();
     statues.forEach((object, i) => {
         const thing = statueThings[i];
@@ -716,9 +793,17 @@ async function start() {
         });
     });
 
-    // feinere Lichtkarte um Statuen herum, nicht um Lampen aus Modellen: Die werfen keinen Schatten von sich selbst
-    const geometry = buildGeometry(level, statues.filter((object) => !lampModels.has(object)).map((object) => new THREE.Box3().setFromObject(object)));
-    const voxels = buildGrid(level, statues.filter((object) => !lampModels.has(object)), geometry.maxHeight, renderer.getContext().getParameter(WebGL2RenderingContext.MAX_3D_TEXTURE_SIZE));
+    // feinere Lichtkarte um Statuen herum, auch um Lampen: Ihr Arm und ihr Schirm werfen Schatten an die Wand
+    const geometry = buildGeometry(level, statues.map((object) => new THREE.Box3().setFromObject(object)));
+    // Schatten werfen alle Statuen, auch Lampen aus Modellen (ihr Schirm),
+    // aber nicht Glas und nicht, was leuchtet: Das ist das Licht selbst
+    for (const object of statues) object.traverse((mesh) => {
+        if (!mesh.isMesh) return;
+        const material = mesh.material;
+        const glowing = lampModels.has(object) && (material?.emissiveMap || (material?.emissive && material.emissive.getHex() !== 0) || glowsByName(material));
+        if (glowing || material?.transmission > 0 || (material?.transparent && material.opacity < 0.95)) mesh.userData.noShadow = true;
+    });
+    const voxels = buildGrid(level, statues, geometry.maxHeight, renderer.getContext().getParameter(WebGL2RenderingContext.MAX_3D_TEXTURE_SIZE));
     // ?bounces=0 zum Ausprobieren, sonst aus level.ini
     const bounces = params.has('bounces') ? Number(params.get('bounces')) : settings.bounces;
     const baker = new LightBaker(renderer, level, geometry, voxels, lights, bounces);
@@ -772,22 +857,23 @@ async function start() {
         showStatueLight(statues, parts);
     };
     const textures = new Map();
-    const styleFor = (kind, room, blockColor, blockMaterial) => {
+    // woraus eine Fläche ist und in welcher Farbe: ein Block ohne eigene Farbe
+    // sieht aus wie die Wände seines Raums; mit material aus diesem, in seiner
+    // Farbe oder der Tapete des Raums
+    const lookFor = (kind, room, blockColor, blockMaterial) => {
         const r = level.rooms[room].settings;
-        if (kind === 'block' && blockMaterial) return blockMaterial;
-        if ((kind === 'block' || kind === 'baseboard') && blockColor) return 'plain';
-        return kind === 'floor' ? r.floor : kind === 'ceiling' ? 'ceiling' : r.walls;
+        if (kind === 'block' && blockMaterial) return { style: blockMaterial, color: blockColor ?? r.wallpaper };
+        if ((kind === 'block' || kind === 'baseboard') && blockColor) return { style: 'plain', color: blockColor };
+        if (kind === 'floor') return { style: r.floor, color: r.carpet };
+        if (kind === 'ceiling') return { style: 'ceiling', color: r.ceiling };
+        return { style: r.walls, color: r.wallpaper };
     };
+    // für Holz, Fliesen und Marmor braucht es keine Textur: Die rechnet der Shader
+    const none = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1);
+    none.needsUpdate = true;
     const textureFor = (kind, room, blockColor, blockMaterial) => {
-        const r = level.rooms[room].settings;
-        // ein Block ohne eigene Farbe sieht aus wie die Wände seines Raums;
-        // mit material aus diesem, in seiner Farbe oder der Tapete des Raums
-        let style, color;
-        if (kind === 'block' && blockMaterial) [style, color] = [blockMaterial, blockColor ?? r.wallpaper];
-        else if ((kind === 'block' || kind === 'baseboard') && blockColor) [style, color] = ['plain', blockColor];
-        else if (kind === 'floor') [style, color] = [r.floor, r.carpet];
-        else if (kind === 'ceiling') [style, color] = ['ceiling', r.ceiling];
-        else [style, color] = [r.walls, r.wallpaper];
+        const { style, color } = lookFor(kind, room, blockColor, blockMaterial);
+        if (SHADER_STYLES[style]) return none;
         const key = `${style}:${color}`;
         if (!textures.has(key)) {
             const make = { wallpaper: wallpaperTexture, carpet: carpetTexture, ceiling: ceilingTexture, plain: plainTexture,
@@ -800,7 +886,8 @@ async function start() {
     // was die Automap mit Räumen (V) ausblendet, damit man von oben hineinsieht
     const aboveRooms = [];
     for (const { kind, room, color, material: blockMaterial, geometry: mesh } of geometry.meshes) {
-        const material = surfaceMaterial(textureFor(kind, room, color, blockMaterial), baker, shared, GRIME[styleFor(kind, room, color, blockMaterial)] ?? 0.5);
+        const { style, color: surfaceColor } = lookFor(kind, room, color, blockMaterial);
+        const material = surfaceMaterial(textureFor(kind, room, color, blockMaterial), baker, shared, GRIME[style] ?? 0.5, style, surfaceColor);
         surfaceMaterials.push(material);
         const surface = new THREE.Mesh(mesh, material);
         surface.userData.room = room;
