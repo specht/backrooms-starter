@@ -36,8 +36,25 @@ export class Walker {
         this.boxes = level.things.filter((t) => t.type === 'block' && t.base + t.offset[1] < 1.7).map((t) => {
             const cx = (t.x + 0.5) * cell + t.offset[0], cz = (t.z + 0.5) * cell + t.offset[2];
             const y0 = t.floor + t.base + t.offset[1];
-            return { x0: cx - t.size[0] / 2, x1: cx + t.size[0] / 2, z0: cz - t.size[2] / 2, z1: cz + t.size[2] / 2, y0, y1: y0 + t.size[1] };
+            return { x0: cx - t.size[0] / 2, x1: cx + t.size[0] / 2, z0: cz - t.size[2] / 2, z1: cz + t.size[2] / 2, y0, y1: y0 + t.size[1], round: t.shape === 'round' };
         });
+        // Eine runde Tür, schmaler als die Tür: neben ihrem Bogen ist Wand
+        for (let k = 0; k < level.layers; k++) {
+            for (let z = 0; z < level.depth; z++) {
+                for (let x = 0; x < level.width; x++) {
+                    const arch = level.archAt(x, z, k);
+                    if (!arch) continue;
+                    for (const [from, to] of [[arch.u0, arch.center - arch.radius], [arch.center + arch.radius, arch.u1]]) {
+                        const lo = Math.max(from, arch.u0), hi = Math.min(to, arch.u1);
+                        if (hi - lo < 0.01) continue;
+                        const across = [(arch.alongX ? z : x) * cell, ((arch.alongX ? z : x) + 1) * cell];
+                        const along = [arch.start + lo, arch.start + hi];
+                        const [xs, zs] = arch.alongX ? [along, across] : [across, along];
+                        this.boxes.push({ x0: xs[0], x1: xs[1], z0: zs[0], z1: zs[1], y0: arch.floor, y1: arch.top });
+                    }
+                }
+            }
+        }
         camera.position.set(0, EYE_HEIGHT, 0);
         const { start, settings } = level;
         this.toStart();
@@ -164,6 +181,12 @@ export class Walker {
         const y = this.player.position.y;
         for (const box of this.boxes) {
             if (box.y0 !== undefined && (box.y1 < y + 0.1 || box.y0 > y + 1.7)) continue;
+            if (box.round) {
+                // eine runde Säule: Abstand zur Mitte, im Verhältnis zu ihrem Radius (um RADIUS größer)
+                const rx = (box.x1 - box.x0) / 2 + RADIUS, rz = (box.z1 - box.z0) / 2 + RADIUS;
+                if (((x - (box.x0 + box.x1) / 2) / rx) ** 2 + ((z - (box.z0 + box.z1) / 2) / rz) ** 2 < 1) return false;
+                continue;
+            }
             const nx = Math.max(box.x0, Math.min(x, box.x1)), nz = Math.max(box.z0, Math.min(z, box.z1));
             if ((x - nx) ** 2 + (z - nz) ** 2 < RADIUS * RADIUS) return false;
         }

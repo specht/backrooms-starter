@@ -45,6 +45,8 @@ export function buildGrid(level, statues, maxHeight, maxTextureSize = 2048) {
     const floors = new Float32Array(count * 4);    // Bodenhöhe an den vier Ecken
     const blockMin = new Float32Array(count * 4);
     const blockMax = new Float32Array(count * 4);
+    // runde Türen: welche Achse (1: x, 2: z), Mitte des Bogens (Meter), Radius, Höhe, wo er ansetzt
+    const archInfo = new Float32Array(count * 4);
     for (let k = 0; k < layers; k++) {
         for (let z = 0; z < depth; z++) {
             for (let x = 0; x < width; x++) {
@@ -55,6 +57,8 @@ export function buildGrid(level, statues, maxHeight, maxTextureSize = 2048) {
                 const room = level.roomAt(x, z, k);
                 const top = level.ceilingOfCell(x, z, k);   // unter einem Loch: die Decke des Raums darüber
                 ceilings.set([top(x, z), top(x + 1, z), top(x, z + 1), top(x + 1, z + 1)], i);
+                const arch = level.archAt(x, z, k);
+                if (arch) archInfo.set([arch.alongX ? 1 : 2, arch.start + arch.center, arch.radius, arch.spring], i);
                 // ein Becken: der Boden tief unten, im ganzen Feld gleich
                 const pool = level.poolAt(x, z, k);
                 if (pool) floors.set([pool.bottom, pool.bottom, pool.bottom, pool.bottom], i);
@@ -77,7 +81,7 @@ export function buildGrid(level, statues, maxHeight, maxTextureSize = 2048) {
                 if (info[i + 2] > 0) continue;
                 info[i + 2] = 1;
                 blockMin.set([...min, 1], i);
-                blockMax.set([...max, 1], i);
+                blockMax.set([...max, block.shape === 'round' ? 2 : 1], i);   // 2: eine runde Säule in diesem Kasten
             }
         }
     }
@@ -161,7 +165,7 @@ export function buildGrid(level, statues, maxHeight, maxTextureSize = 2048) {
         return t;
     };
     return {
-        info: texture(info), ceilings: texture(ceilings), floors: texture(floors), blockMin: texture(blockMin), blockMax: texture(blockMax),
+        info: texture(info), ceilings: texture(ceilings), floors: texture(floors), blockMin: texture(blockMin), blockMax: texture(blockMax), arches: texture(archInfo),
         voxels, statueGrids, statueCount: grids.length, cells: new THREE.Vector2(width, depth), layers, cell,
     };
 }
@@ -267,6 +271,7 @@ uniform sampler2D cellFloor;   // Bodenhöhe an den Ecken, ebenso
 uniform float bottom;          // der tiefste Boden
 uniform sampler2D blockMin;
 uniform sampler2D blockMax;
+uniform sampler2D cellArch;    // runde Türen (buildGrid)
 uniform vec2 cellCount;
 uniform int layerCount;        // Räume übereinander: so viele Grundrisse untereinander in den Texturen
 uniform float cellMeters;
@@ -386,6 +391,31 @@ bool insideStatue(vec3 q) {
     return false;
 }
 
+// Wo trifft ein Strahl auf eine runde (oder ovale) Säule im Kasten lo bis hi?
+// Im Grundriss ein Kreis: Wo ist der Strahl genau einen Radius von der Mitte
+// entfernt (eine quadratische Gleichung)? Dazu oben und unten der Kasten.
+float roundHit(vec3 a, vec3 dir, vec3 lo, vec3 hi) {
+    vec2 center = (lo.xz + hi.xz) * 0.5, radius = (hi.xz - lo.xz) * 0.5;
+    vec2 o = (a.xz - center) / radius, d = dir.xz / radius;   // als wäre sie ein Kreis mit Radius 1
+    float A = dot(d, d), B = 2.0 * dot(o, d), C = dot(o, o) - 1.0;
+    float t0 = -1e9, t1 = 1e9;
+    if (A > 1e-10) {
+        float disc = B * B - 4.0 * A * C;
+        if (disc < 0.0) return -1.0;
+        float root = sqrt(disc);
+        t0 = (-B - root) / (2.0 * A);
+        t1 = (-B + root) / (2.0 * A);
+    } else if (C > 0.0) return -1.0;   // senkrecht, neben der Säule
+    float y0 = -1e9, y1 = 1e9;
+    if (abs(dir.y) > 1e-10) {
+        float u0 = (lo.y - a.y) / dir.y, u1 = (hi.y - a.y) / dir.y;
+        y0 = min(u0, u1);
+        y1 = max(u0, u1);
+    } else if (a.y < lo.y || a.y > hi.y) return -1.0;
+    float tNear = max(t0, y0), tFar = min(t1, y1);
+    return tFar < max(tNear, 0.0) ? -1.0 : max(tNear, 0.0);
+}
+
 // Wo trifft ein Strahl auf einen Quader? -1: gar nicht
 float boxHit(vec3 a, vec3 dir, vec3 lo, vec3 hi) {
     vec3 inv = 1.0 / safeDirection(dir);
@@ -446,9 +476,22 @@ float trace(vec3 a, vec3 dir, float maxLength) {
         float g1 = a.y + dir.y * tExit - mix(mix(g.x, g.y, q1.x), mix(g.z, g.w, q1.x), q1.y);
         if (g0 <= 0.0) hit = min(hit, tEnter);
         else if (g1 < 0.0) hit = min(hit, tEnter + (tExit - tEnter) * g0 / (g0 - g1));
+        // eine runde Tür: Luft nur in ihrer Öffnung (gerade Seiten, oben ein
+        // Halbkreis). Am Stück entlang in kleinen Schritten nachgesehen.
+        vec4 arch = texelFetch(cellArch, at, 0);
+        if (arch.x > 0.5) {
+            float end = min(tExit, hit);
+            for (int s = 0; s <= 8; s++) {
+                float t = tEnter + (end - tEnter) * float(s) / 8.0;
+                vec3 q = a + dir * t;
+                float u = (arch.x < 1.5 ? q.x : q.z) - arch.y;
+                if (abs(u) > arch.z || q.y > arch.w + sqrt(max(arch.z * arch.z - u * u, 0.0))) { hit = min(hit, t); break; }
+            }
+        }
         // ein Block
         if (info.b > 0.5) {
-            float tBox = boxHit(a, dir, texelFetch(blockMin, at, 0).xyz, texelFetch(blockMax, at, 0).xyz);
+            vec4 top = texelFetch(blockMax, at, 0);
+            float tBox = top.w > 1.5 ? roundHit(a, dir, texelFetch(blockMin, at, 0).xyz, top.xyz) : boxHit(a, dir, texelFetch(blockMin, at, 0).xyz, top.xyz);
             if (tBox >= 0.0 && tBox <= tExit) hit = min(hit, max(tBox, tEnter));
         }
         // eine Statue
@@ -492,6 +535,16 @@ vec3 outOfBlocks(vec3 p, vec3 n) {
     if (texelFetch(cellInfo, at, 0).b < 0.5) return p;
     vec3 lo = texelFetch(blockMin, at, 0).xyz, hi = texelFetch(blockMax, at, 0).xyz;
     if (any(lessThan(p, lo - 0.001)) || any(greaterThan(p, hi + 0.001))) return p;
+    // eine runde Säule: im Kasten, aber neben dem Kreis ist nichts zu tun
+    if (texelFetch(blockMax, at, 0).w > 1.5) {
+        // ihre eigene Fläche oben oder unten bleibt
+        if ((p.y > hi.y - 0.002 && n.y > 0.5) || (p.y < lo.y + 0.002 && n.y < -0.5)) return p;
+        vec2 q = (p.xz - (lo.xz + hi.xz) * 0.5) / ((hi.xz - lo.xz) * 0.5);
+        if (dot(q, q) > 1.0 - 0.002) return p;
+        // drinnen (ein Boden unter ihr): auf den Rand, in Richtung von der Mitte weg
+        vec2 out2 = normalize(q + vec2(1e-4, 0.0)) * (1.0 + 0.02 / max(hi.x - lo.x, 0.01));
+        return vec3((lo.xz + hi.xz).x * 0.5 + out2.x * (hi.x - lo.x) * 0.5, p.y, (lo.xz + hi.xz).y * 0.5 + out2.y * (hi.z - lo.z) * 0.5);
+    }
     // Die Flächen des Blocks selbst liegen auf seinem Rand und zeigen aus ihm
     // heraus: die bleiben. Ein Boden unter einer Säule zeigt in sie hinein.
     for (int i = 0; i < 3; i++) {
@@ -909,6 +962,7 @@ export class LightBaker {
             bottom: { value: geometry.minHeight - 0.01 },
             blockMin: { value: voxels.blockMin },
             blockMax: { value: voxels.blockMax },
+            cellArch: { value: voxels.arches },
             cellCount: { value: voxels.cells },
             cellMeters: { value: voxels.cell },
             top: { value: geometry.maxHeight + 0.01 },

@@ -90,6 +90,13 @@ back to the same spot, as long as the floor plan has not changed. An open
 automap is kept there too (`?automap=…`), turned, moved and zoomed as it
 was: change a room, reload, and look at the same place again.
 
+## Stains
+
+The textures repeat every metre (`engine/textures.js`), so they have no
+stains: those would repeat with them and form a pattern on a large wall.
+Stains come in when drawing, from noise over the whole world, in three
+sizes (`stains` in `engine/main.js`), and never repeat.
+
 ## Portals
 
 Only what you can see is drawn. You see into another room only through an
@@ -165,6 +172,11 @@ and all of them together are one building, so there can be as many rooms as
 you like. A floor field without a wall next to it, or two rooms in the same
 place at the same height, is reported with the file and the line.
 
+`arch = 2.4` in a door's section makes it round at the top: a semicircle,
+2.4 m above the floor in its middle, as wide as the door. `arch = 2.4, 0.8`
+makes the arch only 0.8 m wide, in the middle of the door, with wall beside
+it. Either side of the door may say it.
+
 Rooms may lie on top of each other: a ramp leads up one storey, and the room
 up there may lie over the one below, as long as its floor is not below that
 room's ceiling. A hole joins two rooms like a door, only vertically:
@@ -219,7 +231,8 @@ wide, 6 m high and 0.9 m deep, in the middle of its field: a column.
 `base` lifts it off the floor, `color` paints it (without a colour, it has the
 room's wallpaper). `material` makes it of `marble`, `wood`, `tiles`, `velvet`,
 `wallpaper` or `plain`, whatever the room's walls are, in the colour of
-`color` or the room's wallpaper.
+`color` or the room's wallpaper. `shape = round` makes it a round column (an
+oval one when width and depth differ).
 
 ### A model: a statue, furniture, a lamp
 
@@ -237,11 +250,14 @@ room's wallpaper). `material` makes it of `marble`, `wood`, `tiles`, `velvet`,
 
 ### A pool
 
-Every field with the letter is part of the pool; fields of the same letter
-next to each other are one pool. Its floor lies `pool` below the floor of the
-room, lined with tiles, and the water stands `water` below the edge. You can't
-walk into water; into an empty pool you fall (Shift+R takes you back). A room
-with a pool has no ramp.
+Every field with the letter is part of the pool; fields next to each other
+with the same depth and the same water are one pool. Its floor lies `pool`
+below the floor of the room, lined with tiles, and the water stands `water`
+below the edge. You can't walk into water; into an empty pool you fall
+(Shift+R takes you back). A room with a pool has no ramp. `pool` may also
+stand in the section of a lamp, a block or a model: its field is part of the
+pool and still has its thing, a column standing in the water (on the floor of
+the pool) or a lamp above it.
 
 ```
 [W]

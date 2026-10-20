@@ -8,6 +8,7 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { loadLevel } from './level.js';
 import { buildGeometry, EDGE_ANGLE } from './geometry.js';
@@ -285,6 +286,8 @@ function lightStatue(object, lights, ambient) {
         for (let i = 0; i < position.count; i++) {
             p.fromBufferAttribute(position, i).applyMatrix4(mesh.matrixWorld);
             n.fromBufferAttribute(normal, i).applyMatrix3(normalMatrix).normalize();
+            // manche Modelle haben Ecken ohne Richtung (Länge 0): dann nach oben
+            if (!Number.isFinite(n.x + n.y + n.z)) n.set(0, 1, 0);
             colors.set(lightAt(p, n, lights, ambient, rgb, object), i * 3);
         }
         geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
@@ -373,8 +376,8 @@ function restoreStatueLight(statues, saved) {
     let offset = 0;
     for (const mesh of meshes) {
         const length = mesh.userData.direct.length;
-        mesh.userData.direct = saved.direct.slice(offset, offset + length);
-        mesh.userData.bounced = saved.bounced.slice(offset, offset + length);
+        mesh.userData.direct = saved.direct.slice(offset, offset + length).map((v) => (Number.isFinite(v) ? v : 0));
+        mesh.userData.bounced = saved.bounced.slice(offset, offset + length).map((v) => (Number.isFinite(v) ? v : 0));
         offset += length;
     }
     return true;
@@ -396,12 +399,15 @@ function bounceStatues(statues, baker, parts) {
         for (let i = 0; i < position.count; i++, offset++) {
             p.fromBufferAttribute(position, i).applyMatrix4(mesh.matrixWorld);
             n.fromBufferAttribute(normal, i).applyMatrix3(normalMatrix).normalize();
+            if (!Number.isFinite(n.x + n.y + n.z)) n.set(0, 1, 0);
             positions.set([p.x, p.y, p.z], offset * 3);
             normals.set([n.x, n.y, n.z], offset * 3);
         }
     }
     const direct = baker.vertexLight(positions, normals, true);
     const bounced = baker.vertexLight(positions, normals, false);
+    // ein ungültiger Wert (NaN) machte mit Bloom das ganze Bild schwarz
+    for (const values of [direct, bounced]) for (let i = 0; i < values.length; i++) if (!Number.isFinite(values[i])) values[i] = 0;
     offset = 0;
     for (const mesh of meshes) {
         const length = mesh.geometry.attributes.color.array.length;
@@ -412,11 +418,16 @@ function bounceStatues(statues, baker, parts) {
     showStatueLight(statues, parts);
 }
 
+// Wie fleckig jede Art Fläche ist (stains in surfaceMaterial): Tapete,
+// Teppich und Decke am meisten, Glattes weniger
+const GRIME = { wallpaper: 1, carpet: 1, ceiling: 0.9, plain: 0.7, tiles: 0.45, wood: 0.4, velvet: 0.35, marble: 0.3 };
+
 // Wand, Boden und Decke: Textur mal Licht aus den beiden Lichtkarten
-function surfaceMaterial(map, baker, uniforms) {
+function surfaceMaterial(map, baker, uniforms, grime = 1) {
     return new THREE.ShaderMaterial({
         uniforms: {
             map: { value: map },
+            grime: { value: grime },
             mapScale: { value: map.repeat.x },   // der Teppich wiederholt sich erst nach zwei Metern
             steadyMap: { value: baker.steady },
             flickerMap: { value: baker.flicker },
@@ -431,8 +442,10 @@ function surfaceMaterial(map, baker, uniforms) {
             varying vec2 vLightUv;
             varying vec2 vDetailUv;
             varying float vDetailWeight;
+            varying vec3 vWorld;
             void main() {
                 vUv = uv;
+                vWorld = (modelMatrix * vec4(position, 1.0)).xyz;
                 vLightUv = uv1;
                 vDetailUv = detailUv;
                 vDetailWeight = detailWeight;
@@ -456,12 +469,32 @@ function surfaceMaterial(map, baker, uniforms) {
             uniform bool usePoints;            // die Taste G: die Punkte der Lichtkarte zeigen
             uniform float atlasSize;
             uniform vec3 channelColor[${FLICKER_CHANNELS}];
+            uniform float grime;
             varying vec2 vUv;
             varying vec2 vLightUv;
             varying vec2 vDetailUv;
             varying float vDetailWeight;
+            varying vec3 vWorld;
+            // Rauschen im Raum: an jedem ganzen Punkt eine Zufallszahl, dazwischen weich gemischt
+            float hash3(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
+            float noise3(vec3 p) {
+                vec3 i = floor(p), f = fract(p);
+                vec3 u = f * f * (3.0 - 2.0 * f);
+                return mix(mix(mix(hash3(i), hash3(i + vec3(1, 0, 0)), u.x), mix(hash3(i + vec3(0, 1, 0)), hash3(i + vec3(1, 1, 0)), u.x), u.y),
+                           mix(mix(hash3(i + vec3(0, 0, 1)), hash3(i + vec3(1, 0, 1)), u.x), mix(hash3(i + vec3(0, 1, 1)), hash3(i + vec3(1, 1, 1)), u.x), u.y), u.z);
+            }
+            // Flecken: Die Textur wiederholt sich jeden Meter, die Flecken nicht.
+            // Sie kommen aus Rauschen über die ganze Welt, in drei Größen: vergilbte,
+            // feuchte Stellen und ein paar helle. Keine zwei Wände sehen gleich aus.
+            vec3 stains(vec3 base, vec3 p) {
+                float n = 0.55 * noise3(p * 0.45) + 0.3 * noise3(p * 1.1 + 17.0) + 0.15 * noise3(p * 2.7 + 5.0);
+                float dark = smoothstep(0.5, 0.78, n);
+                float light = smoothstep(0.66, 0.9, noise3(p * 0.7 + 41.0));
+                vec3 color = mix(base, base * vec3(0.78, 0.72, 0.56), dark * 0.55 * grime);
+                return mix(color, min(color * 1.12, vec3(1.0)), light * 0.5 * grime);
+            }
             void main() {
-                vec3 base = useTexture ? texture2D(map, vUv * mapScale).rgb : vec3(0.8);
+                vec3 base = useTexture ? stains(texture2D(map, vUv * mapScale).rgb, vWorld) : vec3(0.8);
                 vec4 steady = texture2D(steadyMap, vLightUv);
                 vec4 flickering = texture2D(flickerMap, vLightUv);
                 vec3 indirect = texture2D(indirectMap, vLightUv).rgb;
@@ -683,7 +716,8 @@ async function start() {
         });
     });
 
-    const geometry = buildGeometry(level, statues.map((object) => new THREE.Box3().setFromObject(object)));
+    // feinere Lichtkarte um Statuen herum, nicht um Lampen aus Modellen: Die werfen keinen Schatten von sich selbst
+    const geometry = buildGeometry(level, statues.filter((object) => !lampModels.has(object)).map((object) => new THREE.Box3().setFromObject(object)));
     const voxels = buildGrid(level, statues.filter((object) => !lampModels.has(object)), geometry.maxHeight, renderer.getContext().getParameter(WebGL2RenderingContext.MAX_3D_TEXTURE_SIZE));
     // ?bounces=0 zum Ausprobieren, sonst aus level.ini
     const bounces = params.has('bounces') ? Number(params.get('bounces')) : settings.bounces;
@@ -738,6 +772,12 @@ async function start() {
         showStatueLight(statues, parts);
     };
     const textures = new Map();
+    const styleFor = (kind, room, blockColor, blockMaterial) => {
+        const r = level.rooms[room].settings;
+        if (kind === 'block' && blockMaterial) return blockMaterial;
+        if ((kind === 'block' || kind === 'baseboard') && blockColor) return 'plain';
+        return kind === 'floor' ? r.floor : kind === 'ceiling' ? 'ceiling' : r.walls;
+    };
     const textureFor = (kind, room, blockColor, blockMaterial) => {
         const r = level.rooms[room].settings;
         // ein Block ohne eigene Farbe sieht aus wie die Wände seines Raums;
@@ -760,7 +800,7 @@ async function start() {
     // was die Automap mit Räumen (V) ausblendet, damit man von oben hineinsieht
     const aboveRooms = [];
     for (const { kind, room, color, material: blockMaterial, geometry: mesh } of geometry.meshes) {
-        const material = surfaceMaterial(textureFor(kind, room, color, blockMaterial), baker, shared);
+        const material = surfaceMaterial(textureFor(kind, room, color, blockMaterial), baker, shared, GRIME[styleFor(kind, room, color, blockMaterial)] ?? 0.5);
         surfaceMaterials.push(material);
         const surface = new THREE.Mesh(mesh, material);
         surface.userData.room = room;
@@ -985,6 +1025,18 @@ async function start() {
     composer.setPixelRatio(renderer.getPixelRatio());
     composer.setSize(window.innerWidth, window.innerHeight);
     composer.addPass(new RenderPass(scene, camera));
+    // Sicherheitshalber: Ein einziger ungültiger Punkt (NaN, unendlich) würde
+    // vom Bloom über das ganze Bild verwischt, und es wäre schwarz
+    composer.addPass(new ShaderPass({
+        uniforms: { tDiffuse: { value: null } },
+        vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+        fragmentShader: `uniform sampler2D tDiffuse; varying vec2 vUv;
+            void main() {
+                vec4 c = texture2D(tDiffuse, vUv);
+                bool bad = any(isnan(c)) || any(isinf(c));
+                gl_FragColor = bad ? vec4(0.0, 0.0, 0.0, 1.0) : vec4(min(c.rgb, vec3(64.0)), c.a);
+            }`,
+    }));
     const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), BLOOM_STRENGTH, BLOOM_RADIUS, BLOOM_THRESHOLD);
     composer.addPass(bloomPass);
     composer.addPass(new OutputPass());

@@ -1,5 +1,8 @@
 // Tapete, Teppich und Deckenplatten, im Browser gemalt: keine Bilddateien.
-// Jede Textur ist ein Quadrat von einem Meter und wiederholt sich.
+// Jede Textur ist ein Quadrat von einem Meter und wiederholt sich. Flecken
+// malt sie darum nicht: Die wiederholten sich mit ihr und fielen auf einer
+// großen Wand als Muster auf. Die kommen beim Zeichnen dazu, aus Rauschen
+// über die ganze Welt (stains in main.js), und wiederholen sich nie.
 // Tapete, Marmor und Holz nehmen als Letztes step: Mit einer Zahl hören sie
 // nach so vielen Schritten auf (textures.html zeigt sie Schritt für Schritt).
 import * as THREE from 'three';
@@ -30,30 +33,6 @@ function shade(hex, factor) {
     return `#${color.getHexString()}`;
 }
 
-// Fleckige Stellen: viele weiche, halb durchsichtige Kreise. Ein Fleck am
-// Rand wird auch auf der anderen Seite gemalt, jede Kopie mit ihrem eigenen
-// Verlauf um ihre eigene Mitte: So geht die Textur nahtlos weiter.
-function blotches(context, size, rng, color, count, radius, alpha) {
-    const inner = color.replace(')', `, ${alpha})`).replace('rgb', 'rgba');
-    const outer = color.replace(')', ', 0)').replace('rgb', 'rgba');
-    for (let i = 0; i < count; i++) {
-        const x = rng() * size, y = rng() * size, r = radius * (0.4 + rng());
-        for (const dx of [-size, 0, size]) {
-            for (const dy of [-size, 0, size]) {
-                const cx = x + dx, cy = y + dy;
-                if (cx + r < 0 || cy + r < 0 || cx - r > size || cy - r > size) continue;
-                const gradient = context.createRadialGradient(cx, cy, 0, cx, cy, r);
-                gradient.addColorStop(0, inner);
-                gradient.addColorStop(1, outer);
-                context.fillStyle = gradient;
-                context.beginPath();
-                context.arc(cx, cy, r, 0, Math.PI * 2);
-                context.fill();
-            }
-        }
-    }
-}
-
 export function wallpaperTexture(base, step = Infinity) {
     return canvasTexture(512, (context, size) => {
         const rng = random(7);
@@ -80,10 +59,6 @@ export function wallpaperTexture(base, step = Infinity) {
                 context.stroke();
             }
         }
-        if (step < 4) return;
-        // vergilbte und feuchte Stellen
-        blotches(context, size, rng, 'rgb(120, 96, 30)', 10, 70, 0.10);
-        blotches(context, size, rng, 'rgb(255, 245, 190)', 6, 50, 0.08);
     });
 }
 
@@ -103,8 +78,6 @@ export function carpetTexture(base) {
             image.data[i + 2] *= n;
         }
         context.putImageData(image, 0, 0);
-        // feuchte, dunkle Flecken
-        blotches(context, size, rng, 'rgb(50, 40, 15)', 7, 160, 0.07);
     });
     texture.repeat.set(0.5, 0.5);
     return texture;
@@ -125,7 +98,6 @@ export function ceilingTexture(base) {
         context.fillRect(0, 0, size, 6);
         context.fillRect(0, 0, 6, size);
         context.fillRect(0, size / 2 - 3, size, 6);
-        blotches(context, size, rng, 'rgb(130, 105, 50)', 3, 60, 0.12);
     });
 }
 
@@ -182,7 +154,6 @@ export function plainTexture(base) {
             image.data[i + 2] *= n;
         }
         context.putImageData(image, 0, 0);
-        blotches(context, size, rng, 'rgb(40, 35, 20)', 3, 50, 0.08);
     });
 }
 
@@ -289,7 +260,6 @@ export function tileTexture(base) {
                 context.fillRect(i * tile + grout / 2, j * tile + grout / 2, tile - grout, tile - grout);
             }
         }
-        blotches(context, size, rng, 'rgb(40, 35, 20)', 3, 60, 0.05);
     });
 }
 

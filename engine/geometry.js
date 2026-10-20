@@ -76,11 +76,12 @@ function addDetail(faces, boxes) {
     const lerp = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
     const extra = [];
     for (const face of faces) {
-        if ((face.subdivide ?? 1) > 1) continue;
+        if ((face.subdivide ?? 1) > 1 || face.shape) continue;
         const [c0, c1, c2, c3] = face.corners;
         const e1 = sub(c1, c0), e3 = sub(c3, c0);
         let s0 = 1, s1 = 0, t0 = 1, t1 = 0;
         for (const box of boxes) {
+            if (box.block && face.kind === 'block') continue;   // ein Block auf sich selbst: kein Schatten
             const lo = [box.min.x - MARGIN, box.min.y - MARGIN, box.min.z - MARGIN];
             const hi = [box.max.x + MARGIN, box.max.y + MARGIN, box.max.z + MARGIN];
             const corners = [0, 1, 2, 3, 4, 5, 6, 7].map((k) => [k & 1 ? hi[0] : lo[0], k & 2 ? hi[1] : lo[1], k & 4 ? hi[2] : lo[2]]);
@@ -101,7 +102,7 @@ function addDetail(faces, boxes) {
         if (factor < 1.5) continue;
         const at = (s, t) => lerp(lerp(c0, c1, s), lerp(c3, c2, s), t);
         const detail = {
-            ...face, detailOnly: true, density: factor,
+            ...face, detailOnly: true, density: factor, normals: undefined,
             corners: [at(s0, t0), at(s1, t0), at(s1, t1), at(s0, t1)],
             w: Math.max(2, Math.round(face.w * (s1 - s0) * factor)), h: Math.max(2, Math.round(face.h * (t1 - t0) * factor)),
         };
@@ -120,7 +121,9 @@ function addDetail(faces, boxes) {
 }
 
 // statueBoxes: der Kasten um jede Statue, für feinere Lichtkarte in ihrer Nähe
-const SLAB_COLOR = '#8e8a80';   // die Decke zwischen zwei Räumen übereinander, am Rand eines Lochs
+const SLAB_COLOR = '#8e8a80';
+const ROUND_SIDES = 32;         // so viele schmale Flächen hat eine runde Säule ringsum
+const ARCH_STEPS = 12;          // so viele Streifen hat ein Bogen je Feld der Tür   // die Decke zwischen zwei Räumen übereinander, am Rand eines Lochs
 
 export function buildGeometry(level, statueBoxes = []) {
     const { width, depth, layers, settings } = level;
@@ -162,7 +165,7 @@ export function buildGeometry(level, statueBoxes = []) {
         const door = (x, z) => level.twistedDoors.has(level.index(x, z, k));
         // ein Becken hat seinen eigenen Boden, tief unten (pools unten); die Decke darüber gehört dem Raum
         const mine = (x, z) => kinds.includes(at(x, z, k)) && roomOf(x, z, k) === room && !(forCeiling && level.ceilingOpen(x, z, k))
-            && (forCeiling || !level.poolAt(x, z, k));
+            && (forCeiling || !level.poolAt(x, z, k)) && !(forCeiling && level.archAt(x, z, k));   // eine runde Tür hat ihren Bogen
         const inRoom = (x, z) => mine(x, z) && !used.has(z * width + x) && !door(x, z);
         const result = [];
         for (let z = 0; z < depth; z++) {
@@ -221,6 +224,62 @@ export function buildGeometry(level, statueBoxes = []) {
         if (top[0] > low[0] + 0.01 || top[1] > low[1] + 0.01) result.push([[Math.min(low[0], top[0]), Math.min(low[1], top[1])], top, false]);
         return result;
     };
+    // Eine gebogene Fläche: shape(s, t) gibt für s und t von 0 bis 1 die Stelle
+    // in der Welt; in s steps Stücke (gebogen), in t gerade. Ein Stück
+    // Lichtkarte für alles, so dicht wie jede andere Fläche (meters: wie
+    // lang und breit sie ist). uvAt(s, t): Texturkoordinaten, sonst wie eine Wand.
+    const curved = (kind, room, shape, steps, metersS, metersT, uvAt = null, extra = {}) => {
+        const samples = [...Array(steps + 1).keys()].flatMap((i) => [shape(i / steps, 0), shape(i / steps, 1)]);
+        const corners = [shape(0, 0), shape(1, 0), shape(1, 1), shape(0, 1)];
+        const normal = faceNormal([shape(0.45, 0), shape(0.55, 0), shape(0.55, 1), shape(0.45, 1)]);
+        if (normal.every((v) => v === 0)) return;
+        faces.push({ kind, room, corners, normal, w: texels(metersS), h: texels(metersT), shape, steps, uvAt, samples, ...extra });
+    };
+    // Die Wand vor einer runden Tür, auf der Seite des Raums room (die Kante
+    // direction/line/along, top: die Decke dort): neben dem Bogen ganz Wand,
+    // mit Sockelleiste, über ihm eine Fläche, deren Unterkante ihm folgt.
+    const archWall = (room, direction, line, along, arch, top) => {
+        const [a, b] = wallEnds(direction, line, along, along + 1);
+        const u = (p) => (arch.alongX ? p[0] : p[1]) * cell - arch.start;
+        const ua = u(a), ub = u(b);
+        const pointAt = (t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+        const cuts = [0, 1, ...[arch.center - arch.radius, arch.center + arch.radius].map((c) => (c - ua) / (ub - ua))]
+            .filter((t) => t > -1e-9 && t < 1 + 1e-9).sort((p, q) => p - q);
+        for (let i = 0; i + 1 < cuts.length; i++) {
+            const t0 = cuts[i], t1 = cuts[i + 1];
+            if (t1 - t0 < 1e-6) continue;
+            const p = pointAt(t0), q = pointAt(t1);
+            const length = (t1 - t0) * cell;
+            if (arch.height(ua + (ub - ua) * (t0 + t1) / 2) === null) {
+                // neben dem Bogen: eine gewöhnliche Wand vom Boden bis zur Decke, mit Sockelleiste
+                const corners = [[p[0] * cell, arch.floor, p[1] * cell], [q[0] * cell, arch.floor, q[1] * cell],
+                    [q[0] * cell, top(q[0], q[1]), q[1] * cell], [p[0] * cell, top(p[0], p[1]), p[1] * cell]];
+                add('wall', room, corners, texels(length), texels(Math.max(top(p[0], p[1]), top(q[0], q[1])) - arch.floor));
+                const board = level.rooms[room].settings.baseboard;
+                if (board) {
+                    const n = INWARD[direction], y = arch.floor + board.height, o = 0.015;
+                    const front = [[p[0] * cell + n[0] * o, arch.floor, p[1] * cell + n[2] * o], [q[0] * cell + n[0] * o, arch.floor, q[1] * cell + n[2] * o],
+                        [q[0] * cell + n[0] * o, y, q[1] * cell + n[2] * o], [p[0] * cell + n[0] * o, y, p[1] * cell + n[2] * o]];
+                    const upper = [[p[0] * cell, y, p[1] * cell], [q[0] * cell, y, q[1] * cell], [q[0] * cell + n[0] * o, y, q[1] * cell + n[2] * o], [p[0] * cell + n[0] * o, y, p[1] * cell + n[2] * o]];
+                    for (const [face, want, sw, sh] of [[front, n, length, board.height], [upper, [0, 1, 0], length, 0.2]]) {
+                        let c = face;
+                        if (faceNormal(c).reduce((sum, v, k) => sum + v * want[k], 0) < 0) c = [c[0], c[3], c[2], c[1]];
+                        faces.push({ kind: 'baseboard', color: board.color, room, corners: c, normal: faceNormal(c), w: texels(sw), h: texels(sh) });
+                    }
+                }
+                continue;
+            }
+            // über dem Bogen: unten rund, oben die Decke
+            const shape = (s, t) => {
+                const w = pointAt(t0 + (t1 - t0) * Math.min(1, Math.max(0, s)));
+                const low = arch.height(u(w)) ?? arch.spring, high = Math.max(top(w[0], w[1]), low);
+                return [w[0] * cell, low + (high - low) * t, w[1] * cell];
+            };
+            const steps = Math.max(2, Math.round(ARCH_STEPS * (t1 - t0)));
+            const highest = Math.max(top(p[0], p[1]), top(q[0], q[1])) - arch.spring;
+            curved('wall', room, shape, steps, length, Math.max(highest, 0.2));
+        }
+    };
     for (let k = 0; k < layers; k++) {
         for (let z = 0; z < depth; z++) {
             for (let x = 0; x < width; x++) {
@@ -236,6 +295,12 @@ export function buildGeometry(level, statueBoxes = []) {
                     [x + 1, z, 'east', x + 1, z],
                 ];
                 for (const [nx, nz, direction, line, along] of edges) {
+                    // vor einer runden Tür: die Wand über ihrem Bogen, unten rund (auch im selben Raum)
+                    const arch = level.archAt(x, z, k) ? null : level.slabs(nx, nz).map((slab) => level.archAt(nx, nz, slab.layer)).find(Boolean);
+                    if (arch && (arch.alongX === (direction === 'north' || direction === 'south'))) {
+                        archWall(room, direction, line, along, arch, h);
+                        continue;
+                    }
                     // derselbe Raum in derselben Schicht: keine Wand, außer am Rand des
                     // Schachts unter einem Loch (er reicht höher als der Nachbar)
                     if (at(nx, nz, k) === 'floor' && roomOf(nx, nz, k) === room &&
@@ -351,6 +416,38 @@ export function buildGeometry(level, statueBoxes = []) {
         }
     }
 
+    // Runde Türen: Durch die Wand geht ein Gewölbe, schmale Streifen quer zur
+    // Tür, jeder so hoch, wie der Bogen dort ist. Die Textur folgt dem Bogen.
+    for (let k = 0; k < layers; k++) {
+        for (let z = 0; z < depth; z++) {
+            for (let x = 0; x < width; x++) {
+                const arch = level.archAt(x, z, k);
+                if (!arch || at(x, z, k) !== 'floor') continue;
+                const room = roomOf(x, z, k);
+                const r = arch.radius;
+                const around = (u) => r * Math.acos(Math.min(1, Math.max(-1, (arch.center - u) / r)));   // Meter entlang des Bogens
+                const d0 = (arch.alongX ? z : x) * cell, d1 = d0 + cell;   // quer durch die Wand
+                const point = (u, y, d) => (arch.alongX ? [arch.start + u, y, d] : [d, y, arch.start + u]);
+                // nur über dem Bogen; ist er schmaler als die Tür, daneben die Seiten der Öffnung
+                const from = Math.max(arch.u0, arch.center - r), to = Math.min(arch.u1, arch.center + r);
+                for (const [side, inward] of [[arch.center - r, 1], [arch.center + r, -1]]) {
+                    if (side < arch.u0 + 1e-6 || side > arch.u1 - 1e-6) continue;
+                    let corners = [point(side, arch.floor, d0), point(side, arch.floor, d1), point(side, arch.spring, d1), point(side, arch.spring, d0)];
+                    const n = faceNormal(corners);
+                    if ((arch.alongX ? n[0] : n[2]) * inward < 0) corners = [corners[0], corners[3], corners[2], corners[1]];
+                    add('wall', room, corners, texels(cell), texels(arch.spring - arch.floor));
+                }
+                if (to <= from) continue;
+                // das Gewölbe: eine Fläche, gebogen, mit einem Stück Lichtkarte
+                const vault = (s, t) => point(from + (to - from) * Math.min(1, Math.max(0, s)), arch.height(from + (to - from) * Math.min(1, Math.max(0, s))), d0 + (d1 - d0) * t);
+                const down = faceNormal([vault(0.4, 0), vault(0.6, 0), vault(0.6, 1), vault(0.4, 1)])[1] < 0;
+                const shape = down ? vault : (s, t) => vault(s, 1 - t);
+                curved('wall', room, shape, Math.max(2, Math.round(ARCH_STEPS * (to - from) / cell)), around(to) - around(from), cell,
+                    (s, t) => [around(from + (to - from) * s), d0 + (d1 - d0) * (down ? t : 1 - t)]);
+            }
+        }
+    }
+
     // Becken: ihr Boden tief unten und ringsum Wände aus Fliesen, vom Boden
     // des Beckens bis zum Rand (dem Boden des Raums) oder bis zum Boden
     // eines flacheren Beckens daneben. Darüber gilt, was ohnehin dort ist.
@@ -410,7 +507,34 @@ export function buildGeometry(level, statueBoxes = []) {
         const x0 = cx - w / 2, x1 = cx + w / 2, z0 = cz - d / 2, z1 = cz + d / 2;
         const y0 = block.floor + block.base + block.offset[1], y1 = y0 + h;   // auf dem Boden seines Felds (oder höher)
         const room = block.room;
-        const put = (corners, sw, sh) => faces.push({ kind: 'block', color: block.color, material: block.material, room, corners, normal: faceNormal(corners), w: texels(sw), h: texels(sh) });
+        const put = (corners, sw, sh, extra = {}) => faces.push({ kind: 'block', color: block.color, material: block.material, room, corners, normal: faceNormal(corners), w: texels(sw), h: texels(sh), ...extra });
+        if (block.shape === 'round') {
+            // eine runde Säule (oval, wenn Breite und Tiefe verschieden sind):
+            // ringsum ROUND_SIDES schmale Flächen. Jede Ecke zeigt genau nach
+            // außen, so wird das Licht beim Backen rund, nicht eckig; die
+            // Textur läuft um die Säule herum (arc: Meter entlang des Umfangs).
+            const rx = w / 2, rz = d / 2;
+            const ring = Array.from({ length: ROUND_SIDES + 1 }, (_, i) => {
+                const a = (i / ROUND_SIDES) * Math.PI * 2;
+                return { x: cx + Math.cos(a) * rx, z: cz - Math.sin(a) * rz, n: [Math.cos(a) / rx, 0, -Math.sin(a) / rz] };
+            });
+            const unit = (n) => { const l = Math.hypot(...n); return n.map((v) => v / l); };
+            let around = 0;
+            for (let i = 0; i < ROUND_SIDES; i++) {
+                const p = ring[i], q = ring[i + 1];
+                const side = Math.hypot(q.x - p.x, q.z - p.z);
+                put([[p.x, y0, p.z], [q.x, y0, q.z], [q.x, y1, q.z], [p.x, y1, p.z]], side, h,
+                    { normals: [unit(p.n), unit(q.n), unit(q.n), unit(p.n)], arc: [around, around + side] });
+                around += side;
+            }
+            // oben und, wenn sie schwebt, unten: Dreiecke um die Mitte (Vierecke mit zwei gleichen Ecken)
+            for (let i = 0; i < ROUND_SIDES; i++) {
+                const p = ring[i], q = ring[i + 1];
+                put([[cx, y1, cz], [q.x, y1, q.z], [p.x, y1, p.z], [p.x, y1, p.z]], Math.max(rx, rz), Math.max(rx, rz));
+                if (block.base > 0.001) put([[cx, y0, cz], [p.x, y0, p.z], [q.x, y0, q.z], [q.x, y0, q.z]], Math.max(rx, rz), Math.max(rx, rz));
+            }
+            continue;
+        }
         put([[x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]], w, d);                 // oben
         if (block.base > 0.001) put([[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]], w, d); // unten
         put([[x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0]], w, h);                 // nach -z
@@ -419,7 +543,17 @@ export function buildGeometry(level, statueBoxes = []) {
         put([[x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1]], d, h);                 // nach +x
     }
 
-    faces = addDetail(faces, statueBoxes);
+    // Feinere Lichtkarte auch um Blöcke: Wo eine Säule an Boden oder Decke
+    // stößt, wirft sie scharfe Schatten, gröber als ein Punkt alle 6 cm
+    const blockBoxes = level.things.filter((t) => t.type === 'block').map((block) => {
+        const [w, h, d] = block.size;
+        const cx = (block.x + 0.5) * cell + block.offset[0], cz = (block.z + 0.5) * cell + block.offset[2];
+        const y0 = block.floor + block.base + block.offset[1];
+        const box = new THREE.Box3(new THREE.Vector3(cx - w / 2, y0, cz - d / 2), new THREE.Vector3(cx + w / 2, y0 + h, cz + d / 2));
+        box.block = true;
+        return box;
+    });
+    faces = addDetail(faces, [...statueBoxes, ...blockBoxes]);
     const atlasSize = packRectangles(faces);
 
     // Eine Geometrie für jede Sorte Fläche in jedem Raum (eigene Tapete, eigener Teppich)
@@ -452,10 +586,13 @@ export function buildGeometry(level, statueBoxes = []) {
             const v0 = face.ay / atlasSize, v1 = (face.ay + face.h) / atlasSize;
             const du = u1 - u0, dv = v1 - v0;
             // die Stelle auf der Fläche, bilinear zwischen den vier Ecken
-            const world = (s, t) => lerp(lerp(c0, c1, s), lerp(c3, c2, s), t);
-            const min = [0, 1, 2].map((i) => Math.min(c0[i], c1[i], c2[i], c3[i]));
-            const max = [0, 1, 2].map((i) => Math.max(c0[i], c1[i], c2[i], c3[i]));
+            // eine gebogene Fläche (curved) hat ihre eigene Form
+            const world = face.shape ?? ((s, t) => lerp(lerp(c0, c1, s), lerp(c3, c2, s), t));
+            const points = face.samples ?? [c0, c1, c2, c3];
+            const min = [0, 1, 2].map((i) => Math.min(...points.map((c) => c[i])));
+            const max = [0, 1, 2].map((i) => Math.max(...points.map((c) => c[i])));
             const n = face.subdivide ?? 1;
+            const nS = face.steps ?? n, nT = face.shape ? 1 : n;   // gebogen: Stücke nur entlang s
 
             // Backen: die Fläche in ihr Rechteck der Lichtkarte, um einen Texel
             // größer (der Rand); die Stelle in der Welt wird dabei über die
@@ -464,22 +601,23 @@ export function buildGeometry(level, statueBoxes = []) {
             // Fläche darunter schon.
             const tu = -(GUTTER / atlasSize) / du, tv = -(GUTTER / atlasSize) / dv;
             const edge = (value, outside) => (value === 0 ? outside : value === 1 ? 1 - outside : value);
-            for (let i = 0; i < n; i++) {
-                for (let j = 0; j < n; j++) {
-                    const quad = [[i / n, j / n], [(i + 1) / n, j / n], [(i + 1) / n, (j + 1) / n], [i / n, (j + 1) / n]];
-                    const normal = n > 1 ? faceNormal(quad.map(([s, t]) => world(s, t))) : face.normal;
-                    for (const [s, t] of quad) {
+            for (let i = 0; i < nS; i++) {
+                for (let j = 0; j < nT; j++) {
+                    const quad = [[i / nS, j / nT], [(i + 1) / nS, j / nT], [(i + 1) / nS, (j + 1) / nT], [i / nS, (j + 1) / nT]];
+                    const normal = nS > 1 || nT > 1 ? faceNormal(quad.map(([s, t]) => world(s, t))) : face.normal;
+                    quad.forEach(([s, t], corner) => {
                         const bs = edge(s, tu), bt = edge(t, tv);
                         bakePositions.push(u0 + bs * du, v0 + bt * dv, 0);
                         bakeWorld.push(...world(bs, bt));
-                        bakeNormal.push(...normal);
+                        // eine runde Säule: die Richtung an jeder Ecke, dazwischen gemischt
+                        bakeNormal.push(...(face.normals && n === 1 ? face.normals[corner] : normal));
                         bakeMin.push(...min);
                         bakeMax.push(...max);
                         bakeAmbient.push(ambient);
                         if (face.detailOnly) bakeAlbedo.push(-1, -1, -1);
                         else bakeAlbedo.push(albedo.r, albedo.g, albedo.b);
                         bakeDensity.push(face.density ?? 1);
-                    }
+                    });
                     bakeIndices.push(bakeBase, bakeBase + 1, bakeBase + 2, bakeBase, bakeBase + 2, bakeBase + 3);
                     bakeBase += 4;
                 }
@@ -495,7 +633,8 @@ export function buildGeometry(level, statueBoxes = []) {
             // Detailstück an dessen Rändern geteilt, damit es dort ausblenden kann
             const detail = face.detail;
             let cutsS = [0, 1], cutsT = [0, 1];
-            if (n > 1) cutsS = cutsT = [...Array(n + 1).keys()].map((k) => k / n);
+            if (face.shape) cutsS = [...Array(nS + 1).keys()].map((k) => k / nS);
+            else if (n > 1) cutsS = cutsT = [...Array(n + 1).keys()].map((k) => k / n);
             else if (detail) {
                 cutsS = unique([0, detail.s0, detail.s0 + detail.fadeS[0], detail.s1 - detail.fadeS[1], detail.s1, 1]);
                 cutsT = unique([0, detail.t0, detail.t0 + detail.fadeT[0], detail.t1 - detail.fadeT[1], detail.t1, 1]);
@@ -513,11 +652,14 @@ export function buildGeometry(level, statueBoxes = []) {
                 for (let j = 0; j + 1 < cutsT.length; j++) {
                     const quad = [[cutsS[i], cutsT[j]], [cutsS[i + 1], cutsT[j]], [cutsS[i + 1], cutsT[j + 1]], [cutsS[i], cutsT[j + 1]]];
                     const points = quad.map(([s, t]) => world(s, t));
-                    const normal = n > 1 ? faceNormal(points) : face.normal;
+                    const normal = n > 1 || face.shape ? faceNormal(points) : face.normal;
                     quad.forEach(([s, t], k) => {
                         positions.push(...points[k]);
                         normals.push(...normal);
-                        uvs.push(...along(points[k]));
+                        // eigene Texturkoordinaten an den vier Ecken (ein Bogen): dazwischen gemischt
+                        const uv4 = face.uv4 && ((a, b) => a.map((v, i) => v + (b[i] - v) * t))(
+                            face.uv4[0].map((v, i) => v + (face.uv4[1][i] - v) * s), face.uv4[3].map((v, i) => v + (face.uv4[2][i] - v) * s));
+                        uvs.push(...(face.uvAt ? face.uvAt(s, t) : uv4 ?? (face.arc ? [face.arc[0] + (face.arc[1] - face.arc[0]) * s, points[k][1]] : along(points[k]))));
                         uv1s.push(u0 + s * du, v0 + t * dv);
                         if (target) {
                             const ds = Math.min(1, Math.max(0, (s - detail.s0) / (detail.s1 - detail.s0)));

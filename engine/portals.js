@@ -37,7 +37,8 @@ export class Portals {
         const air = (x, z, k, room, cornersXZ) => {
             const top = level.ceilingOfCell(x, z, k);
             const floors = cornersXZ.map(([cx, cz]) => level.floorAt(cx, cz, room) - level.sunk(x, z, k));
-            return [Math.min(...floors), Math.max(...cornersXZ.map(([cx, cz]) => top(cx, cz)))];
+            const arch = level.archAt(x, z, k);   // eine runde Tür: bis ganz oben in ihren Bogen
+            return [Math.min(...floors), arch ? arch.top : Math.max(...cornersXZ.map(([cx, cz]) => top(cx, cz)))];
         };
         // Öffnungen in der Wand: zwei Felder nebeneinander aus verschiedenen
         // Räumen, deren Luft sich an der gemeinsamen Kante überschneidet

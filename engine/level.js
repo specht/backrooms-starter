@@ -62,6 +62,7 @@ const LIGHT_DEFAULTS = {
 const BLOCK_MATERIALS = ['wallpaper', 'marble', 'wood', 'tiles', 'velvet', 'plain'];
 
 const BLOCK_DEFAULTS = {
+    shape: 'box',         // box: ein Quader, round: eine Säule (rund, oder oval, wenn Breite und Tiefe verschieden sind)
     base: 0,              // Unterkante über dem Boden, in Metern
     color: null,          // ohne Farbe: mit der Tapete des Raums
     material: null,       // ohne: wie die Wände des Raums, mit color einfarbig
@@ -206,6 +207,8 @@ function parseRoom(id, source) {
                 if (!entry) throw new LevelError(file, row.line, `${char} is in the floor plan, but there is no section [${char}] saying what it is.`);
                 const thing = makeThing(file, char, entry, x, z);
                 things.push(thing);
+                // pool bei einer Leuchte, einem Block oder einem Modell: das Feld liegt außerdem im Becken
+                if (thing.type !== 'pool' && values(entry).pool !== undefined) things.push(makePool(file, char, entry, values(entry), x, z));
                 // pedestal = breite, höhe, tiefe: ein Sockel unter der Statue, im selben Feld
                 if (thing.type === 'model' && thing.pedestal !== undefined) {
                     const size = [thing.pedestal].flat();
@@ -230,6 +233,17 @@ function parseRoom(id, source) {
         if (!match) throw new LevelError(file, section.line, `door = ${door}: expected the name of a room and a digit, for example door = flur 2 (or door = halle 1, -4 when the floor there lies 4 m lower).`);
         if (!doors[char]) throw new LevelError(file, section.line, `[${char}] describes a door, but there is no ${char} in the floor plan.`);
         links.push({ from: char, room: match[1], to: match[2], rise: Number(match[3] ?? 0), line: section.line });
+        // arch = höhe oder arch = höhe, breite: oben rund, so hoch reicht der
+        // Bogen in der Mitte (über dem Boden der Tür), so breit ist er (ohne:
+        // so breit wie die Tür), in der Mitte der Tür
+        const arch = values(section).arch;
+        if (arch !== undefined) {
+            const [height, wide = null] = [arch].flat();
+            if (!(typeof height === 'number' && height > 0.5 && height < 50) || (wide !== null && !(typeof wide === 'number' && wide >= 0.3)) || [arch].flat().length > 2) {
+                throw new LevelError(file, section.line, `arch = ${arch}: expected how high the round top of the door reaches in its middle and, if it is narrower than the door, how wide it is, in metres, for example arch = 2.4 or arch = 2.4, 0.8.`);
+            }
+            doors[char].arch = { height, width: wide, line: section.line };
+        }
     }
     // [_] below = raum: der Raum unter dem Loch im Boden; sein ^ liegt genau
     // darunter, seine Decke um slab (Meter, die Dicke der Decke) unter
@@ -303,25 +317,30 @@ function makeThing(file, char, section, x, z) {
         if ([w, h, d].some((v) => !(v > 0) || v > 50)) throw new LevelError(file, section.line, `block = ${entries.block}: every size is between 0 and 50 metres.`);
         const block = { type: 'block', char, x, z, ...BLOCK_DEFAULTS, ...entries, size: [w, h, d], offset: offsetOf(file, section, entries) };
         if (block.material !== null && !BLOCK_MATERIALS.includes(block.material)) throw new LevelError(file, section.line, `material = ${block.material} does not exist. Possible: ${BLOCK_MATERIALS.join(', ')}.`);
+        if (!['box', 'round'].includes(String(block.shape))) throw new LevelError(file, section.line, `shape = ${block.shape} does not exist. Possible: box, round.`);
         return block;
     }
-    if (entries.pool !== undefined) {
-        // pool = tiefe: ein Becken, so tief unter dem Boden (in Metern);
-        // water = so tief unter dem Boden steht das Wasser darin. Jedes Feld
-        // mit diesem Buchstaben gehört dazu.
-        const pool = { type: 'pool', char, x, z, ...POOL_DEFAULTS, ...entries, depth: entries.pool };
-        if (!(typeof pool.depth === 'number' && pool.depth >= 0.2 && pool.depth <= 20)) throw new LevelError(file, section.line, `pool = ${entries.pool}: expected how deep the pool goes below the floor, 0.2 to 20 metres, for example pool = 2.`);
-        if (String(pool.water) === 'off') pool.water = null;
-        else if (!(typeof pool.water === 'number' && pool.water >= 0 && pool.water < pool.depth - 0.05)) {
-            throw new LevelError(file, section.line, `water = ${pool.water}: expected how far below the floor the water lies, from 0 to less than the depth of the pool (${pool.depth} m), or off for an empty pool.`);
-        }
-        if (!['on', 'off'].includes(String(pool.railing))) throw new LevelError(file, section.line, `railing = ${pool.railing}: expected on or off.`);
-        if (!/^#[0-9a-f]{6}$/i.test(String(pool.color))) throw new LevelError(file, section.line, `color = ${pool.color}: expected a colour for the tiles of the pool, such as #bcd8da.`);
-        if (!/^#[0-9a-f]{6}$/i.test(String(pool.tint))) throw new LevelError(file, section.line, `tint = ${pool.tint}: expected the colour of the water, such as #bff0f3 (clear) or #6f8f5a (murky).`);
-        pool.railing = String(pool.railing) === 'on';
-        return pool;
-    }
+    if (entries.pool !== undefined) return makePool(file, char, section, entries, x, z);
     throw new LevelError(file, section.line, `[${char}] needs light = ... (a lamp), block = ... (a block), model = ... (a statue) or pool = ... (a pool).`);
+}
+
+// pool = tiefe: ein Becken, so tief unter dem Boden (in Metern); water = so
+// tief unter dem Boden steht das Wasser darin. Jedes Feld mit diesem
+// Buchstaben gehört dazu. Steht pool bei einer Leuchte, einem Block oder
+// einem Modell, liegt das Feld im Becken und hat das Ding trotzdem: eine
+// Säule, die im Wasser steht, eine Leuchte über dem Wasser.
+function makePool(file, char, section, entries, x, z) {
+    const pool = { type: 'pool', char, x, z, ...POOL_DEFAULTS, ...entries, depth: entries.pool };
+    if (!(typeof pool.depth === 'number' && pool.depth >= 0.2 && pool.depth <= 20)) throw new LevelError(file, section.line, `pool = ${entries.pool}: expected how deep the pool goes below the floor, 0.2 to 20 metres, for example pool = 2.`);
+    if (String(pool.water) === 'off') pool.water = null;
+    else if (!(typeof pool.water === 'number' && pool.water >= 0 && pool.water < pool.depth - 0.05)) {
+        throw new LevelError(file, section.line, `water = ${pool.water}: expected how far below the floor the water lies, from 0 to less than the depth of the pool (${pool.depth} m), or off for an empty pool.`);
+    }
+    if (!['on', 'off'].includes(String(pool.railing))) throw new LevelError(file, section.line, `railing = ${pool.railing}: expected on or off.`);
+    if (!/^#[0-9a-f]{6}$/i.test(String(pool.color))) throw new LevelError(file, section.line, `color = ${pool.color}: expected a colour for the tiles of the pool, such as #bcd8da.`);
+    if (!/^#[0-9a-f]{6}$/i.test(String(pool.tint))) throw new LevelError(file, section.line, `tint = ${pool.tint}: expected the colour of the water, such as #bff0f3 (clear) or #6f8f5a (murky).`);
+    pool.railing = String(pool.railing) === 'on';
+    return pool;
 }
 
 // Wie hoch die Decke eines Raums an einer Stelle ist (x, z in Feldern des Raums)
@@ -598,14 +617,21 @@ export async function loadLevel(levelFile, fetchText) {
     // Feldern des Bauwerks): unter einem Loch die des Raums darüber
     // (vor dem fertigen Level, beim Prüfen der Höhen, ohne die Böden der Türen)
     let built = null;
+    // In einer runden Tür: bis ganz oben in den Bogen (für Licht und Laufen;
+    // gezeichnet wird der Bogen selbst, geometry.js). Seine Ecken oben sind
+    // eigentlich Wand: Dort kommt beim Backen ein wenig Licht durch.
+    let arches = null;
     const ceilingOfCell = (x, z, k) => {
+        const arch = arches?.get(index(x, z, k));
+        if (arch) return () => arch.top;
         const room = roomList[openCeiling.get(index(x, z, k)) ?? owner[index(x, z, k)]];
         return (cx, cz) => (built ? built.ceilingAt(cx, cz, room.index) : room.ceilingAt(cx - room.ox, cz - room.oz));
     };
 
     // Becken: Felder, deren Boden um pool tiefer liegt als der ihres Raums;
     // das Wasser darin steht water unter dem Rand (surface: seine Höhe, null
-    // ohne Wasser). Zusammenhängende Felder desselben Buchstabens sind ein Becken.
+    // ohne Wasser). Felder nebeneinander, gleich tief und mit gleichem Wasser,
+    // sind ein Becken, auch mit verschiedenen Buchstaben (eine Säule im Wasser).
     const water = new Map();          // Feld (mit Schicht) -> Becken
     const pools = [];
     for (const room of roomList) {
@@ -629,7 +655,9 @@ export async function loadLevel(levelFile, fetchText) {
                 for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
                     if (x + dx < 0 || z + dz < 0 || x + dx >= width || z + dz >= depth) continue;
                     const next = index(x + dx, z + dz, room.layer);
-                    if (water.has(next) || cellsOf.get(next)?.char !== thing.char) continue;
+                    const other = cellsOf.get(next);
+                    if (water.has(next) || !other || other.depth !== thing.depth || other.water !== thing.water || other.tint !== thing.tint) continue;
+                    if (other.railing) pool.railing = true;
                     water.set(next, pool);
                     todo.push(next);
                 }
@@ -642,6 +670,49 @@ export async function loadLevel(levelFile, fetchText) {
         const pool = water.get(index(x, z, k));
         return pool ? roomList[pool.room].elevation - pool.bottom : 0;
     };
+
+    // Runde Türen (arch = höhe bei einer der beiden Seiten): Über die ganze
+    // Breite der Tür ein Halbkreis, oben so hoch wie arch, sein Radius die
+    // halbe Breite. Je Feld der Tür: wo es im Bogen liegt (u0 bis u1, Meter
+    // von seinem Anfang), entlang welcher Achse der Bogen geht, und wie hoch
+    // er an einer Stelle ist.
+    arches = new Map();   // Feld (mit Schicht) -> Bogen
+    for (const edge of edges) {
+        if (edge.hole || edge.back) continue;   // jede Tür einmal
+        const arch = edge.da.arch ?? edge.db.arch;
+        if (!arch) continue;
+        const source = edge.da.arch ? edge.a : edge.b;
+        if (edge.rise) throw new LevelError(source.file, arch.line, 'arch: a round door needs both floors at the same height (no door = room N, -4).');
+        const room = edge.a, cellsOf = edge.da.cells;
+        const cell = settings.cell;
+        // in welche Richtung die Tür breit ist: mehrere Felder nebeneinander, oder bei einem die Wand daneben
+        const first = cellsOf[0];
+        const gx = room.ox + first.x, gz = room.oz + first.z;
+        const wallAt = (dx, dz) => {
+            const x = first.x + dx, z = first.z + dz;
+            return x >= 0 && z >= 0 && x < room.width && z < room.depth && room.cells[z * room.width + x] === 'wall';
+        };
+        const alongX = cellsOf.length > 1 ? cellsOf[1].z === first.z
+            : (wallAt(-1, 0) && wallAt(1, 0)) || !(wallAt(0, -1) && wallAt(0, 1));
+        const doorWidth = cellsOf.length * cell;
+        const width = arch.width ?? doorWidth, radius = width / 2, center = doorWidth / 2;
+        if (width > doorWidth + 1e-6) throw new LevelError(source.file, arch.line, `arch = ${arch.height}, ${arch.width}: the door is only ${doorWidth} m wide.`);
+        const floor = room.floorAt(first.x + 0.5, first.z + 0.5);
+        const spring = arch.height - radius;
+        if (spring < 0.3) throw new LevelError(source.file, arch.line, `arch = ${arch.height}: a round top ${width} m wide needs a door at least ${(radius + 0.3).toFixed(2)} m high.`);
+        const start = (alongX ? gx : gz) * cell;
+        // die Höhe des Bogens bei u (Meter vom Anfang der Tür); neben dem Bogen: null, dort ist Wand
+        const height = (u) => (Math.abs(u - center) > radius + 1e-6 ? null
+            : floor + spring + Math.sqrt(Math.max(0, radius * radius - (u - center) ** 2)));
+        for (const c of cellsOf) {
+            const x = room.ox + c.x, z = room.oz + c.z;
+            for (let k = 0; k < cells.length / size; k++) {
+                if (cells[index(x, z, k)] !== 'floor') continue;
+                const u0 = ((alongX ? x : z) * cell) - start;
+                arches.set(index(x, z, k), { alongX, start, u0, u1: u0 + cell, center, radius, floor, spring: floor + spring, top: floor + arch.height, height });
+            }
+        }
+    }
 
     // Übereinander heißt: Der obere Boden liegt nirgends unter der Decke des
     // unteren Raums (an allen vier Ecken eines Felds), auch nicht der Boden eines Beckens
@@ -673,8 +744,9 @@ export async function loadLevel(levelFile, fetchText) {
         // floor: wie hoch der Boden unter einem Ding liegt, mitten auf seinem Feld
         for (const thing of room.things) {
             const [dx, , dz] = thing.offset ?? [0, 0, 0];
+            // in einem Becken: auf dessen Boden
             things.push({ ...thing, x: thing.x + room.ox, z: thing.z + room.oz, room: room.index,
-                floor: room.floorAt(thing.x + 0.5 + dx / settings.cell, thing.z + 0.5 + dz / settings.cell) });
+                floor: room.floorAt(thing.x + 0.5 + dx / settings.cell, thing.z + 0.5 + dz / settings.cell) - sunk(thing.x + room.ox, thing.z + room.oz, room.layer) });
         }
         if (room.start) {
             if (start) throw new LevelError(room.file, room.start.line, 'there is more than one @ in the level: you can only start in one place.');
@@ -739,6 +811,8 @@ export async function loadLevel(levelFile, fetchText) {
     const level = {
         settings, width, depth, layers, cells, owner, rooms: roomList, things, start, twistedDoors,
         index, kindAt, slabs, ceilingOfCell, pools,
+        // der Bogen einer runden Tür an einem Feld in Schicht k, oder null
+        archAt: (x, z, k = 0) => (x < 0 || z < 0 || x >= width || z >= depth ? null : arches.get(index(x, z, k)) ?? null),
         // das Becken an einem Feld in Schicht k, oder null
         poolAt: (x, z, k = 0) => (x < 0 || z < 0 || x >= width || z >= depth ? null : water.get(index(x, z, k)) ?? null),
         // Hat dieses Feld (Schicht k) keine Decke, weil darüber ein Loch ist?
