@@ -10,6 +10,7 @@ import * as THREE from 'three';
 const RAIL_OFFSET = 0.1;
 const RAIL_HEIGHT = 1.0;
 const POST_SPACING = 1.2;
+const BEND = 0.14;        // so eng biegt das Rohr um eine Ecke (Radius, Meter)
 
 export function railing(level, pool) {
     const cell = level.settings.cell;
@@ -48,10 +49,33 @@ export function railing(level, pool) {
         if (!lines.has(key(r))) lines.set(key(r), { alongX: r.alongX, fixed: r.alongX ? r.from[1] : r.from[0], spans: [] });
         lines.get(key(r)).spans.push([lo, hi]);
     }
-    const metal = new THREE.MeshStandardMaterial({ color: '#cfd3d6', metalness: 1, roughness: 0.22 });
+    // glatter Edelstahl: spiegelt scharf (main.js nimmt dafür das feine Rundumbild)
+    const metal = new THREE.MeshStandardMaterial({ color: '#c4c9cd', metalness: 1, roughness: 0.12 });
     const group = new THREE.Group();
-    const posts = new Map();
-    const tube = (radius, length) => new THREE.CylinderGeometry(radius, radius, length, 12, 1, false);
+    const v3 = (x, y, z) => new THREE.Vector3(x, y, z);
+    const up = v3(0, 1, 0);
+    // ein gerades Rohr von a nach b
+    const straight = (a, b, radius) => {
+        const length = a.distanceTo(b);
+        if (length < 1e-3) return;
+        const pipe = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, length, 14, 1, true), metal);
+        pipe.position.copy(a).add(b).multiplyScalar(0.5);
+        pipe.quaternion.setFromUnitVectors(up, b.clone().sub(a).normalize());
+        group.add(pipe);
+    };
+    // ein Viertelkreis um center, von center + r·from nach center + r·to: ein gebogenes Rohr
+    class Quarter extends THREE.Curve {
+        constructor(center, from, to, r) { super(); Object.assign(this, { center, from, to, r }); }
+        getPoint(t, target = new THREE.Vector3()) {
+            const a = t * Math.PI / 2;
+            return target.copy(this.center).addScaledVector(this.from, this.r * Math.cos(a)).addScaledVector(this.to, this.r * Math.sin(a));
+        }
+    }
+    const bend = (center, from, to, r, radius) => group.add(new THREE.Mesh(new THREE.TubeGeometry(new Quarter(center, from, to, r), 10, radius, 14, false), metal));
+    const ball = (at, radius) => { const joint = new THREE.Mesh(new THREE.SphereGeometry(radius, 14, 10), metal); joint.position.copy(at); group.add(joint); };
+
+    // die geraden Stücke, auf jeder Linie zusammengelegt
+    const segments = [];
     for (const { alongX, fixed, spans } of lines.values()) {
         spans.sort((p, q) => p[0] - q[0]);
         const merged = [];
@@ -61,27 +85,64 @@ export function railing(level, pool) {
             else merged.push([...span]);
         }
         for (const [lo, hi] of merged) {
-            const at = (s) => (alongX ? [s, fixed] : [fixed, s]);
-            for (const [height, radius] of [[RAIL_HEIGHT, 0.024], [RAIL_HEIGHT / 2, 0.014]]) {
-                const rail = new THREE.Mesh(tube(radius, hi - lo), metal);
-                const [cx, cz] = at((lo + hi) / 2);
-                rail.position.set(cx, floor + height, cz);
-                rail.rotation.set(alongX ? 0 : Math.PI / 2, 0, alongX ? Math.PI / 2 : 0);
-                group.add(rail);
-            }
-            const count = Math.max(1, Math.ceil((hi - lo) / POST_SPACING));
-            for (let i = 0; i <= count; i++) {
-                const [px, pz] = at(lo + ((hi - lo) * i) / count);
-                posts.set(`${px.toFixed(2)},${pz.toFixed(2)}`, [px, pz]);
-            }
+            const at = (t) => (alongX ? v3(t, 0, fixed) : v3(fixed, 0, t));
+            segments.push({ ends: [at(lo), at(hi)], length: hi - lo });
         }
     }
-    for (const [px, pz] of posts.values()) {
-        const post = new THREE.Mesh(tube(0.022, RAIL_HEIGHT), metal);
-        post.position.set(px, floor + RAIL_HEIGHT / 2, pz);
-        group.add(post);
-        const foot = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.012, 16), metal);
-        foot.position.set(px, floor + 0.006, pz);
+    // An jedem Ende: trifft dort ein Stück quer dazu (eine Ecke) oder hört das Geländer auf?
+    const same = (a, b) => a.distanceToSquared(b) < 1e-6;
+    const posts = [];   // [Stelle (x, 0, z), Höhe]
+    const corners = new Set();
+    const tops = [RAIL_HEIGHT, 0.024], mids = [RAIL_HEIGHT / 2, 0.014];
+    for (const segment of segments) {
+        const [a, b] = segment.ends;
+        const r = Math.min(BEND, segment.length / 3);
+        const inward = [b.clone().sub(a).normalize(), a.clone().sub(b).normalize()];   // von jedem Ende ins Stück hinein
+        const trimmed = { top: [a.clone(), b.clone()], mid: [a.clone(), b.clone()] };
+        const postAt = [a.clone(), b.clone()];
+        segment.ends.forEach((p, e) => {
+            const other = segments.find((s) => s !== segment && s.ends.some((q) => same(p, q)));
+            const u = inward[e];
+            if (other) {
+                // eine Ecke: oben und in der Mitte biegt das Rohr um sie herum, der Pfosten steht unter der Mitte des Bogens
+                const q = other.ends.find((x) => same(p, x));
+                const otherEnd = other.ends.find((x) => !same(p, x));
+                const v = otherEnd.clone().sub(q).normalize();
+                const rc = Math.min(r, other.length / 3);
+                trimmed.top[e].addScaledVector(u, rc);
+                trimmed.mid[e].addScaledVector(u, rc);
+                const id = `${p.x.toFixed(3)},${p.z.toFixed(3)}`;
+                postAt[e] = null;
+                if (!corners.has(id)) {
+                    corners.add(id);
+                    const center = p.clone().addScaledVector(u, rc).addScaledVector(v, rc);
+                    for (const [height, radius] of [tops, mids]) {
+                        bend(center.clone().setY(floor + height), v.clone().negate(), u.clone().negate(), rc, radius);
+                    }
+                    const middle = center.clone().addScaledVector(u.clone().add(v), -rc / Math.SQRT2);
+                    posts.push([middle, RAIL_HEIGHT]);
+                }
+            } else {
+                // ein freies Ende: oben biegt das Rohr hinunter in den letzten Pfosten
+                trimmed.top[e].addScaledVector(u, r);
+                const center = p.clone().addScaledVector(u, r).setY(floor + RAIL_HEIGHT - r);
+                bend(center, up.clone(), u.clone().negate(), r, tops[1]);
+                posts.push([p.clone(), RAIL_HEIGHT - r]);
+                postAt[e] = null;
+            }
+        });
+        straight(trimmed.top[0].clone().setY(floor + tops[0]), trimmed.top[1].clone().setY(floor + tops[0]), tops[1]);
+        straight(trimmed.mid[0].clone().setY(floor + mids[0]), trimmed.mid[1].clone().setY(floor + mids[0]), mids[1]);
+        // Pfosten dazwischen, höchstens POST_SPACING auseinander
+        const count = Math.max(1, Math.ceil(segment.length / POST_SPACING));
+        for (let i = 1; i < count; i++) posts.push([a.clone().lerp(b, i / count), RAIL_HEIGHT]);
+    }
+    for (const [at, height] of posts) {
+        straight(at.clone().setY(floor), at.clone().setY(floor + height), 0.022);
+        if (height >= RAIL_HEIGHT) ball(at.clone().setY(floor + height), 0.026);   // wo der Pfosten das Rohr trägt
+        // ein runder Fuß, mit dem er auf den Fliesen sitzt
+        const foot = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.046, 0.014, 18), metal);
+        foot.position.copy(at).setY(floor + 0.007);
         group.add(foot);
     }
     group.updateMatrixWorld(true);

@@ -17,6 +17,7 @@ import { Walker } from './controls.js';
 import { Automap } from './automap.js';
 import { fingerprint, encodeLight, findLight, writeCache, download, lightFileName } from './lightstore.js';
 import { VHSPass } from './vhs.js';
+import { LensPass } from './lens.js';
 import { Water } from './water.js';
 import { railing } from './railing.js';
 
@@ -47,6 +48,7 @@ const PARTS = [
     { name: 'points', key: 'KeyG', label: 'Light points', on: false },
     { name: 'bloom', key: 'KeyH', label: 'Bloom' },
     { name: 'vhs', key: 'KeyC', label: 'VHS', on: false },
+    { name: 'aberration', key: 'KeyX', label: 'Aberration', on: false },
 ];
 const status = document.getElementById('status');
 const title = document.getElementById('title');
@@ -724,6 +726,8 @@ async function start() {
     if (show === 'bounce') parts.direct = false;
     // ?vhs oder vhs = on in level.ini: wie von einer alten Videokassette
     if (params.has('vhs') || String(settings.vhs) === 'on') parts.vhs = true;
+    // ?aberration oder aberration = on: farbige Säume zum Rand hin, wie durch eine einfache Linse
+    if (params.has('aberration') || String(settings.aberration) === 'on') parts.aberration = true;
     const showParts = () => {
         shared.useTexture.value = parts.textures;
         shared.useDirect.value = parts.direct;
@@ -949,10 +953,13 @@ async function start() {
     const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), BLOOM_STRENGTH, BLOOM_RADIUS, BLOOM_THRESHOLD);
     composer.addPass(bloomPass);
     composer.addPass(new OutputPass());
-    // VHS (C) als letzter Durchgang, über das fertige Bild (vhs.js)
+    // die Linse (X) vor dem Band: erst farbige Säume (lens.js), dann VHS (C)
+    // als letzter Durchgang, über das fertige Bild (vhs.js)
+    const lensPass = new LensPass();
+    composer.addPass(lensPass);
     const vhsPass = new VHSPass();
     composer.addPass(vhsPass);
-    const composing = () => (parts.bloom || parts.vhs) && !useAnaglyph && !renderer.xr.isPresenting && !automap.active;
+    const composing = () => (parts.bloom || parts.vhs || parts.aberration) && !useAnaglyph && !renderer.xr.isPresenting && !automap.active;
     const bloomActive = () => parts.bloom && composing();
 
     // Die Schalter oben links, in derselben Reihenfolge wie ihre Tasten
@@ -1219,6 +1226,7 @@ async function start() {
         else if (composing()) {
             bloomPass.enabled = parts.bloom;
             vhsPass.enabled = parts.vhs;
+            lensPass.enabled = parts.aberration;
             composer.render(dt);
         }
         else renderer.render(scene, camera);

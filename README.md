@@ -67,6 +67,7 @@ Shift+L, or `?rebake` in the address, bakes the light again in any case.
 <tr><td>G</td><td>light points: a dot for every point of the light map at which the light is computed</td></tr>
 <tr><td>H</td><td>bloom: very bright light glows into its surroundings, as in a camera (on; not with red-cyan glasses, in VR or in the automap)</td></tr>
 <tr><td>C</td><td>VHS: as if filmed with an old camcorder, with scan lines, smeared colours, a rolling tracking band and today's date and time on the tape (off; not with red-cyan glasses, in VR or in the automap)</td></tr>
+<tr><td>X</td><td>chromatic aberration: coloured fringes towards the edges, red outwards, blue inwards, as through a simple lens (off; not with red-cyan glasses, in VR or in the automap)</td></tr>
 <tr><td>3</td><td>anaglyph for red-cyan glasses on/off</td></tr>
 <tr><td>M or Tab</td><td>automap: the whole building as a wireframe; drag to turn it, Shift+drag to move it, mouse wheel to zoom, V shows the rooms themselves from above instead, Esc to close</td></tr>
 <tr><td>Shift+L</td><td>bake the light again</td></tr>
@@ -184,7 +185,7 @@ just as a door places its neighbour. Whoever steps onto the hole falls.
 <tr><td><code>floor</code></td><td><code>carpet</code>, <code>marble</code>, <code>wood</code> (floorboards), <code>tiles</code> or <code>plain</code>, in the colour of <code>carpet</code></td></tr>
 <tr><td><code>wallpaper</code>, <code>carpet</code>, <code>ceiling</code></td><td>colours, such as <code>#c9b458</code></td></tr>
 <tr><td><code>baseboard</code></td><td>the skirting board: height and colour, such as <code>0.08, #86763c</code>; without it, 8 cm and half as bright as the wallpaper; <code>none</code>: no skirting board</td></tr>
-<tr><td><code>look</code></td><td>where you look at the <code>@</code>: <code>north</code>, <code>east</code>, <code>south</code>, <code>west</code> or degrees</td></tr>
+<tr><td><code>look</code></td><td>where you look at the <code>@</code>: <code>north</code>, <code>east</code>, <code>south</code>, <code>west</code> or degrees, clockwise from north (<code>look = 30</code>: a little east of north)</td></tr>
 <tr><td><code>ambient</code></td><td>light from everywhere in this room (0 to 1), usually not needed</td></tr>
 </table>
 
@@ -260,6 +261,7 @@ In VR the water is a simple, half transparent surface.
 <tr><td><code>detail</code></td><td>light map points per metre (16): more gives sharper shadows and takes longer</td></tr>
 <tr><td><code>ambient</code></td><td>light from everywhere (0)</td></tr>
 <tr><td><code>vhs</code></td><td><code>on</code>: the level starts with the VHS look (C switches it off)</td></tr>
+<tr><td><code>aberration</code></td><td><code>on</code>: the level starts with chromatic aberration (X switches it off)</td></tr>
 </table>
 
 ## Address parameters
@@ -268,7 +270,7 @@ In VR the water is a simple, half transparent surface.
 <tr><td><code>?level=other.ini</code></td><td>load another level file</td></tr>
 <tr><td><code>?show=light</code>, <code>direct</code>, <code>bounce</code></td><td>start with light only (no textures), or with only one part of it</td></tr>
 <tr><td><code>?bounces=0</code></td><td>bake with a different number of bounces</td></tr>
-<tr><td><code>?anaglyph</code>, <code>?automap</code>, <code>?vhs</code></td><td>start with anaglyph, with the automap or with the VHS look</td></tr>
+<tr><td><code>?anaglyph</code>, <code>?automap</code>, <code>?vhs</code>, <code>?aberration</code></td><td>start with anaglyph, with the automap, with the VHS look or with chromatic aberration</td></tr>
 <tr><td><code>?automap=-40,35,12.0,0.0,0.0,0.0,rooms</code></td><td>the automap as it was: turned and tilted (degrees), distance and shift (metres), <code>follow</code> (turns with you) and <code>rooms</code> (rooms instead of wireframe); written by the program itself</td></tr>
 <tr><td><code>?rebake</code></td><td>bake the light even if saved light fits</td></tr>
 <tr><td><code>?sharp</code></td><td>render at the full resolution of the screen, for pictures (otherwise at most twice the page's pixels)</td></tr>

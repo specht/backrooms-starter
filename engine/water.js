@@ -21,7 +21,7 @@
 // mehr für jedes Auge wären dort zu langsam.
 import * as THREE from 'three';
 
-const WAVES = 0.09;          // wie stark die Wellen die Fläche neigen: ruhig
+const WAVES = 0.16;          // wie stark die Wellen die Fläche neigen: ruhig
 const TINT_METRES = 2;       // tint (level.js) ist die Farbe von Weiß hinter so viel Wasser
 
 // Aus der Farbe des Wassers: wie viel es je Meter schluckt (Rot, Grün,
@@ -50,40 +50,47 @@ const noise = /* glsl */ `
         float c = dot(gradient(i + vec2(0.0, 1.0)), f - vec2(0.0, 1.0)), d = dot(gradient(i + vec2(1.0, 1.0)), f - vec2(1.0, 1.0));
         return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
     }
-    // die Höhe der Wellen an einer Stelle (in Metern der Welt): vier Lagen
-    // Rauschen, jede gedreht, die langsam in verschiedene Richtungen ziehen
+    // die Höhe der Wellen an einer Stelle (in Metern der Welt): fünf Lagen,
+    // von langen zu kurzen Wellen, jede gedreht. In jeder Lage laufen zwei
+    // Muster gegeneinander: Wo sie sich überlagern, ändert sich die Form
+    // ständig, statt dass ein starres Muster über das Wasser gleitet. Lange
+    // Wellen laufen schneller als kurze, wie auf echtem Wasser.
     float waves(vec2 p, float t) {
         const mat2 turn = mat2(0.8, 0.6, -0.6, 0.8);
-        float h = 0.0, amplitude = 0.5, scale = 0.9;
+        float h = 0.0, amplitude = 0.5, scale = 0.6;
         vec2 q = p;
-        for (int i = 0; i < 4; i++) {
-            vec2 drift = vec2(cos(float(i) * 2.1), sin(float(i) * 2.1)) * 0.12;
-            h += amplitude * noise(q * scale + t * drift);
+        for (int i = 0; i < 5; i++) {
+            float angle = float(i) * 2.4 + 0.3;
+            vec2 along = vec2(cos(angle), sin(angle));
+            vec2 across = vec2(-along.y, along.x) * 0.7 + along * 0.7;
+            float speed = 0.3 / sqrt(scale);   // in Metern je Sekunde
+            vec2 a = q * scale + along * (t * speed * scale);
+            vec2 b = q * scale * 1.13 - across * (t * speed * scale * 0.8) + 17.0;
+            h += amplitude * 0.5 * (noise(a) + noise(b));
             q = turn * q;
-            scale *= 2.1;
-            amplitude *= 0.45;
+            scale *= 2.0;
+            amplitude *= 0.42;
         }
         return h;
     }
     vec3 waveNormal(vec2 p, float t) {
-        float e = 0.02;
+        float e = 0.035;
         float h = waves(p, t);
         float dx = (waves(p + vec2(e, 0.0), t) - h) / e;
         float dz = (waves(p + vec2(0.0, e), t) - h) / e;
         return normalize(vec3(-dx * ${WAVES}, 1.0, -dz * ${WAVES}));
     }
-    // helle Linien wie Licht auf dem Boden eines Schwimmbads
-    float caustic(vec2 uv, float t) {
-        vec2 p = uv * 6.28318 - 250.0;
-        vec2 i = p;
-        float c = 1.0;
-        for (int n = 0; n < 4; n++) {
-            float s = t * (1.0 - 3.5 / float(n + 1));
-            i = p + vec2(cos(s - i.x) + sin(s + i.y), sin(s - i.y) + cos(s + i.x));
-            c += 1.0 / length(vec2(p.x / (sin(i.x + s) / 0.005), p.y / (cos(i.y + s) / 0.005)));
-        }
-        c = 1.17 - pow(c / 4.0, 1.4);
-        return pow(clamp(c, 0.0, 1.0), 5.0);   // zwischen 0 und 1: sonst blendete es
+    // Licht auf dem Boden (Kaustik): Wo die Wellen nach oben gewölbt sind,
+    // bündeln sie das Licht wie eine Lupe, dort wird der Boden hell; wo sie
+    // hohl sind, verteilen sie es. Wie stark sie gewölbt sind, sagt die
+    // Krümmung der Wellen (die zweite Ableitung, aus fünf Punkten).
+    float caustic(vec2 p, float t) {
+        float e = 0.07;
+        float h = waves(p, t);
+        float curve = (waves(p + vec2(e, 0.0), t) + waves(p - vec2(e, 0.0), t)
+                     + waves(p + vec2(0.0, e), t) + waves(p - vec2(0.0, e), t) - 4.0 * h) / (e * e);
+        float c = clamp(-curve * 0.05, 0.0, 1.0);
+        return c * c;
     }
 `;
 
@@ -138,7 +145,10 @@ function waterMaterial() {
                 // Wasser, gilt die Stelle genau dahinter.
                 vec4 q = refractionMatrix * vec4(vWorld, 1.0);
                 vec2 straight = q.xy / q.w;
-                vec2 bent = straight + n.xz * 0.015;
+                // wie weit es bis zum Boden geht, ohne Verbiegen: Je mehr Wasser, desto stärker wackelt der Boden
+                vec4 back = refractionInverse * vec4(straight * 2.0 - 1.0, texture2D(refractionDepth, straight).r * 2.0 - 1.0, 1.0);
+                float deep = clamp(distance(back.xyz / back.w, vWorld), 0.0, 3.0);
+                vec2 bent = straight + n.xz * 0.045 * clamp(deep / 1.5, 0.15, 1.0);
                 vec4 seen = texture2D(refraction, bent);
                 float depth = texture2D(refractionDepth, bent).r;
                 if (seen.a < 0.5) { bent = straight; seen = texture2D(refraction, bent); depth = texture2D(refractionDepth, bent).r; }
@@ -148,7 +158,7 @@ function waterMaterial() {
                 float through = seen.a < 0.5 ? 30.0 : distance(below, vWorld);
                 // helle Linien auf dem, was unter Wasser liegt
                 float under = clamp((surface - below.y) * 3.0, 0.0, 1.0);
-                vec3 floorColor = seen.rgb * (1.0 + 0.3 * caustic(below.xz * 0.8, time * 0.3) * under);
+                vec3 floorColor = seen.rgb * (1.0 + 0.9 * caustic(below.xz, time) * under);
                 vec3 kept = exp(-absorption * through);
                 vec3 water = floorColor * kept + scatter * light * (1.0 - kept);
 

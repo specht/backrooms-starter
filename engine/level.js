@@ -21,6 +21,7 @@ const LEVEL_DEFAULTS = {
     bounces: 3,           // wie oft das Licht von Flächen zurückgeworfen wird (0 bis 5)
     ambient: 0,           // Licht von überall (0 bis 1); meist unnötig, das Bounce-Licht macht es echt
     vhs: 'off',           // on: wie von einer alten Videokassette, mit Datum und Uhrzeit (Taste C)
+    aberration: 'off',    // on: farbige Säume zum Rand hin, wie durch eine einfache Linse (Taste X)
 };
 
 const ROOM_DEFAULTS = {
