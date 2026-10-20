@@ -3,6 +3,7 @@
 # nur Dateien ausliefert, genügt; für VR über HTTPS):
 #
 #   ./export.sh nachtschicht ../nachtschicht-site
+#   ./export.sh . ../mein-level              # dein Level: level.ini und rooms/ hier
 #
 # Kopiert die Engine, three.js, den Ordner des Levels (mit seinem
 # gespeicherten Licht, level.light, »Save light«, und eigenen Modellen) und
@@ -21,9 +22,16 @@ cd "$(dirname "$0")"
 rm -rf "$out"
 mkdir -p "$out"
 cp -R engine vendor "$out/"
-# der Ordner des Levels ganz (mit eigenen Modellen, etwa nachtschicht/models/), ohne .git
-mkdir -p "$out/$level"
-(cd "$level" && tar cf - --exclude=.git .) | (cd "$out/$level" && tar xf -)
+if [ "$level" = "." ]; then
+    # das Level der Vorlage selbst: level.ini, rooms/ und sein Licht
+    cp level.ini "$out/"
+    cp -R rooms "$out/"
+    [ -f level.light ] && cp level.light "$out/"
+else
+    # der Ordner des Levels ganz (mit eigenen Modellen, etwa nachtschicht/models/), ohne .git
+    mkdir -p "$out/$level"
+    (cd "$level" && tar cf - --exclude=.git .) | (cd "$out/$level" && tar xf -)
+fi
 # die Modelle aus models/ der Vorlage, die seine Räume nennen (model = ...): ihr Ordner ganz
 grep -hE '^[[:space:]]*model[[:space:]]*=' "$level"/rooms/*.room | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]#].*$//' | sort -u | while read -r file; do
     case "$file" in
@@ -32,5 +40,7 @@ grep -hE '^[[:space:]]*model[[:space:]]*=' "$level"/rooms/*.room | sed -E 's/^[^
         *) mkdir -p "$out/$(dirname "$file")"; cp "$file" "$out/$file" ;;
     esac
 done
-sed "s|<html lang=\"en\">|<html lang=\"en\" data-level=\"$level\">|" index.html > "$out/index.html"
+if [ "$level" = "." ]; then cp index.html "$out/"
+else sed "s|<html lang=\"en\">|<html lang=\"en\" data-level=\"$level\">|" index.html > "$out/index.html"
+fi
 echo "$out: $(du -sh "$out" | cut -f1)"

@@ -44,7 +44,8 @@ Baking takes a while, so the light is kept:
 **A level as a website:** `./export.sh nachtschicht ../nachtschicht-site`
 copies the engine, three.js, the level with its `level.light` and only the
 models its rooms name into one folder; its page opens that level without
-`?level=`. Any web server that only hands out files will do; for VR it has to
+`?level=`. `./export.sh . ../my-level` does the same for your own level
+(`level.ini` and `rooms/` here). Any web server that only hands out files will do; for VR it has to
 be HTTPS.
 
 Saved light belongs to exactly one version of the level: a fingerprint of
