@@ -52,6 +52,7 @@ export function railing(level, pool) {
     // glatter Edelstahl: spiegelt scharf (main.js nimmt dafür das feine Rundumbild)
     const metal = new THREE.MeshStandardMaterial({ color: '#c4c9cd', metalness: 1, roughness: 0.12 });
     const group = new THREE.Group();
+    const walls = [];   // die oberen Rohre: Dort kommt man beim Laufen nicht durch (main.js)
     const v3 = (x, y, z) => new THREE.Vector3(x, y, z);
     const up = v3(0, 1, 0);
     // ein gerades Rohr von a nach b
@@ -132,6 +133,7 @@ export function railing(level, pool) {
             }
         });
         straight(trimmed.top[0].clone().setY(floor + tops[0]), trimmed.top[1].clone().setY(floor + tops[0]), tops[1]);
+        walls.push([trimmed.top[0].clone().setY(floor + tops[0]), trimmed.top[1].clone().setY(floor + tops[0])]);
         straight(trimmed.mid[0].clone().setY(floor + mids[0]), trimmed.mid[1].clone().setY(floor + mids[0]), mids[1]);
         // Pfosten dazwischen, höchstens POST_SPACING auseinander
         const count = Math.max(1, Math.ceil(segment.length / POST_SPACING));
@@ -145,8 +147,17 @@ export function railing(level, pool) {
         foot.position.copy(at).setY(floor + 0.007);
         group.add(foot);
     }
+    group.userData.walls = walls.map(([a, b]) => wallBox(a, b));
     group.updateMatrixWorld(true);
     return group.children.length ? group : null;
+}
+
+// Ein Rohr als Hindernis beim Laufen: ein schmaler Kasten von a nach b, bis
+// einen Meter darunter (dort steht man)
+function wallBox(a, b) {
+    const pad = 0.04;
+    return { x0: Math.min(a.x, b.x) - pad, x1: Math.max(a.x, b.x) + pad, z0: Math.min(a.z, b.z) - pad, z1: Math.max(a.z, b.z) + pad,
+        y0: Math.min(a.y, b.y) - 1.05, y1: Math.max(a.y, b.y) };
 }
 
 // Ein Geländer an einer Treppe oder um ein Podest (railing = on bei
@@ -157,6 +168,7 @@ export function liftRailing(level, group) {
     const cell = level.settings.cell, k = group.layer;
     const metal = new THREE.MeshStandardMaterial({ color: '#c4c9cd', metalness: 1, roughness: 0.12 });
     const out = new THREE.Group();
+    const walls = [];
     const up = new THREE.Vector3(0, 1, 0);
     const pipe = (a, b, radius) => {
         const length = a.distanceTo(b);
@@ -199,6 +211,14 @@ export function liftRailing(level, group) {
             for (const [lift, radius] of [[0.95, 0.024], [0.5, 0.014]]) {
                 const [ax, az] = at(u0, w), [bx, bz] = at(u1, w);
                 pipe(new THREE.Vector3(ax, height(u0) + lift, az), new THREE.Vector3(bx, height(u1) + lift, bz), radius);
+                if (lift > 0.9) {
+                    // die schräge Stange als Hindernis: in Stücken, jedes nur so hoch, wie es dort ist
+                    for (let k = 0; k < 8; k++) {
+                        const p = new THREE.Vector3(ax + (bx - ax) * k / 8, height(u0 + (u1 - u0) * k / 8) + lift, az + (bz - az) * k / 8);
+                        const q = new THREE.Vector3(ax + (bx - ax) * (k + 1) / 8, height(u0 + (u1 - u0) * (k + 1) / 8) + lift, az + (bz - az) * (k + 1) / 8);
+                        walls.push(wallBox(p, q));
+                    }
+                }
             }
             for (let i = 0; i <= count; i++) {
                 const u = u0 + (u1 - u0) * i / count, [px, pz] = at(u, w);
@@ -217,11 +237,13 @@ export function liftRailing(level, group) {
                 const cx = (x + 0.5 + dx * 0.5) * cell - dx * inside, cz = (z + 0.5 + dz * 0.5) * cell - dz * inside;
                 const a = new THREE.Vector3(cx - t[0] * cell / 2, 0, cz - t[1] * cell / 2), b = new THREE.Vector3(cx + t[0] * cell / 2, 0, cz + t[1] * cell / 2);
                 for (const [lift, radius] of [[1, 0.024], [0.5, 0.014]]) pipe(a.clone().setY(top + lift), b.clone().setY(top + lift), radius);
+                walls.push(wallBox(a.clone().setY(top + 1), b.clone().setY(top + 1)));
                 post(a.x, top, a.z, top + 1);
                 post(b.x, top, b.z, top + 1);
             }
         }
     }
+    out.userData.walls = walls;
     out.updateMatrixWorld(true);
     return out.children.length ? out : null;
 }

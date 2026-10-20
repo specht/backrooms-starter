@@ -1131,6 +1131,11 @@ async function start() {
     // Um Statuen geht man herum: um ihren Grundriss, ein paar Zentimeter
     // knapper; unter dem, was über Kopfhöhe hängt (eine Wandlampe), hindurch
     for (const object of statues) {
+        // ein Geländer: nur seine Rohre, nicht sein ganzer Kasten (auf der Treppe darin läuft man)
+        if (object.userData.walls) {
+            for (const wall of object.userData.walls) walker.addObstacle(wall);
+            continue;
+        }
         const box = new THREE.Box3().setFromObject(object);
         const floor = level.floorAtPoint((box.min.x + box.max.x) / 2, (box.min.z + box.max.z) / 2, box.min.y);
         if (box.min.y - floor > 1.7) continue;

@@ -270,7 +270,9 @@ raise = 3          # these fields lie 3 m higher: a platform you can stand on
 railing = on
 ```
 
-Under stairs and platforms there is no room: they are solid. A platform can
+Stairs can lead up to a door high in the wall: they climb exactly as high as
+the door lies (`door = oben 1, 3` and `stairs = east, 3`) and end right in
+front of it. Under stairs and platforms there is no room: they are solid. A platform can
 have any shape, all neighbouring fields with its letter are one. `material`
 and `color` make them of tiles, wood and so on; without, the treads have the
 room's floor and the sides its walls.
