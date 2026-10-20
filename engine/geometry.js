@@ -123,6 +123,12 @@ function addDetail(faces, boxes) {
 const SLAB_COLOR = '#8e8a80';   // die Decke zwischen zwei Räumen übereinander, am Rand eines Lochs
 const ROUND_SIDES = 32;         // so viele schmale Flächen hat eine runde Säule ringsum
 const ARCH_STEPS = 64;          // so viele Stücke hat der Halbkreis eines Bogens, wie breit er auch ist
+// Eine Tür zwischen zwei Räumen: innen (Laibung, Sturz, Gewölbe) heller Putz,
+// auf beiden Seiten der Wand um die Öffnung eine Bekleidung in der Farbe der
+// Sockelleiste ihres Raums, so breit und so weit vor der Wand
+const LINING_COLOR = '#e4dfd4';
+const CASING_WIDTH = 0.08;
+const CASING_DEPTH = 0.02;     // etwas weiter vor als die Sockelleiste (1,5 cm), die darunter endet
 
 export function buildGeometry(level, modelBoxes = []) {
     const { width, depth, layers, settings } = level;
@@ -142,6 +148,11 @@ export function buildGeometry(level, modelBoxes = []) {
     const add = (kind, room, corners, w, h, subdivide = 1) => {
         const normal = faceNormal(corners);
         if (normal.some((v) => v !== 0)) faces.push({ kind, room, corners, normal, w, h, subdivide });
+    };
+    // die Laibung einer Tür: heller Putz, für beide Räume gleich
+    const lining = (room, corners, w, h) => {
+        const normal = faceNormal(corners);
+        if (normal.some((v) => v !== 0)) faces.push({ kind: 'block', color: LINING_COLOR, material: 'plain', room, corners, normal, w, h });
     };
     // Der Boden einer Tür kann verdreht sein (an jeder Kante so schräg wie der
     // Raum dahinter): gezeichnet als feines Gitter, damit er genau auf der
@@ -233,7 +244,7 @@ export function buildGeometry(level, modelBoxes = []) {
                     add('floor', owner, [[hx0 * cell, fl(hx0, hz1), hz1 * cell], [hx1 * cell, fl(hx1, hz1), hz1 * cell], [hx1 * cell, fl(hx1, hz0), hz0 * cell], [hx0 * cell, fl(hx0, hz0), hz0 * cell]],
                         texels((hx1 - hx0) * cell), texels((hz1 - hz0) * cell));
                     if (level.ceilingOpen(x, z, k) || level.archAt(x, z, k)) continue;
-                    add('ceiling', owner, [[hx0 * cell, top(hx0, hz0), hz0 * cell], [hx1 * cell, top(hx1, hz0), hz0 * cell], [hx1 * cell, top(hx1, hz1), hz1 * cell], [hx0 * cell, top(hx0, hz1), hz1 * cell]],
+                    lining(owner, [[hx0 * cell, top(hx0, hz0), hz0 * cell], [hx1 * cell, top(hx1, hz0), hz0 * cell], [hx1 * cell, top(hx1, hz1), hz1 * cell], [hx0 * cell, top(hx0, hz1), hz1 * cell]],
                         texels((hx1 - hx0) * cell), texels((hz1 - hz0) * cell));
                 }
             }
@@ -376,13 +387,12 @@ export function buildGeometry(level, modelBoxes = []) {
                         .filter((o) => o.floor[0] < top[0] - 0.01 || o.floor[1] < top[1] - 0.01);
                     const pass = passage(x, z, k);
                     if (pass && !open.length && !level.ceilingOpen(x, z, k) && (pass.axis === 'z') === (direction === 'west' || direction === 'east')) {
-                        // die Seite eines Durchgangs: jede Hälfte wie ihr Raum, mit dessen Sockelleiste
+                        // die Seite eines Durchgangs: die Laibung, Putz, ohne Sockelleiste
                         for (const [lo, hi, owner] of [[along, along + 0.5, pass.near], [along + 0.5, along + 1, pass.far]]) {
                             const [p, q] = wallEnds(direction, line, lo, hi);
                             const low = [f(p[0], p[1]), f(q[0], q[1])], high = [h(p[0], p[1]), h(q[0], q[1])];
-                            add('wall', owner, [[p[0] * cell, low[0], p[1] * cell], [q[0] * cell, low[1], q[1] * cell], [q[0] * cell, high[1], q[1] * cell], [p[0] * cell, high[0], p[1] * cell]],
+                            lining(owner, [[p[0] * cell, low[0], p[1] * cell], [q[0] * cell, low[1], q[1] * cell], [q[0] * cell, high[1], q[1] * cell], [p[0] * cell, high[0], p[1] * cell]],
                                 texels(cell / 2), texels(Math.max(high[0] - low[0], high[1] - low[1])));
-                            skirting(owner, direction, p, q, low[0]);
                         }
                         continue;
                     }
@@ -463,7 +473,10 @@ export function buildGeometry(level, modelBoxes = []) {
                 const alongX = direction === 'north' || direction === 'south';
                 const layer = level.rooms[room].layer;
                 const corner = (p, out) => {
-                    const probe = (side) => at(Math.floor(p[0] + out[0] * 0.5 + n[0] * 0.5 * side), Math.floor(p[1] + out[1] * 0.5 + n[2] * 0.5 * side), layer);
+                    const cellAt = (side) => [Math.floor(p[0] + out[0] * 0.5 + n[0] * 0.5 * side), Math.floor(p[1] + out[1] * 0.5 + n[2] * 0.5 * side)];
+                    const probe = (side) => at(...cellAt(side), layer);
+                    // an einer Tür endet sie unter der Bekleidung
+                    if (probe(-1) === 'floor' && passage(...cellAt(-1), layer)) return 'straight';
                     if (probe(-1) === 'floor') return 'outer';
                     if (probe(1) !== 'floor') return 'inner';
                     return 'straight';
@@ -517,15 +530,102 @@ export function buildGeometry(level, modelBoxes = []) {
                         let corners = [point(side, arch.floor, d0), point(side, arch.floor, d1), point(side, arch.spring, d1), point(side, arch.spring, d0)];
                         const n = faceNormal(corners);
                         if ((arch.alongX ? n[0] : n[2]) * inward < 0) corners = [corners[0], corners[3], corners[2], corners[1]];
-                        add('wall', owner, corners, texels(d1 - d0), texels(arch.spring - arch.floor));
+                        if (pass) lining(owner, corners, texels(d1 - d0), texels(arch.spring - arch.floor));
+                        else add('wall', owner, corners, texels(d1 - d0), texels(arch.spring - arch.floor));
                     }
                     if (to <= from) continue;
                     // das Gewölbe: eine Fläche, gebogen, mit einem Stück Lichtkarte
                     const vault = (s, t) => point(from + (to - from) * Math.min(1, Math.max(0, s)), arch.height(from + (to - from) * Math.min(1, Math.max(0, s))), d0 + (d1 - d0) * t);
                     const down = faceNormal([vault(0.4, 0), vault(0.6, 0), vault(0.6, 1), vault(0.4, 1)])[1] < 0;
                     const shape = down ? vault : (s, t) => vault(s, 1 - t);
-                    curved('wall', owner, shape, Math.max(8, Math.ceil(ARCH_STEPS * (to - from) / (2 * r))), around(to) - around(from), d1 - d0,
-                        (s, t) => [around(from + (to - from) * s), d0 + (d1 - d0) * (down ? t : 1 - t)]);
+                    curved(pass ? 'block' : 'wall', owner, shape, Math.max(8, Math.ceil(ARCH_STEPS * (to - from) / (2 * r))), around(to) - around(from), d1 - d0,
+                        (s, t) => [around(from + (to - from) * s), d0 + (d1 - d0) * (down ? t : 1 - t)], pass ? { material: 'plain', color: LINING_COLOR } : {});
+                }
+            }
+        }
+    }
+
+    // Die Bekleidung einer Tür: auf jeder Seite der Wand um die Öffnung eine
+    // Leiste, CASING_WIDTH breit und CASING_DEPTH vor der Wand, in der Farbe
+    // der Sockelleiste des Raums auf dieser Seite (ohne Sockelleiste keine).
+    // Seitlich vom Boden bis an den Sturz, oben quer darüber; bei einer runden
+    // Tür im Bogen um die Öffnung. Rechnet in »along« (entlang der Wand) und
+    // »across« (quer durch sie), Meter.
+    const casingFace = (room, color, corners, want, w, h) => {
+        let c = corners;
+        if (faceNormal(c).reduce((sum, v, i) => sum + v * want[i], 0) < 0) c = [c[0], c[3], c[2], c[1]];
+        const normal = faceNormal(c);
+        if (normal.some((v) => v !== 0)) faces.push({ kind: 'baseboard', color, room, corners: c, normal, w: texels(w), h: texels(h) });
+    };
+    for (let k = 0; k < layers; k++) {
+        for (let z = 0; z < depth; z++) {
+            for (let x = 0; x < width; x++) {
+                const pass = passage(x, z, k);
+                if (!pass || level.bareDoorAt(x, z, k)) continue;
+                const alongX = pass.axis === 'z';
+                const world = (a, y, c) => (alongX ? [a, y, c] : [c, y, a]);
+                const dir = (da, dy, dc) => (alongX ? [da, dy, dc] : [dc, dy, da]);
+                const a0 = (alongX ? x : z) * cell, a1 = a0 + cell, c0 = (alongX ? z : x) * cell;
+                const wallAt = (step) => {
+                    const nx = alongX ? x + step : x, nz = alongX ? z : z + step;
+                    return at(nx, nz, k) !== 'floor';
+                };
+                const top = level.ceilingOfCell(x, z, k);
+                const arch = level.archAt(x, z, k);
+                for (const [owner, face, out] of [[pass.near, c0, -1], [pass.far, c0 + cell, 1]]) {
+                    const board = level.rooms[owner].settings.baseboard;
+                    if (!board) continue;
+                    const color = board.color, front = face + out * CASING_DEPTH;
+                    const floorY = (a) => floorAt((alongX ? a : face) / cell, (alongX ? face : a) / cell, owner);
+                    const roomTop = (a) => ceiling((alongX ? a : face) / cell, (alongX ? face : a) / cell, owner);
+                    // ein Kasten vor der Wand: entlang lo..hi, von y0 bis y1; sides: welche Seiten offen liegen
+                    const strip = (lo, hi, y0, y1, sides) => {
+                        casingFace(owner, color, [world(lo, y0, front), world(hi, y0, front), world(hi, y1, front), world(lo, y1, front)], dir(0, 0, out), hi - lo, y1 - y0);
+                        if (sides.low) casingFace(owner, color, [world(lo, y0, face), world(lo, y0, front), world(lo, y1, front), world(lo, y1, face)], dir(-1, 0, 0), CASING_DEPTH, y1 - y0);
+                        if (sides.high) casingFace(owner, color, [world(hi, y0, face), world(hi, y0, front), world(hi, y1, front), world(hi, y1, face)], dir(1, 0, 0), CASING_DEPTH, y1 - y0);
+                        if (sides.top) casingFace(owner, color, [world(lo, y1, face), world(hi, y1, face), world(hi, y1, front), world(lo, y1, front)], [0, 1, 0], hi - lo, CASING_DEPTH);
+                        if (sides.bottom) casingFace(owner, color, [world(lo, y0, face), world(hi, y0, face), world(hi, y0, front), world(lo, y0, front)], [0, -1, 0], hi - lo, CASING_DEPTH);
+                    };
+                    if (arch) {
+                        // einmal je Tür, im Feld, in dem der Bogen beginnt
+                        const r = arch.radius, left = arch.start + arch.center - r, right = arch.start + arch.center + r;
+                        if (left < a0 - 1e-6 || left >= a1 - 1e-6) continue;
+                        const spring = arch.spring, w = CASING_WIDTH;
+                        // die beiden Seiten bis zum Beginn des Bogens
+                        strip(left - w, left, floorY(left), spring, { low: true, high: true });
+                        strip(right, right + w, floorY(right), spring, { low: true, high: true });
+                        // der Bogen: vorn ein Band von r bis r + w, innen und außen seine Kanten
+                        const cx = arch.start + arch.center;
+                        const ring = (radius, angle, c) => world(cx - Math.cos(angle) * radius, spring + Math.sin(angle) * radius, c);
+                        const steps = Math.max(16, Math.ceil(ARCH_STEPS * r));
+                        const length = Math.PI * (r + w / 2);
+                        const fixFront = (shape) => {
+                            const n = faceNormal([shape(0.45, 0), shape(0.55, 0), shape(0.55, 1), shape(0.45, 1)]);
+                            const want = dir(0, 0, out);
+                            return n.reduce((sum, v, i) => sum + v * want[i], 0) < 0 ? (s, t) => shape(s, 1 - t) : shape;
+                        };
+                        curved('baseboard', owner, fixFront((s, t) => ring(r + w * t, Math.PI * s, front)), steps, length, w, null, { color });
+                        const edge = (radius, inward) => {
+                            let shape = (s, t) => ring(radius, Math.PI * s, face + (front - face) * t);
+                            const mid = ring(radius, Math.PI / 2, face), center = world(cx, spring, face);
+                            const want = mid.map((v, i) => (center[i] - v) * inward);
+                            const n = faceNormal([shape(0.45, 0), shape(0.55, 0), shape(0.55, 1), shape(0.45, 1)]);
+                            if (n.reduce((sum, v, i) => sum + v * want[i], 0) < 0) shape = ((f0) => (s, t) => f0(s, 1 - t))(shape);
+                            curved('baseboard', owner, shape, steps, Math.PI * radius, CASING_DEPTH, null, { color });
+                        };
+                        edge(r, 1);
+                        edge(r + w, -1);
+                        continue;
+                    }
+                    // eine eckige Tür: Seiten an den Feldern, neben denen Wand ist, oben über jedes Feld
+                    const lowJamb = wallAt(-1), highJamb = wallAt(1);
+                    const tLow = top((alongX ? a0 : face) / cell, (alongX ? face : a0) / cell), tHigh = top((alongX ? a1 : face) / cell, (alongX ? face : a1) / cell);
+                    const lintel = Math.min(roomTop(a0), roomTop(a1)) > Math.max(tLow, tHigh) + CASING_WIDTH + 0.02;
+                    const head = Math.min(tLow, tHigh);
+                    const yTop = head;   // mit Sturz liegt die Ecke oben im Stück darüber
+                    if (lowJamb) strip(a0 - CASING_WIDTH, a0, floorY(a0), yTop, { low: true, high: true, top: !lintel });
+                    if (highJamb) strip(a1, a1 + CASING_WIDTH, floorY(a1), yTop, { low: true, high: true, top: !lintel });
+                    if (lintel) strip(a0 - (lowJamb ? CASING_WIDTH : 0), a1 + (highJamb ? CASING_WIDTH : 0), head, head + CASING_WIDTH, { top: true, bottom: true, low: lowJamb, high: highJamb });
                 }
             }
         }

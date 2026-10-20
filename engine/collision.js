@@ -13,7 +13,10 @@ const GROW = 0.01;   // gezeichnet 1 cm größer als geprüft, damit sie nicht m
 
 export function collisionView(walker) {
     const group = new THREE.Group();
-    const fill = new THREE.MeshBasicMaterial({ color: COLOR, transparent: true, opacity: 0.32, depthWrite: false, side: THREE.DoubleSide, toneMapped: false });
+    // zum Betrachter hin versetzt: Auch weit weg, wo der Tiefenpuffer 1 cm
+    // nicht mehr auflöst, liegen die Kästen vor der Fläche, die sie umgeben
+    const fill = new THREE.MeshBasicMaterial({ color: COLOR, transparent: true, opacity: 0.32, depthWrite: false, side: THREE.DoubleSide, toneMapped: false,
+        polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -8 });
     const edge = new THREE.LineBasicMaterial({ color: COLOR, toneMapped: false });
     const obstacles = new THREE.Group();
     group.add(obstacles);

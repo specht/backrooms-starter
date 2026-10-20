@@ -187,6 +187,11 @@ place at the same height, is reported with the file and the line.
 makes the arch only 0.8 m wide, in the middle of the door, with wall beside
 it. Either side of the door may say it.
 
+A door is as deep as the wall, one field. Its reveal (sides, lintel, vault)
+is light plaster, and on each face of the wall a casing frames the opening,
+in the colour of that room's skirting board (none without one).
+`casing = off` in a door's section leaves it out on both sides.
+
 Rooms may lie on top of each other: a ramp leads up one storey, and the room
 up there may lie over the one below, as long as its floor is not below that
 room's ceiling. A hole joins two rooms like a door, only vertically:

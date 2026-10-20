@@ -286,6 +286,12 @@ function parseRoom(id, source) {
             }
             doors[char].arch = { height, width: wide, line: section.line };
         }
+        // casing = off: ohne Bekleidung um die Öffnung (geometry.js), auf beiden Seiten
+        const casing = values(section).casing;
+        if (casing !== undefined) {
+            if (!['on', 'off'].includes(String(casing))) throw new LevelError(file, section.line, `casing = ${casing}: expected on or off.`);
+            doors[char].casing = String(casing) === 'on';
+        }
     }
     // [_] below = raum: der Raum unter dem Loch im Boden; sein ^ liegt genau
     // darunter, seine Decke um slab (Meter, die Dicke der Decke) unter
@@ -836,6 +842,12 @@ export async function loadLevel(levelFile, fetchText) {
     // halbe Breite. Je Feld der Tür: wo es im Bogen liegt (u0 bis u1, Meter
     // von seinem Anfang), entlang welcher Achse der Bogen geht, und wie hoch
     // er an einer Stelle ist.
+    // Türen ohne Bekleidung (casing = off bei einer der beiden Seiten)
+    const bare = new Set();   // Feld (mit Schicht)
+    for (const edge of edges) {
+        if (edge.hole || edge.back || (edge.da.casing ?? edge.db.casing ?? true)) continue;
+        for (const c of edge.da.cells) for (let k = 0; k < cells.length / size; k++) bare.add(index(edge.a.ox + c.x, edge.a.oz + c.z, k));
+    }
     arches = new Map();   // Feld (mit Schicht) -> Bogen
     for (const edge of edges) {
         if (edge.hole || edge.back) continue;   // jede Tür einmal
@@ -1022,6 +1034,8 @@ export async function loadLevel(levelFile, fetchText) {
         lift,
         lifts,
         // die Treppe oder das Podest an einem Feld in Schicht k, oder null
+        // eine Tür ohne Bekleidung (casing = off)
+        bareDoorAt: (x, z, k = 0) => bare.has(index(x, z, k)),
         // ein Feld mit einer Tür (in Schicht k)
         doorAt: (x, z, k = 0) => x >= 0 && z >= 0 && x < width && z < depth && doorCells.has(index(x, z, k)),
         liftAt: (x, z, k = 0) => (x < 0 || z < 0 || x >= width || z >= depth ? null : lifted.get(index(x, z, k)) ?? null),
