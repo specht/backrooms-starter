@@ -3,10 +3,10 @@
 // neben level.ini liegt und mit dem Level veröffentlicht wird, etwa für eine
 // VR-Brille.
 //
-// Ein Fingerabdruck aus level.ini, allen Räumen, den Modellen und dem
-// Programm, das backt, sagt, ob gespeichertes Licht noch zum Level passt.
-// Ändert sich ein Zeichen, passt es nicht mehr, und das Licht wird neu
-// gebacken.
+// Ein Fingerabdruck aus level.ini, allen Räumen, den Modellen, bake.js und
+// dem, was daraus gebaut wird (die Flächen und die Leuchten, main.js), sagt,
+// ob gespeichertes Licht noch zum Level passt. Ändert sich ein Zeichen in
+// einem Raum, passt es nicht mehr, und das Licht wird neu gebacken.
 //
 // Gespeichert wird jede Lightmap mit 8 Bit pro Kanal, als Wurzel des Werts
 // (so bleiben dunkle Stellen genau), und alles zusammen mit gzip gepackt.
@@ -30,7 +30,7 @@ export function fingerprint(parts) {
     };
     const encoder = new TextEncoder();
     for (const part of [FORMAT, ...parts]) {
-        const bytes = typeof part === 'string' ? encoder.encode(part) : new Uint8Array(part);
+        const bytes = typeof part === 'string' ? encoder.encode(part) : part instanceof Uint8Array ? part : new Uint8Array(part);
         for (let i = 0; i < bytes.length; i++) feed(bytes[i]);
         feed(0);   // Grenze zwischen zwei Teilen
     }

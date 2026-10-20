@@ -19,20 +19,15 @@ Serve this folder with any static web server and open `index.html`:
 Opening `index.html` directly as a file does not work: the browser does not
 let a page load the room files from disk.
 
-## Three levels
+## Your level, and one to walk through
 
 - `level.ini` and `rooms/`: your level. It starts small: a room, a corridor
   and two coloured rooms. Build on it.
-- `lobby/`: »Level 0: Die Lobby«, a whole level with fourteen rooms, a corridor
-  that opens up nine metres high, a colonnade, a gallery of pedestals, a
-  marble hall with a statue and a way over ramps on which nothing is level. Open it with `index.html?level=lobby/level.ini`.
-  Its light is already baked (`lobby/level.light`), so it is there at once.
-- `tiefe/`: »Level 1: Die Tiefe«, rooms above and below each other: a narrow
-  corridor whose wallpaper turns grey, a hall of columns with an opening
-  eight metres above an abyss, an office upstairs with a hole in its floor, a
-  pit, low cellars, a tiled hall under the earth with a pool and a red corridor that
-  climbs back up. Open it with `index.html?level=tiefe/level.ini`; its light
-  is baked too.
+- [backrooms-nachtschicht](https://github.com/specht/backrooms-nachtschicht):
+  a whole level, a building at night, every room in a different mood. Clone
+  it into this folder as `nachtschicht/` and open
+  `index.html?level=nachtschicht`; its README says how, and how long its light
+  takes to bake the first time.
 
 After a change to a room, reload the page.
 
@@ -46,10 +41,19 @@ Baking takes a while, so the light is kept:
   `level.ini`; when the level is served with it, for example as a static web
   page or on a VR headset, the light is loaded from that file.
 
+**A level as a website:** `./export.sh nachtschicht ../nachtschicht-site`
+copies the engine, three.js, the level with its `level.light` and only the
+models its rooms name into one folder; its page opens that level without
+`?level=`. Any web server that only hands out files will do; for VR it has to
+be HTTPS.
+
 Saved light belongs to exactly one version of the level: a fingerprint of
-`level.ini`, every room, every model and the parts of `engine/` that bake
-the light says whether it still fits. Change one character and it no longer
-does; the light is then baked again (and `level.light` has to be saved again).
+`level.ini`, every room, every model, `engine/bake.js` and what the engine
+builds from the rooms (every face as the baking sees it, and the lamps) says
+whether it still fits. Change one character in a room and it no longer does;
+the light is then baked again (and `level.light` has to be saved again). A
+change to the engine that leaves the faces and lamps as they were, such as
+how you walk up stairs, keeps the light.
 Shift+L, or `?rebake` in the address, bakes the light again in any case.
 
 ## Keys
@@ -125,7 +129,6 @@ its room is among them. In the automap, U shows it.
 <table>
 <tr><td><code>level.ini</code></td><td>the name of the level, the room you start in, light settings</td></tr>
 <tr><td><code>rooms/NAME.room</code></td><td>one file per room: its floor plan and what is in it</td></tr>
-<tr><td><code>lobby/</code></td><td>a whole level to try, with its rooms and its baked light</td></tr>
 <tr><td><code>models/</code></td><td>3D models (glTF or GLB): a statue, a sofa, a wall lamp</td></tr>
 <tr><td><code>level.light</code></td><td>saved light, if you saved it (»Save light«)</td></tr>
 <tr><td><code>engine/</code></td><td>the program: reading the level, building it, baking the light, walking</td></tr>
@@ -345,7 +348,7 @@ In VR the water is a simple, half transparent surface.
 ## Address parameters
 
 <table>
-<tr><td><code>?level=other.ini</code></td><td>load another level file; <code>?level=lobby</code> loads <code>lobby/level.ini</code></td></tr>
+<tr><td><code>?level=other.ini</code></td><td>load another level file; <code>?level=nachtschicht</code> loads <code>nachtschicht/level.ini</code></td></tr>
 <tr><td><code>?show=light</code>, <code>direct</code>, <code>bounce</code></td><td>start with light only (no textures), or with only one part of it</td></tr>
 <tr><td><code>?bounces=0</code></td><td>bake with a different number of bounces</td></tr>
 <tr><td><code>?anaglyph</code>, <code>?automap</code>, <code>?vhs</code>, <code>?aberration</code></td><td>start with anaglyph, with the automap, with the VHS look or with chromatic aberration</td></tr>
@@ -358,7 +361,7 @@ In VR the water is a simple, half transparent surface.
 
 ## Models and licences
 
-- `models/athena.glb` (used in `lobby/rooms/halle.room`): Athena Giustiniani, a 3D scan of the plaster cast
+- `models/athena.glb`: Athena Giustiniani, a 3D scan of the plaster cast
   KAS255 at the National Gallery of Denmark (SMK), public domain
   ([SMK Open](https://open.smk.dk/artwork/image/KAS255),
   [Public Domain Mark](https://creativecommons.org/publicdomain/mark/1.0/));
@@ -368,7 +371,7 @@ In VR the water is a simple, half transparent surface.
   `models/industrial_wall_sconce/`: [Industrial Wall Sconce](https://polyhaven.com/a/industrial_wall_sconce) by Ulan Cabanilla,
   `models/brass_candleholders/`: the large candelabra from
   [Brass Candleholders](https://polyhaven.com/a/brass_candleholders) by Tina (only that one, moved to the origin),
-  and, for `tiefe/`, [Metal Office Desk](https://polyhaven.com/a/metal_office_desk),
+  and furniture: [Metal Office Desk](https://polyhaven.com/a/metal_office_desk),
   [School Chair 01](https://polyhaven.com/a/SchoolChair_01),
   [Vintage Wooden Drawer 01](https://polyhaven.com/a/vintage_wooden_drawer_01),
   [Worn Metal Rack](https://polyhaven.com/a/worn_metal_rack),
@@ -377,24 +380,6 @@ In VR the water is a simple, half transparent surface.
   [Rockingchair 01](https://polyhaven.com/a/Rockingchair_01) and
   [Small Wooden Table 01](https://polyhaven.com/a/small_wooden_table_01),
   all from [Poly Haven](https://polyhaven.com/models), CC0, glTF at 1K.
-- for `nachtschicht/`: [Barrel 01](https://polyhaven.com/a/Barrel_01),
-  [Cash Register 01](https://polyhaven.com/a/CashRegister_01),
-  [Chandelier 02](https://polyhaven.com/a/Chandelier_02),
-  [Green Chair 01](https://polyhaven.com/a/GreenChair_01),
-  [Bar Chair Round 01](https://polyhaven.com/a/bar_chair_round_01),
-  [Caged Hanging Light](https://polyhaven.com/a/caged_hanging_light),
-  [Classic Laptop](https://polyhaven.com/a/classic_laptop),
-  [Desk Lamp Arm 01](https://polyhaven.com/a/desk_lamp_arm_01),
-  [Filmstrip Projector 8mm](https://polyhaven.com/a/filmstrip_projector_8mm),
-  [Horse Statue 01](https://polyhaven.com/a/horse_statue_01),
-  [Marble Bust 01](https://polyhaven.com/a/marble_bust_01),
-  [Metal Tool Chest](https://polyhaven.com/a/metal_tool_chest),
-  [Ornate Mirror 01](https://polyhaven.com/a/ornate_mirror_01),
-  [Potted Plant 02](https://polyhaven.com/a/potted_plant_02),
-  [Round Wooden Table 01](https://polyhaven.com/a/round_wooden_table_01),
-  [Steel Frame Shelves 02](https://polyhaven.com/a/steel_frame_shelves_02) and
-  [Wall Clock](https://polyhaven.com/a/wall_clock),
-  also from Poly Haven, CC0, glTF at 1K.
 - `vendor/three/`: [three.js](https://threejs.org/), MIT licence, see
   `vendor/three/LICENSE`.
 - `engine/fonts/vcr-osd-mono.ttf`: [VCR OSD Mono](https://www.dafont.com/vcr-osd-mono.font)

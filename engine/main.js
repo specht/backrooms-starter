@@ -42,8 +42,9 @@ const BLOOM_THRESHOLD = 1.6;   // so leuchten vor allem die Leuchten, nicht scho
 const PANEL_HDR = 2.2;           // nicht heller: Sonst wird die ganze Leuchte weiß und verliert ihr Gitter
 const GLOW = 0.85;               // wie stark der Schein um eine Leuchte ist (auf Dunklem; auf Hellem weniger)
 
-// ?level=lobby/level.ini, oder kurz ?level=lobby: der Ordner mit seiner level.ini
-const levelParam = params.get('level') ?? 'level.ini';
+// ?level=lobby/level.ini, oder kurz ?level=lobby: der Ordner mit seiner level.ini.
+// Ohne: das Level aus <html data-level="..."> (export.sh), sonst level.ini.
+const levelParam = params.get('level') ?? document.documentElement.dataset.level ?? 'level.ini';
 const levelFile = /\.ini$/i.test(levelParam) ? levelParam : `${levelParam.replace(/\/+$/, '')}/level.ini`;
 // Was zu sehen ist: Jede Taste schaltet einen Teil an oder aus, ein Klick
 // auf seinen Schalter auch. ?show=light, direct oder bounce wählt den Anfang.
@@ -1149,10 +1150,26 @@ async function start() {
     // Gespeichertes Licht, wenn es zu genau diesem Level passt: Der
     // Fingerabdruck nimmt alles, was gelesen wurde, dazu bounces und die
     // Teile des Programms, die das Licht ausrechnen.
-    const engineFiles = ['level.js', 'geometry.js', 'bake.js', 'railing.js'];
-    const engine = await Promise.all(engineFiles.map((file) => fetchText(new URL(`./${file}`, import.meta.url)).catch(() => file)));
+    // Der Fingerabdruck des Lichts: die Räume (ihr Text), bake.js und was
+    // level.js, geometry.js und railing.js daraus bauen, nicht deren Text:
+    // die Flächen, wie das Backen sie sieht (Lage, Richtung, Farbe, ihr
+    // Platz in der Lightmap), und die Leuchten. Ändert sich dort etwas, das
+    // am Licht nichts ändert (wie man auf einer Treppe läuft), gilt
+    // gespeichertes Licht weiter.
+    const bakeSource = await fetchText(new URL('./bake.js', import.meta.url)).catch(() => 'bake.js');
     await stage('Building the level: looking for saved light …');
-    const print = fingerprint([...sources, `bounces ${bounces}`, ...engine]);
+    const bytes = (array) => new Uint8Array(array.buffer, array.byteOffset, array.byteLength);
+    // eine Leuchte aus einem Modell ohne das Modell selbst: three.js gibt ihm
+    // bei jedem Laden eine andere uuid (die Datei des Modells zählt schon).
+    // this[key]: der Wert vor seinem toJSON, das Modelle schon umwandelt.
+    const built = [`atlas ${geometry.atlasSize}`, JSON.stringify(lights, function (key, value) { return this[key]?.isObject3D ? undefined : value; })];
+    for (const mesh of geometry.meshes) {
+        for (const g of [mesh.bake, mesh.geometry]) {
+            for (const name of Object.keys(g.attributes).sort()) built.push(name, bytes(g.attributes[name].array));
+            if (g.index) built.push(bytes(g.index.array));
+        }
+    }
+    const print = fingerprint([...sources, `bounces ${bounces}`, bakeSource, ...built]);
     const found = params.has('rebake') ? null : await findLight(levelFile, print);
     let lightSource = null;      // woher das Licht kommt, wenn es nicht gebacken wird
     let packedLight = null;      // das Licht zum Herunterladen (Save light)

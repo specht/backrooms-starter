@@ -820,16 +820,19 @@ export async function loadLevel(levelFile, fetchText) {
         group.tread = group.length / group.steps;
     }
     // Wie weit eine Stelle (px, pz in Feldern) über dem Boden ihres Raums liegt:
-    // auf einem Podest, einer Stufe oder dem Rand eines Beckens (rim)
-    const stairAt = (group, px, pz) => {
+    // auf einem Podest, einer Stufe oder dem Rand eines Beckens (rim).
+    // smooth: zum Gehen eine Treppe als Rampe, vom unteren Ende bis ganz
+    // oben gerade; sonst sprängen die Füße von Stufe zu Stufe.
+    const stairAt = (group, px, pz, smooth) => {
         const { direction } = group.stairs, cell = settings.cell;
         const u = direction === 'east' ? (px - group.x0) * cell : direction === 'west' ? (group.x1 + 1 - px) * cell
             : direction === 'south' ? (pz - group.z0) * cell : (group.z1 + 1 - pz) * cell;
+        if (smooth) return group.base + Math.min(1, Math.max(0, u / group.length)) * (group.stairs.rise - group.base);
         return Math.min(group.stairs.rise, group.base + (Math.floor(Math.max(0, u) / group.tread + 1e-6) + 1) * group.stepHeight);
     };
-    const lift = (x, z, k, px = x + 0.5, pz = z + 0.5) => {
+    const lift = (x, z, k, px = x + 0.5, pz = z + 0.5, smooth = false) => {
         const group = lifted.get(index(x, z, k));
-        if (group) return group.raise ?? stairAt(group, px, pz);
+        if (group) return group.raise ?? stairAt(group, px, pz, smooth);
         // der Rand eines Beckens daneben: so weit, wie er breit ist
         let best = 0;
         if (kindAt(x, z, k) !== 'floor' || water.has(index(x, z, k))) return 0;
@@ -1023,7 +1026,7 @@ export async function loadLevel(levelFile, fetchText) {
             const cx = Math.floor(x / settings.cell), cz = Math.floor(z / settings.cell);
             let best = -1, bestFloor = -Infinity, lowest = -1, lowestFloor = Infinity;
             for (const slab of slabs(cx, cz)) {
-                const floor = level.floorAt(x / settings.cell, z / settings.cell, slab.room) - sunk(cx, cz, slab.layer) + lift(cx, cz, slab.layer, x / settings.cell, z / settings.cell);
+                const floor = level.floorAt(x / settings.cell, z / settings.cell, slab.room) - sunk(cx, cz, slab.layer) + lift(cx, cz, slab.layer, x / settings.cell, z / settings.cell, true);
                 if (floor < lowestFloor) { lowest = slab.room; lowestFloor = floor; }
                 if (y !== null && floor <= y + STEP && floor > bestFloor) { best = slab.room; bestFloor = floor; }
             }
@@ -1034,7 +1037,7 @@ export async function loadLevel(levelFile, fetchText) {
             const room = level.roomAtPoint(x, z, y);
             if (room < 0) return 0;
             const cx = Math.floor(x / settings.cell), cz = Math.floor(z / settings.cell), k = roomList[room].layer;
-            return level.floorAt(x / settings.cell, z / settings.cell, room) - sunk(cx, cz, k) + lift(cx, cz, k, x / settings.cell, z / settings.cell);
+            return level.floorAt(x / settings.cell, z / settings.cell, room) - sunk(cx, cz, k) + lift(cx, cz, k, x / settings.cell, z / settings.cell, true);
         },
         // wie tief der Boden eines Felds in Schicht k unter dem seines Raums liegt: in einem Becken dessen Tiefe, sonst 0
         sunk,
