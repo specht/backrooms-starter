@@ -8,6 +8,7 @@
     Die Texturen aus engine/textures.js, ohne das Level drumherum.
     textures.html                  alle Texturen
     textures.html?show=marble      Marmor Schritt für Schritt (auch wallpaper, wood)
+    &step=2                        davon nur ein Schritt, so groß, wie er passt
     textures.html?tile=marble      dieselbe Textur sechsmal nebeneinander: Sieht man die Nähte?
     &edges                         dazu feine Linien, wo eine Wiederholung endet
     &bare                          ohne Beschriftung (für Bilder)
@@ -82,7 +83,12 @@ function figure(canvas, caption) {
 
 const show = params.get('show'), tile = params.get('tile');
 const room = Math.min(window.innerWidth, window.innerHeight * 1.6);
-if (show && textures[show]?.steps) {
+const step = Number(params.get('step'));
+if (show && textures[show]?.steps && step >= 1 && step <= textures[show].steps.length) {
+    const { make, steps } = textures[show];
+    const size = Math.floor(Math.min(window.innerWidth - 56, window.innerHeight - 90));
+    figure(draw(make(step), 1, size), `${step}. ${steps[step - 1]}`);
+} else if (show && textures[show]?.steps) {
     const { make, steps } = textures[show];
     const size = Math.floor(Math.min((window.innerWidth - 56 - 28 * (steps.length - 1)) / steps.length, window.innerHeight - 120));
     steps.forEach((caption, i) => figure(draw(make(i + 1), 1, size), `${i + 1}. ${caption}`));

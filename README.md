@@ -47,7 +47,7 @@ Baking takes a while, so the light is kept:
   page or on a VR headset, the light is loaded from that file.
 
 Saved light belongs to exactly one version of the level: a fingerprint of
-`level.ini`, every room, every statue and the parts of `engine/` that bake
+`level.ini`, every room, every model and the parts of `engine/` that bake
 the light says whether it still fits. Change one character and it no longer
 does; the light is then baked again (and `level.light` has to be saved again).
 Shift+L, or `?rebake` in the address, bakes the light again in any case.
@@ -68,7 +68,7 @@ Shift+L, or `?rebake` in the address, bakes the light again in any case.
 <tr><td>H</td><td>bloom: very bright light glows into its surroundings, as in a camera (on; not with red-cyan glasses, in VR or in the automap)</td></tr>
 <tr><td>C</td><td>VHS: as if filmed with an old camcorder, with scan lines, smeared colours, a rolling tracking band and today's date and time on the tape (off; not with red-cyan glasses, in VR or in the automap)</td></tr>
 <tr><td>X</td><td>chromatic aberration: coloured fringes towards the edges, red outwards, blue inwards, as through a simple lens (off; not with red-cyan glasses, in VR or in the automap)</td></tr>
-<tr><td>K</td><td>collision: what stops you while walking, as red boxes (blocks, statues and models, railings, the wall beside a narrow arch; a round column as a cylinder), and your circle on the floor with the eight points at which the program looks for a floor to step on, green if there is one, red if not (off)</td></tr>
+<tr><td>K</td><td>collision: what stops you while walking, as red boxes (blocks, models, railings, the wall beside a narrow arch; a round column as a cylinder), and your circle on the floor with the eight points at which the program looks for a floor to step on, green if there is one, red if not (off)</td></tr>
 <tr><td>3</td><td>anaglyph for red-cyan glasses on/off</td></tr>
 <tr><td>M or Tab</td><td>automap: the whole building as a wireframe; drag to turn it, Shift+drag to move it, mouse wheel to zoom, V shows the rooms themselves from above instead, U shows which rooms are drawn from where you stand (the others pale, the portals you look through orange), Esc to close</td></tr>
 <tr><td>Shift+L</td><td>bake the light again</td></tr>
@@ -127,7 +127,7 @@ its room is among them. In the automap, U shows it.
 <tr><td><code>models/</code></td><td>3D models (glTF or GLB): a statue, a sofa, a wall lamp</td></tr>
 <tr><td><code>level.light</code></td><td>saved light, if you saved it (»Save light«)</td></tr>
 <tr><td><code>engine/</code></td><td>the program: reading the level, building it, baking the light, walking</td></tr>
-<tr><td><code>textures.html</code></td><td>the textures on their own: <code>?show=marble</code> (also <code>wallpaper</code>, <code>wood</code>) step by step, <code>?tile=marble&amp;edges</code> nine times side by side</td></tr>
+<tr><td><code>textures.html</code></td><td>the textures on their own: <code>?show=marble</code> (also <code>wallpaper</code>, <code>wood</code>) step by step, <code>&amp;step=2</code> one of the steps, <code>?tile=marble&amp;edges</code> nine times side by side</td></tr>
 <tr><td><code>vendor/three/</code></td><td>three.js r185 (MIT licence)</td></tr>
 </table>
 
@@ -163,7 +163,7 @@ In `[map]`, every character is one metre:
 <tr><td><code>.</code></td><td>floor</td></tr>
 <tr><td><code>@</code></td><td>you start here (once in the whole level)</td></tr>
 <tr><td>space</td><td>nothing, outside the room</td></tr>
-<tr><td>a letter</td><td>a lamp, a block or a statue, described in a section <code>[letter]</code></td></tr>
+<tr><td>a letter</td><td>a lamp, a block, a model, a pool, stairs or a platform, described in a section <code>[letter]</code></td></tr>
 <tr><td>a digit</td><td>a door, described in a section <code>[digit]</code>; the same digit side by side (<code>111</code>) or one below the other is one wide door</td></tr>
 <tr><td><code>_</code></td><td>a hole in the floor: below it lies another room, described in <code>[_]</code></td></tr>
 <tr><td><code>^</code></td><td>a hole in the ceiling: the room above has its <code>_</code> here</td></tr>
@@ -344,7 +344,7 @@ In VR the water is a simple, half transparent surface.
 <tr><td><code>?sharp</code></td><td>render at the full resolution of the screen, for pictures (otherwise at most twice the page's pixels)</td></tr>
 </table>
 
-## Statues and licences
+## Models and licences
 
 - `models/athena.glb` (used in `lobby/rooms/halle.room`): Athena Giustiniani, a 3D scan of the plaster cast
   KAS255 at the National Gallery of Denmark (SMK), public domain
