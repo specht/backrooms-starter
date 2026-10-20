@@ -57,7 +57,7 @@ function label(text, color) {
     const texture = new THREE.CanvasTexture(canvas);
     texture.colorSpace = THREE.SRGBColorSpace;
     texture.anisotropy = 4;
-    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false, toneMapped: false }));
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false, toneMapped: false, transparent: true }));
     sprite.userData.aspect = canvas.width / canvas.height;
     sprite.scale.set(LABEL_HEIGHT * sprite.userData.aspect, LABEL_HEIGHT, 1);
     sprite.renderOrder = 10;
@@ -106,15 +106,25 @@ export class Automap {
             const opacity = kind === 'ceiling' ? 0.35 : 0.9;
             const edges = new LineSegmentsGeometry().fromEdgesGeometry(new THREE.EdgesGeometry(mesh, EDGE_ANGLE));
             const line = (extra) => new LineMaterial({ color, linewidth: LINE_WIDTH, toneMapped: false, transparent: true, opacity, depthWrite: false, ...extra });
-            this.linesBehind.add(new LineSegments2(edges, line({ opacity: opacity * HIDDEN, depthFunc: THREE.GreaterDepth })));
-            this.linesThin.add(new LineSegments2(edges, line({ opacity: opacity * UNDER_CEILING, linewidth: UNDER_CEILING_WIDTH })));
-            this.linesFront.add(new LineSegments2(edges, line({})));
+            for (const [group, extra] of [[this.linesBehind, { opacity: opacity * HIDDEN, depthFunc: THREE.GreaterDepth }],
+                [this.linesThin, { opacity: opacity * UNDER_CEILING, linewidth: UNDER_CEILING_WIDTH }], [this.linesFront, {}]]) {
+                const lines = new LineSegments2(edges, line(extra));
+                // für die Sicht (U): welcher Raum, und wie die Linie ohne sie aussieht
+                lines.userData = { room, opacity: lines.material.opacity, color: color.clone() };
+                group.add(lines);
+            }
             const occluder = new THREE.Mesh(mesh, hidden);
             occluder.renderOrder = -1;
             if (kind === 'floor' || kind === 'wall' || kind === 'block') this.occluders.add(occluder);
             else if (kind === 'ceiling') this.ceilingOccluders.add(occluder);
         }
         this.model.add(this.occluders, this.ceilingOccluders);
+        // Die Sicht (U): Welche Räume von deinem Platz aus gezeichnet werden
+        // (portals.js). Sie bleiben hell, alle anderen werden blass; die
+        // Portale, durch die du schaust, sind orange, dazu dein Blickfeld.
+        this.sightView = false;
+        this.sight = new THREE.Group();
+        this.sight.renderOrder = 6;
         this.ceilingOccluders.visible = false;
         this.linesThin.visible = false;
         // Raumnamen über der Mitte jedes Raums
@@ -165,6 +175,10 @@ export class Automap {
         beam.renderOrder = 5;
         this.youPivot.add(beam);
         this.overlay.add(this.youPivot);
+        this.overlay.add(this.sight);
+        this.portalFill = new THREE.MeshBasicMaterial({ color: '#ffad3d', transparent: true, opacity: 0.32, side: THREE.DoubleSide, depthTest: false, depthWrite: false, toneMapped: false });
+        this.portalEdge = new THREE.LineBasicMaterial({ color: '#ffc46b', transparent: true, opacity: 0.95, depthTest: false, toneMapped: false });
+        this.coneEdge = new THREE.LineBasicMaterial({ color: '#ff4060', transparent: true, opacity: 0.9, depthTest: false, toneMapped: false });
 
         // Kamera kreist um die Mitte des Bauwerks
         const size = Math.max(level.width, level.depth) * cell;
@@ -257,7 +271,7 @@ export class Automap {
     state() {
         if (!this.active) return null;
         const degrees = (radians) => Math.round(THREE.MathUtils.radToDeg(radians));
-        const words = [this.follow && 'follow', this.roomsView && 'rooms'].filter(Boolean);
+        const words = [this.follow && 'follow', this.roomsView && 'rooms', this.sightView && 'sight'].filter(Boolean);
         return [degrees(this.azimuth), degrees(this.elevation), this.distance.toFixed(1),
             ...this.offset.toArray().map((v) => v.toFixed(1)), ...words].join(',');
     }
@@ -275,6 +289,52 @@ export class Automap {
             this.offset.set(numbers[3], numbers[4], numbers[5]);
         }
         this.roomsView = values.includes('rooms');
+        this.sightView = values.includes('sight');
+    }
+
+    // Die Sicht zeigen (sightView) oder nicht: sight = { rooms, seen, camera }
+    // aus portals.js, oder null
+    showSight(sight) {
+        for (const child of [...this.sight.children]) {
+            child.geometry.dispose();
+            this.sight.remove(child);
+        }
+        const on = this.sightView && sight;
+        for (const group of [this.linesBehind, this.linesThin, this.linesFront]) {
+            for (const lines of group.children) {
+                const { room, opacity, color } = lines.userData;
+                const shown = !on || sight.rooms.has(room);
+                lines.material.opacity = shown ? opacity : opacity * 0.22;
+                lines.material.color.copy(color);
+                if (!shown) lines.material.color.lerp(new THREE.Color('#5a6470'), 0.7);
+            }
+        }
+        // die Namen auch: blass, wo der Raum nicht gezeichnet wird
+        this.labels.forEach((sprite, room) => { sprite.material.opacity = !on || sight.rooms.has(room) ? 1 : 0.3; });
+        if (!on) return;
+        const done = new Set();
+        for (const { portal } of sight.seen) {
+            if (done.has(portal)) continue;
+            done.add(portal);
+            const [a, b, c, d] = portal.corners;
+            const fill = new THREE.BufferGeometry().setFromPoints([a, b, c, a, c, d]);
+            const quad = new THREE.Mesh(fill, this.portalFill);
+            quad.renderOrder = 6;
+            this.sight.add(quad);
+            const edge = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints([a, b, c, d]), this.portalEdge);
+            edge.renderOrder = 7;
+            this.sight.add(edge);
+        }
+        // dein Blickfeld: vier Strahlen aus deinen Augen durch die Ecken des Bilds, 3 m lang
+        const camera = sight.camera;
+        const eye = new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
+        const ends = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([x, y]) => new THREE.Vector3(x, y, 0.5).unproject(camera).sub(eye).normalize().multiplyScalar(3).add(eye));
+        const rays = [];
+        for (const end of ends) rays.push(eye, end);
+        for (let i = 0; i < 4; i++) rays.push(ends[i], ends[(i + 1) % 4]);
+        const cone = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(rays), this.coneEdge);
+        cone.renderOrder = 7;
+        this.sight.add(cone);
     }
 
     toggle(eye = null) {

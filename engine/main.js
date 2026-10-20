@@ -20,6 +20,7 @@ import { VHSPass } from './vhs.js';
 import { LensPass } from './lens.js';
 import { Water } from './water.js';
 import { railing } from './railing.js';
+import { Portals } from './portals.js';
 
 const params = new URLSearchParams(location.search);
 const PASSES_PER_FRAME = 4;    // pro Bild, solange gebacken wird
@@ -29,10 +30,10 @@ const FLICKER_CHANNELS = 4;    // so viele Gruppen flackern unabhängig voneinan
 // Bloom: Was heller ist als BLOOM_THRESHOLD, strahlt in die Umgebung aus, wie
 // helles Licht in einer Kamera oder im Auge. Die Leuchten sind dafür
 // PANEL_HDR-mal so hell wie Weiß.
-const BLOOM_STRENGTH = 0.3;
-const BLOOM_RADIUS = 0.4;
-const BLOOM_THRESHOLD = 2.5;   // so leuchten vor allem die Leuchten, nicht schon helle Wände
-const PANEL_HDR = 5;
+const BLOOM_STRENGTH = 0.25;
+const BLOOM_RADIUS = 0.3;
+const BLOOM_THRESHOLD = 1.6;   // so leuchten vor allem die Leuchten, nicht schon helle Wände
+const PANEL_HDR = 2.2;           // nicht heller: Sonst wird die ganze Leuchte weiß und verliert ihr Gitter
 const GLOW = 0.85;               // wie stark der Schein um eine Leuchte ist (auf Dunklem; auf Hellem weniger)
 
 const levelFile = params.get('level') ?? 'level.ini';
@@ -57,7 +58,7 @@ const controls = document.getElementById('controls');
 const help = document.getElementById('help');
 // was die Maus und die Tasten gerade tun, unten im Kasten oben links
 const WALK_HELP = 'Click into the picture to look around with the mouse · WASD to walk, Shift to run';
-const AUTOMAP_HELP = 'Automap: drag to turn it, Shift+drag to move it, mouse wheel to zoom · V: rooms or wireframe · WASD still walks · M or Esc closes it';
+const AUTOMAP_HELP = 'Automap: drag to turn it, Shift+drag to move it, mouse wheel to zoom · V: rooms or wireframe · U: what is drawn from where you stand · WASD still walks · M or Esc closes it';
 // auf dem Handy und Tablet (body.touch, sobald ein Finger das Bild berührt)
 const TOUCH_HELP = 'Left thumb: walk (push it all the way to run) · right thumb: look around · ☰ hides this panel';
 const TOUCH_AUTOMAP_HELP = 'Automap: one finger turns it, two fingers zoom and move it · Automap closes it';
@@ -762,6 +763,7 @@ async function start() {
         const material = surfaceMaterial(textureFor(kind, room, color, blockMaterial), baker, shared);
         surfaceMaterials.push(material);
         const surface = new THREE.Mesh(mesh, material);
+        surface.userData.room = room;
         scene.add(surface);
         if (kind === 'ceiling') aboveRooms.push(surface);
     }
@@ -769,8 +771,9 @@ async function start() {
     // Am Anfang ist es dunkel: feine Linien an allen Kanten zeigen den Raum,
     // bis das Licht da ist, dann verblassen sie.
     const blueprint = new THREE.LineBasicMaterial({ color: '#fff4c4', transparent: true, opacity: 0.85, toneMapped: false });
-    for (const { kind, geometry: mesh } of geometry.meshes) {
+    for (const { kind, room, geometry: mesh } of geometry.meshes) {
         const lines = new THREE.LineSegments(new THREE.EdgesGeometry(mesh, EDGE_ANGLE), blueprint);
+        lines.userData.room = room;
         scene.add(lines);
         if (kind === 'ceiling') aboveRooms.push(lines);
     }
@@ -780,6 +783,7 @@ async function start() {
         const material = new THREE.MeshBasicMaterial({ map: lampTexture(light.color), toneMapped: false });
         const panel = new THREE.Mesh(new THREE.PlaneGeometry(light.size[0], light.size[1]), material);
         panel.visible = light.kind !== 'bulb';   // eine Lampe aus einem Modell zeigt das Modell
+        panel.userData = { room: light.room, shown: panel.visible };
         const down = lampNormal(light);
         panel.rotation.x = Math.PI / 2;   // waagerecht, nach unten gewandt
         panel.quaternion.premultiply(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, -1, 0), down));
@@ -803,6 +807,7 @@ async function start() {
         }));
         glow.renderOrder = 4;
         glow.userData.seen = 0;
+        glow.userData.room = light.room;
         glow.position.copy(light.position).addScaledVector(down, light.kind === 'bulb' ? 0 : 0.06);
         const span = light.kind === 'bulb' ? 0.7 : Math.max(...light.size) * 2.8;
         glow.scale.set(span, span, 1);
@@ -829,6 +834,7 @@ async function start() {
 
     const statueMeshes = [];
     statues.forEach((statue, i) => {
+        statue.userData.room = statueThings[i].room;
         // das Umgebungslicht des Raums, in dem die Statue steht
         const room = level.rooms[statueThings[i].room].settings;
         lightStatue(statue, lights, (room.ambient ?? settings.ambient) * 1.2);
@@ -890,6 +896,35 @@ async function start() {
             if (lineFree(from, glowPoint)) seen += 0.2;
         }
         return seen * seen;   // halb verdeckt: nur noch ein Viertel des Scheins
+    };
+
+    // Portale (portals.js): Gezeichnet wird nur, was man durch Türen und
+    // Löcher sehen kann. Alles, was zu einem Raum gehört, wird mit ihm an-
+    // und ausgeschaltet; shown: false bleibt immer aus (das Feld einer
+    // Lampe aus einem Modell).
+    const portals = new Portals(level);
+    const roomObjects = [];
+    scene.traverse((object) => { if (object.userData.room !== undefined && object.parent === scene) roomObjects.push(object); });
+    for (const mesh of water.meshes) { mesh.userData.room = mesh.userData.pool.room; roomObjects.push(mesh); }
+    const showRooms = (rooms) => {
+        for (const object of roomObjects) object.visible = (rooms === null || rooms.has(object.userData.room)) && object.userData.shown !== false;
+    };
+    // Was eine Kamera sieht; in VR jedes Auge, zusammen
+    const sightOf = (view, start) => {
+        if (!view.isArrayCamera) return portals.visible(view, start);
+        const all = { rooms: new Set(), seen: [] };
+        for (const eye of view.cameras) {
+            const one = portals.visible(eye, start);
+            one.rooms.forEach((room) => all.rooms.add(room));
+            all.seen.push(...one.seen);
+        }
+        return all;
+    };
+    // Die Spiegelung im Wasser schaut von unten durch den Raum des Beckens
+    water.cull = (mirror, room) => {
+        const saved = roomObjects.map((object) => object.visible);
+        showRooms(portals.visible(mirror, room).rooms);
+        return () => roomObjects.forEach((object, i) => { object.visible = saved[i]; });
     };
 
     const walker = new Walker(level, player, camera, renderer);
@@ -1013,6 +1048,8 @@ async function start() {
         if (event.code === 'KeyR' && event.shiftKey) walker.toStart();
         // V: in der Automap die Räume statt des Drahtgitters, und zurück
         if (event.code === 'KeyV' && automap.active) automap.roomsView = !automap.roomsView;
+        // U: in der Automap, welche Räume von deinem Platz aus gezeichnet werden
+        if (event.code === 'KeyU' && automap.active) automap.sightView = !automap.sightView;
         if (event.code === 'KeyM' || event.code === 'Tab') {
             event.preventDefault();
             toggleAutomap();
@@ -1201,6 +1238,7 @@ async function start() {
         // Spiegelungen, wenn alles fertig ist und alle Leuchten an sind (ohne den Schein der Leuchten)
         if (!reflectionsTaken && baker.done && statuesBounced && allOn && shown >= 1) {
             reflectionsTaken = true;
+            showRooms(null);   // in einem Rundumbild ist alles zu sehen
             captureReflections(renderer, scene, statues, panels.map(({ glow }) => glow));
         }
 
@@ -1208,6 +1246,13 @@ async function start() {
         water.update(now, shown, renderer.xr.isPresenting || automap.active);
         walker.update(dt);
         rememberPlace();
+        // Welche Räume von hier aus zu sehen sind; die Automap zeigt es mit U
+        player.updateMatrixWorld(true);
+        const start = level.roomAtPoint(player.position.x, player.position.z, player.position.y + 0.1);
+        const sight = sightOf(renderer.xr.isPresenting ? renderer.xr.getCamera() : camera, start);
+        sight.camera = camera;
+        showRooms(automap.active ? null : sight.rooms);
+        automap.showSight(automap.active ? sight : null);
         if (automap.active) {
             automap.render({
                 rooms: { scene, hide: aboveRooms },

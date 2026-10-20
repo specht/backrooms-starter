@@ -69,7 +69,7 @@ Shift+L, or `?rebake` in the address, bakes the light again in any case.
 <tr><td>C</td><td>VHS: as if filmed with an old camcorder, with scan lines, smeared colours, a rolling tracking band and today's date and time on the tape (off; not with red-cyan glasses, in VR or in the automap)</td></tr>
 <tr><td>X</td><td>chromatic aberration: coloured fringes towards the edges, red outwards, blue inwards, as through a simple lens (off; not with red-cyan glasses, in VR or in the automap)</td></tr>
 <tr><td>3</td><td>anaglyph for red-cyan glasses on/off</td></tr>
-<tr><td>M or Tab</td><td>automap: the whole building as a wireframe; drag to turn it, Shift+drag to move it, mouse wheel to zoom, V shows the rooms themselves from above instead, Esc to close</td></tr>
+<tr><td>M or Tab</td><td>automap: the whole building as a wireframe; drag to turn it, Shift+drag to move it, mouse wheel to zoom, V shows the rooms themselves from above instead, U shows which rooms are drawn from where you stand (the others pale, the portals you look through orange), Esc to close</td></tr>
 <tr><td>Shift+L</td><td>bake the light again</td></tr>
 <tr><td>»Save light«</td><td>download the baked light as <code>level.light</code> (see below)</td></tr>
 <tr><td>Shift+R</td><td>back to the start</td></tr>
@@ -89,6 +89,17 @@ Where you stand is kept in the address (`?view=…`), so a reload brings you
 back to the same spot, as long as the floor plan has not changed. An open
 automap is kept there too (`?automap=…`), turned, moved and zoomed as it
 was: change a room, reload, and look at the same place again.
+
+## Portals
+
+Only what you can see is drawn. You see into another room only through an
+opening, a door or a hole: a portal. From the room you stand in, the program
+projects every portal onto the screen as a rectangle; where it lies in the
+picture, you look through it into the room behind, but only through that
+rectangle, and from there on through that room's portals, each cut down to
+the rectangle you are looking through (`engine/portals.js`). Every room
+reached this way is drawn, all others are not, and a pool only reflects when
+its room is among them. In the automap, U shows it.
 
 ## Files
 

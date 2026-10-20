@@ -261,6 +261,7 @@ export class Water {
         this.mirror = new THREE.PerspectiveCamera();
         this.under = new THREE.PerspectiveCamera();
         this.hide = [];      // was in diesen Bildern fehlt (der Schein der Leuchten)
+        this.cull = null;    // (Kamera, Raum) => zeigt nur, was sie sieht, und gibt zurück, wie es vorher war
         this.busy = false;
     }
 
@@ -355,9 +356,13 @@ export class Water {
         scene.background = null;
         renderer.setClearColor(0x000000, 0);
         for (const [view, into] of [[mirror, this.reflection], [under, this.refraction]]) {
+            // die Spiegelung sieht andere Räume als du (portals.js, über main.js)
+            const undo = view === mirror ? this.cull?.(mirror, mesh.userData.pool.room) : null;
+            if (undo) for (const m of hidden) m.visible = false;
             renderer.setRenderTarget(into);
             renderer.clear();
             renderer.render(scene, view);
+            undo?.();
         }
         scene.background = sceneBackground;
         renderer.setClearColor(background, alpha);
