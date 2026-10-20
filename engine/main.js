@@ -16,6 +16,7 @@ import { wallpaperTexture, carpetTexture, ceilingTexture, lampTexture, plainText
 import { Walker } from './controls.js';
 import { Automap } from './automap.js';
 import { fingerprint, encodeLight, findLight, writeCache, download, lightFileName } from './lightstore.js';
+import { VHSPass } from './vhs.js';
 
 const params = new URLSearchParams(location.search);
 const PASSES_PER_FRAME = 4;    // pro Bild, solange gebacken wird
@@ -43,6 +44,7 @@ const PARTS = [
     { name: 'wireframe', key: 'KeyE', label: 'Edges', on: false },
     { name: 'points', key: 'KeyG', label: 'Light points', on: false },
     { name: 'bloom', key: 'KeyH', label: 'Bloom' },
+    { name: 'vhs', key: 'KeyC', label: 'VHS', on: false },
 ];
 const status = document.getElementById('status');
 const title = document.getElementById('title');
@@ -638,6 +640,8 @@ async function start() {
     if (['light', 'direct', 'bounce'].includes(show)) parts.textures = false;
     if (show === 'direct') parts.bounce = false;
     if (show === 'bounce') parts.direct = false;
+    // ?vhs oder vhs = on in level.ini: wie von einer alten Videokassette
+    if (params.has('vhs') || String(settings.vhs) === 'on') parts.vhs = true;
     const showParts = () => {
         shared.useTexture.value = parts.textures;
         shared.useDirect.value = parts.direct;
@@ -809,7 +813,9 @@ async function start() {
     }
 
     const automap = new Automap(level, geometry, lights, statues, player, renderer, () => walker.pitch);
-    if (params.has('automap')) automap.toggle();
+    // ?automap öffnet die Karte, ?automap=... genau so, wie sie lag (rememberPlace)
+    if (params.get('automap')) automap.restore(params.get('automap'));
+    else if (params.has('automap')) automap.toggle();
     // Auch mit der Automap läuft und schaut man weiter; ein Klick fängt dort
     // aber nicht die Maus, damit man die Karte ziehen kann. In VR schaltet die
     // Grifftaste sie um.
@@ -838,9 +844,14 @@ async function start() {
     composer.setPixelRatio(renderer.getPixelRatio());
     composer.setSize(window.innerWidth, window.innerHeight);
     composer.addPass(new RenderPass(scene, camera));
-    composer.addPass(new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), BLOOM_STRENGTH, BLOOM_RADIUS, BLOOM_THRESHOLD));
+    const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), BLOOM_STRENGTH, BLOOM_RADIUS, BLOOM_THRESHOLD);
+    composer.addPass(bloomPass);
     composer.addPass(new OutputPass());
-    const bloomActive = () => parts.bloom && !useAnaglyph && !renderer.xr.isPresenting && !automap.active;
+    // VHS (C) als letzter Durchgang, über das fertige Bild (vhs.js)
+    const vhsPass = new VHSPass();
+    composer.addPass(vhsPass);
+    const composing = () => (parts.bloom || parts.vhs) && !useAnaglyph && !renderer.xr.isPresenting && !automap.active;
+    const bloomActive = () => parts.bloom && composing();
 
     // Die Schalter oben links, in derselben Reihenfolge wie ihre Tasten
     const togglePart = (part) => { parts[part.name] = !parts[part.name]; showParts(); };
@@ -947,12 +958,16 @@ async function start() {
         const x = (player.position.x / settings.cell - 0.5).toFixed(2);
         const z = (player.position.z / settings.cell - 0.5).toFixed(2);
         const place = `${x},${z},${Math.round(THREE.MathUtils.radToDeg(walker.yaw))},${Math.round(THREE.MathUtils.radToDeg(walker.pitch))},${layout}`;
-        if (place === lastPlace) return;
-        lastPlace = place;
+        // die Automap auch: offen, gedreht, verschoben, gezoomt
+        const map = automap.state();
+        if (`${place}|${map}` === lastPlace) return;
+        lastPlace = `${place}|${map}`;
         clearTimeout(placeTimer);
         placeTimer = setTimeout(() => {
             const url = new URL(location.href);
             url.searchParams.set('view', place);
+            if (map) url.searchParams.set('automap', map);
+            else url.searchParams.delete('automap');
             history.replaceState(null, '', url);
         }, 500);
     };
@@ -1094,7 +1109,11 @@ async function start() {
             eyes.updateMatrixWorld(true);
             anaglyph.render(scene, eyes);
         }
-        else if (blooming) composer.render(dt);
+        else if (composing()) {
+            bloomPass.enabled = parts.bloom;
+            vhsPass.enabled = parts.vhs;
+            composer.render(dt);
+        }
         else renderer.render(scene, camera);
     });
 }

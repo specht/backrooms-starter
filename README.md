@@ -60,6 +60,7 @@ Shift+L, or `?rebake` in the address, bakes the light again in any case.
 <tr><td>E</td><td>edges (wireframe) on/off</td></tr>
 <tr><td>G</td><td>light points: a dot for every point of the light map at which the light is computed</td></tr>
 <tr><td>H</td><td>bloom: very bright light glows into its surroundings, as in a camera (on; not with red-cyan glasses, in VR or in the automap)</td></tr>
+<tr><td>C</td><td>VHS: as if filmed with an old camcorder, with scan lines, smeared colours, a rolling tracking band and today's date and time on the tape (off; not with red-cyan glasses, in VR or in the automap)</td></tr>
 <tr><td>3</td><td>anaglyph for red-cyan glasses on/off</td></tr>
 <tr><td>M or Tab</td><td>automap: the whole building as a wireframe; drag to turn it, Shift+drag to move it, mouse wheel to zoom, V shows the rooms themselves from above instead, Esc to close</td></tr>
 <tr><td>Shift+L</td><td>bake the light again</td></tr>
@@ -72,7 +73,9 @@ Every switch is also shown at the top left and can be clicked. In VR the left
 thumbstick walks, the right one turns, the grip button opens the automap.
 
 Where you stand is kept in the address (`?view=…`), so a reload brings you
-back to the same spot, as long as the floor plan has not changed.
+back to the same spot, as long as the floor plan has not changed. An open
+automap is kept there too (`?automap=…`), turned, moved and zoomed as it
+was: change a room, reload, and look at the same place again.
 
 ## Files
 
@@ -189,6 +192,7 @@ room's wallpaper). `material` makes it of `marble`, `wood`, `tiles`, `velvet`,
 <tr><td><code>bounces</code></td><td>how often light is bounced off surfaces (3)</td></tr>
 <tr><td><code>detail</code></td><td>light map points per metre (16): more gives sharper shadows and takes longer</td></tr>
 <tr><td><code>ambient</code></td><td>light from everywhere (0)</td></tr>
+<tr><td><code>vhs</code></td><td><code>on</code>: the level starts with the VHS look (C switches it off)</td></tr>
 </table>
 
 ## Address parameters
@@ -197,7 +201,8 @@ room's wallpaper). `material` makes it of `marble`, `wood`, `tiles`, `velvet`,
 <tr><td><code>?level=other.ini</code></td><td>load another level file</td></tr>
 <tr><td><code>?show=light</code>, <code>direct</code>, <code>bounce</code></td><td>start with light only (no textures), or with only one part of it</td></tr>
 <tr><td><code>?bounces=0</code></td><td>bake with a different number of bounces</td></tr>
-<tr><td><code>?anaglyph</code>, <code>?automap</code></td><td>start with anaglyph or with the automap</td></tr>
+<tr><td><code>?anaglyph</code>, <code>?automap</code>, <code>?vhs</code></td><td>start with anaglyph, with the automap or with the VHS look</td></tr>
+<tr><td><code>?automap=-40,35,12.0,0.0,0.0,0.0,rooms</code></td><td>the automap as it was: turned and tilted (degrees), distance and shift (metres), <code>follow</code> (turns with you) and <code>rooms</code> (rooms instead of wireframe); written by the program itself</td></tr>
 <tr><td><code>?rebake</code></td><td>bake the light even if saved light fits</td></tr>
 <tr><td><code>?sharp</code></td><td>render at the full resolution of the screen, for pictures (otherwise at most twice the page's pixels)</td></tr>
 </table>
@@ -214,6 +219,8 @@ room's wallpaper). `material` makes it of `marble`, `wood`, `tiles`, `velvet`,
   both from [Poly Haven](https://polyhaven.com/models), CC0, glTF at 1K.
 - `vendor/three/`: [three.js](https://threejs.org/), MIT licence, see
   `vendor/three/LICENSE`.
+- `engine/fonts/vcr-osd-mono.ttf`: [VCR OSD Mono](https://www.dafont.com/vcr-osd-mono.font)
+  by Riciery Leal, the date and time of the VHS look, free (»100% Free«).
 
 Other models work as well, if their licence allows it. On
 [Poly Haven](https://polyhaven.com/models) every model is CC0: choose glTF and

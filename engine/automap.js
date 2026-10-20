@@ -216,6 +216,33 @@ export class Automap {
         this.offset.addScaledVector(right, -dx * perPixel).addScaledVector(up, dy * perPixel);
     }
 
+    // Wie die Karte gerade liegt, für die Adresse (?automap=...): Drehung und
+    // Neigung in Grad, Entfernung und Verschiebung in Metern, dazu follow
+    // (dreht sich mit dir) und rooms (Räume statt Drahtgitter). null, wenn
+    // sie zu ist.
+    state() {
+        if (!this.active) return null;
+        const degrees = (radians) => Math.round(THREE.MathUtils.radToDeg(radians));
+        const words = [this.follow && 'follow', this.roomsView && 'rooms'].filter(Boolean);
+        return [degrees(this.azimuth), degrees(this.elevation), this.distance.toFixed(1),
+            ...this.offset.toArray().map((v) => v.toFixed(1)), ...words].join(',');
+    }
+
+    // öffnet die Karte so, wie state() sie beschrieben hat, ohne Flug
+    restore(text) {
+        if (!this.active) this.toggle();
+        const values = text.split(',');
+        const numbers = values.slice(0, 6).map(Number);
+        if (numbers.length === 6 && numbers.every(Number.isFinite)) {
+            this.follow = values.includes('follow');
+            this.azimuth = THREE.MathUtils.degToRad(numbers[0]);
+            this.elevation = THREE.MathUtils.degToRad(numbers[1]);
+            this.distance = numbers[2];
+            this.offset.set(numbers[3], numbers[4], numbers[5]);
+        }
+        this.roomsView = values.includes('rooms');
+    }
+
     toggle(eye = null) {
         this.active = !this.active;
         document.body.classList.toggle('automap', this.active);

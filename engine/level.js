@@ -20,6 +20,7 @@ const LEVEL_DEFAULTS = {
     detail: 16,           // Lichtkarte: Punkte pro Meter (mehr: schärfere Schatten, mehr Speicher)
     bounces: 3,           // wie oft das Licht von Flächen zurückgeworfen wird (0 bis 5)
     ambient: 0,           // Licht von überall (0 bis 1); meist unnötig, das Bounce-Licht macht es echt
+    vhs: 'off',           // on: wie von einer alten Videokassette, mit Datum und Uhrzeit (Taste C)
 };
 
 const ROOM_DEFAULTS = {
