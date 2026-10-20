@@ -81,7 +81,6 @@ function addDetail(faces, boxes) {
         const e1 = sub(c1, c0), e3 = sub(c3, c0);
         let s0 = 1, s1 = 0, t0 = 1, t1 = 0;
         for (const box of boxes) {
-            if (box.block && face.kind === 'block') continue;   // ein Block auf sich selbst: kein Schatten
             const lo = [box.min.x - MARGIN, box.min.y - MARGIN, box.min.z - MARGIN];
             const hi = [box.max.x + MARGIN, box.max.y + MARGIN, box.max.z + MARGIN];
             const corners = [0, 1, 2, 3, 4, 5, 6, 7].map((k) => [k & 1 ? hi[0] : lo[0], k & 2 ? hi[1] : lo[1], k & 4 ? hi[2] : lo[2]]);
@@ -543,17 +542,7 @@ export function buildGeometry(level, statueBoxes = []) {
         put([[x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1]], d, h);                 // nach +x
     }
 
-    // Feinere Lichtkarte auch um Blöcke: Wo eine Säule an Boden oder Decke
-    // stößt, wirft sie scharfe Schatten, gröber als ein Punkt alle 6 cm
-    const blockBoxes = level.things.filter((t) => t.type === 'block').map((block) => {
-        const [w, h, d] = block.size;
-        const cx = (block.x + 0.5) * cell + block.offset[0], cz = (block.z + 0.5) * cell + block.offset[2];
-        const y0 = block.floor + block.base + block.offset[1];
-        const box = new THREE.Box3(new THREE.Vector3(cx - w / 2, y0, cz - d / 2), new THREE.Vector3(cx + w / 2, y0 + h, cz + d / 2));
-        box.block = true;
-        return box;
-    });
-    faces = addDetail(faces, [...statueBoxes, ...blockBoxes]);
+    faces = addDetail(faces, statueBoxes);
     const atlasSize = packRectangles(faces);
 
     // Eine Geometrie für jede Sorte Fläche in jedem Raum (eigene Tapete, eigener Teppich)
