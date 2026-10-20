@@ -1116,7 +1116,10 @@ async function start() {
     // Am Anfang ist es dunkel: Linien an allen Kanten zeigen den Raum, bis das
     // Licht da ist, dann verblassen sie; E zeigt sie wieder. Dasselbe Blau wie
     // in der Automap, so breit (Pixel), dass man sie auch auf hellen Wänden sieht
-    const blueprint = new LineMaterial({ color: LINE_COLOR, linewidth: 2 * renderer.getPixelRatio(), transparent: true, opacity: 0.85, toneMapped: false });
+    // zum Betrachter hin versetzt: Eine breite Linie läge sonst zur Hälfte in
+    // den Flächen, an deren Kante sie liegt, und verschwände dort
+    const blueprint = new LineMaterial({ color: LINE_COLOR, linewidth: 1.25 * renderer.getPixelRatio(), transparent: true, opacity: 0.85, toneMapped: false,
+        polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -8 });
     for (const { kind, room, geometry: mesh } of geometry.meshes) {
         const lines = new LineSegments2(new LineSegmentsGeometry().fromEdgesGeometry(new THREE.EdgesGeometry(mesh, EDGE_ANGLE)), blueprint);
         lines.userData.room = room;
