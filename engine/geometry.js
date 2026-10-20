@@ -120,9 +120,9 @@ function addDetail(faces, boxes) {
 }
 
 // statueBoxes: der Kasten um jede Statue, für feinere Lichtkarte in ihrer Nähe
-const SLAB_COLOR = '#8e8a80';
+const SLAB_COLOR = '#8e8a80';   // die Decke zwischen zwei Räumen übereinander, am Rand eines Lochs
 const ROUND_SIDES = 32;         // so viele schmale Flächen hat eine runde Säule ringsum
-const ARCH_STEPS = 12;          // so viele Streifen hat ein Bogen je Feld der Tür   // die Decke zwischen zwei Räumen übereinander, am Rand eines Lochs
+const ARCH_STEPS = 64;          // so viele Stücke hat der Halbkreis eines Bogens, wie breit er auch ist
 
 export function buildGeometry(level, statueBoxes = []) {
     const { width, depth, layers, settings } = level;
@@ -279,7 +279,7 @@ export function buildGeometry(level, statueBoxes = []) {
                 const low = arch.height(u(w)) ?? arch.spring, high = Math.max(top(w[0], w[1]), low);
                 return [w[0] * cell, low + (high - low) * t, w[1] * cell];
             };
-            const steps = Math.max(2, Math.round(ARCH_STEPS * (t1 - t0)));
+            const steps = Math.max(8, Math.ceil(ARCH_STEPS * (t1 - t0) * cell / (2 * arch.radius)));
             const highest = Math.max(top(p[0], p[1]), top(q[0], q[1])) - arch.spring;
             curved('wall', room, shape, steps, length, Math.max(highest, 0.2));
         }
@@ -451,7 +451,7 @@ export function buildGeometry(level, statueBoxes = []) {
                 const vault = (s, t) => point(from + (to - from) * Math.min(1, Math.max(0, s)), arch.height(from + (to - from) * Math.min(1, Math.max(0, s))), d0 + (d1 - d0) * t);
                 const down = faceNormal([vault(0.4, 0), vault(0.6, 0), vault(0.6, 1), vault(0.4, 1)])[1] < 0;
                 const shape = down ? vault : (s, t) => vault(s, 1 - t);
-                curved('wall', room, shape, Math.max(2, Math.round(ARCH_STEPS * (to - from) / cell)), around(to) - around(from), cell,
+                curved('wall', room, shape, Math.max(8, Math.ceil(ARCH_STEPS * (to - from) / (2 * r))), around(to) - around(from), cell,
                     (s, t) => [around(from + (to - from) * s), d0 + (d1 - d0) * (down ? t : 1 - t)]);
             }
         }

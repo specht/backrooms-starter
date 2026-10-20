@@ -78,6 +78,7 @@ const POOL_DEFAULTS = {
     railing: 'off',       // on: ein Geländer aus Metall rundherum, wo man am Rand steht
     color: '#bcd8da',     // die Fliesen des Beckens
     tint: '#bff0f3',      // die Farbe des Wassers: So sieht Weiß hinter 2 m Wasser aus
+    waves: 1,             // wie groß die Wellen sind: 1 ruhig, 2 größer und schneller, 0 glatt
 };
 
 const SLOPES = ['flat', 'north', 'east', 'south', 'west', 'gable'];
@@ -339,6 +340,7 @@ function makePool(file, char, section, entries, x, z) {
     if (!['on', 'off'].includes(String(pool.railing))) throw new LevelError(file, section.line, `railing = ${pool.railing}: expected on or off.`);
     if (!/^#[0-9a-f]{6}$/i.test(String(pool.color))) throw new LevelError(file, section.line, `color = ${pool.color}: expected a colour for the tiles of the pool, such as #bcd8da.`);
     if (!/^#[0-9a-f]{6}$/i.test(String(pool.tint))) throw new LevelError(file, section.line, `tint = ${pool.tint}: expected the colour of the water, such as #bff0f3 (clear) or #6f8f5a (murky).`);
+    if (!(typeof pool.waves === 'number' && pool.waves >= 0 && pool.waves <= 4)) throw new LevelError(file, section.line, `waves = ${pool.waves}: expected how big the waves are, from 0 (smooth) over 1 (calm) to 4.`);
     pool.railing = String(pool.railing) === 'on';
     return pool;
 }
@@ -645,7 +647,7 @@ export async function loadLevel(levelFile, fetchText) {
             if (water.has(first)) continue;
             const pool = { room: room.index, layer: room.layer, char: thing.char, depth: thing.depth,
                 surface: thing.water === null ? null : room.elevation - thing.water, bottom: room.elevation - thing.depth,
-                railing: thing.railing, color: thing.color, tint: thing.tint, cells: [] };
+                railing: thing.railing, color: thing.color, tint: thing.tint, waves: thing.waves, cells: [] };
             const todo = [first];
             water.set(first, pool);
             while (todo.length) {

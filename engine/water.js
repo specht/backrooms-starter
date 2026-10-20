@@ -40,7 +40,11 @@ const noise = /* glsl */ `
     // dazwischen weich (fünfter Grad): ohne die Kästchen, die einfaches
     // Rauschen in einer Spiegelung zeigt
     vec2 gradient(vec2 p) {
-        float a = fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453) * 6.28318;
+        // Zufall ohne sin (nach Dave Hoskins): sin von großen Zahlen ist auf der
+        // Grafikkarte ungenau, die Wellen bekämen gerade Kanten
+        vec3 q = fract(vec3(p.xyx) * 0.1031);
+        q += dot(q, q.yzx + 33.33);
+        float a = fract((q.x + q.y) * q.z) * 6.28318;
         return vec2(cos(a), sin(a));
     }
     float noise(vec2 p) {
@@ -73,12 +77,16 @@ const noise = /* glsl */ `
         }
         return h;
     }
+    // waveSize: wie groß die Wellen sind (waves = … beim Becken), waveStrength: wie steil
+    uniform float waveSize;
+    uniform float waveStrength;
     vec3 waveNormal(vec2 p, float t) {
+        vec2 q = p / waveSize;
         float e = 0.035;
-        float h = waves(p, t);
-        float dx = (waves(p + vec2(e, 0.0), t) - h) / e;
-        float dz = (waves(p + vec2(0.0, e), t) - h) / e;
-        return normalize(vec3(-dx * ${WAVES}, 1.0, -dz * ${WAVES}));
+        float h = waves(q, t);
+        float dx = (waves(q + vec2(e, 0.0), t) - h) / e;
+        float dz = (waves(q + vec2(0.0, e), t) - h) / e;
+        return normalize(vec3(-dx * waveStrength / waveSize, 1.0, -dz * waveStrength / waveSize));
     }
     // Licht auf dem Boden (Kaustik): Wo die Wellen nach oben gewölbt sind,
     // bündeln sie das Licht wie eine Lupe, dort wird der Boden hell; wo sie
@@ -106,6 +114,8 @@ function waterMaterial() {
             time: { value: 0 },
             surface: { value: 0 },
             light: { value: new THREE.Color() },    // wie hell es über dem Wasser ist: so viel Licht streut darin
+            waveSize: { value: 1 },
+            waveStrength: { value: WAVES },
             absorption: { value: new THREE.Vector3() },
             scatter: { value: new THREE.Vector3() },
         },
@@ -158,7 +168,7 @@ function waterMaterial() {
                 float through = seen.a < 0.5 ? 30.0 : distance(below, vWorld);
                 // helle Linien auf dem, was unter Wasser liegt
                 float under = clamp((surface - below.y) * 3.0, 0.0, 1.0);
-                vec3 floorColor = seen.rgb * (1.0 + 0.9 * caustic(below.xz, time) * under);
+                vec3 floorColor = seen.rgb * (1.0 + 0.9 * caustic(below.xz / waveSize, time) * under * min(waveStrength / ${WAVES}, 1.5));
                 vec3 kept = exp(-absorption * through);
                 vec3 water = floorColor * kept + scatter * light * (1.0 - kept);
 
@@ -174,7 +184,7 @@ function simpleMaterial() {
     return new THREE.ShaderMaterial({
         transparent: true,
         depthWrite: false,
-        uniforms: { time: { value: 0 }, light: { value: new THREE.Color() }, scatter: { value: new THREE.Vector3() } },
+        uniforms: { time: { value: 0 }, light: { value: new THREE.Color() }, scatter: { value: new THREE.Vector3() }, waveSize: { value: 1 }, waveStrength: { value: WAVES } },
         vertexShader: /* glsl */ `
             varying vec3 vWorld;
             void main() {
@@ -250,6 +260,11 @@ export class Water {
             fancy.uniforms.absorption.value.copy(absorption);
             fancy.uniforms.scatter.value.copy(scatter);
             plain.uniforms.scatter.value.copy(scatter);
+            // waves = 2: doppelt so steil und anderthalbmal so groß; 0: glatt
+            for (const material of [fancy, plain]) {
+                material.uniforms.waveSize.value = Math.max(0.3, Math.sqrt(Math.max(pool.waves, 0.1)) * (pool.waves > 1 ? 1.06 : 1));
+                material.uniforms.waveStrength.value = WAVES * pool.waves;
+            }
             mesh.userData = { pool, fancy, plain };
             mesh.onBeforeRender = (renderer, scene, camera) => this.prepare(mesh, scene, camera);
             this.meshes.push(mesh);

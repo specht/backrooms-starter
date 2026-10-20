@@ -102,7 +102,9 @@ shader computes them for every pixel from its place in the world (`wood`,
 `tiles`, `marble` in `engine/main.js`). Every board has its own tone,
 length and grain, every tile its own tone, and the veins of the marble, from
 noise in space, run on round a corner. `textures.html` shows the recipes
-on a square.
+on a square. Tiles and marble are glossy: they reflect the lamps of their
+room, softer the further away a lamp is and stronger the flatter you look
+(only the lamps, not the rest of the room).
 
 ## Portals
 
@@ -279,6 +281,7 @@ railing = on
 <tr><td><code>tint</code></td><td>the colour of the water: what white looks like behind 2 m of it (<code>#bff0f3</code>, clear); <code>#6f8f5a</code> is murky</td></tr>
 <tr><td><code>color</code></td><td>the tiles of the pool (<code>#bcd8da</code>)</td></tr>
 <tr><td><code>railing</code></td><td><code>on</code>: a metal railing wherever you can stand at the edge</td></tr>
+<tr><td><code>waves</code></td><td>how big the waves are: 1 calm (the default), 2 bigger, steeper and faster, 0 smooth</td></tr>
 </table>
 
 The water reflects the room and shows the floor of the pool, bluer the more

@@ -426,6 +426,9 @@ const GRIME = { wallpaper: 1, carpet: 1, ceiling: 0.9, plain: 0.7, tiles: 0.45, 
 // Holz, Fliesen und Marmor rechnet der Shader selbst, aus der Stelle in der
 // Welt: Kein Brett, keine Fliese und keine Ader wiederholt sich (SHADER_STYLES)
 const SHADER_STYLES = { wood: 1, tiles: 2, marble: 3 };
+// Glänzende Flächen spiegeln die Leuchten ihres Raums (GLOSS: wie sehr; bis zu MIRRORED Leuchten je Raum)
+const GLOSS = { tiles: 1, marble: 0.6 };
+const MIRRORED = 16;
 
 function surfaceMaterial(map, baker, uniforms, grime = 1, style = null, color = '#ffffff') {
     const base = new THREE.Color(color);
@@ -434,6 +437,12 @@ function surfaceMaterial(map, baker, uniforms, grime = 1, style = null, color = 
             map: { value: map },
             grime: { value: grime },
             style: { value: SHADER_STYLES[style] ?? 0 },
+            gloss: { value: GLOSS[style] ?? 0 },
+            lampCount: { value: 0 },
+            lampCenter: { value: Array.from({ length: MIRRORED }, () => new THREE.Vector3()) },
+            lampU: { value: Array.from({ length: MIRRORED }, () => new THREE.Vector3()) },   // halbe Breite, als Richtung
+            lampV: { value: Array.from({ length: MIRRORED }, () => new THREE.Vector3()) },
+            lampColor: { value: Array.from({ length: MIRRORED }, () => new THREE.Vector3()) },
             baseColor: { value: new THREE.Vector3(...base.getRGB(new THREE.Color(), THREE.SRGBColorSpace).toArray()) },   // in sRGB, wie die Texturen sie malen
             mapScale: { value: map.repeat.x },   // der Teppich wiederholt sich erst nach zwei Metern
             steadyMap: { value: baker.steady },
@@ -450,9 +459,11 @@ function surfaceMaterial(map, baker, uniforms, grime = 1, style = null, color = 
             varying vec2 vDetailUv;
             varying float vDetailWeight;
             varying vec3 vWorld;
+            varying vec3 vNormal;
             void main() {
                 vUv = uv;
                 vWorld = (modelMatrix * vec4(position, 1.0)).xyz;
+                vNormal = normal;
                 vLightUv = uv1;
                 vDetailUv = detailUv;
                 vDetailWeight = detailWeight;
@@ -479,6 +490,13 @@ function surfaceMaterial(map, baker, uniforms, grime = 1, style = null, color = 
             uniform float grime;
             uniform int style;          // 0: die Textur, 1: Holz, 2: Fliesen, 3: Marmor (im Shader)
             uniform vec3 baseColor;
+            uniform float gloss;
+            uniform int lampCount;
+            uniform vec3 lampCenter[${MIRRORED}];
+            uniform vec3 lampU[${MIRRORED}];
+            uniform vec3 lampV[${MIRRORED}];
+            uniform vec3 lampColor[${MIRRORED}];
+            varying vec3 vNormal;
             varying vec2 vUv;
             varying vec2 vLightUv;
             varying vec2 vDetailUv;
@@ -489,7 +507,10 @@ function surfaceMaterial(map, baker, uniforms, grime = 1, style = null, color = 
             // gemischt. Einfaches Rauschen (eine Zahl je Punkt) zeigt sein
             // Gitter: Flecken daraus hätten gerade Kanten entlang der Wände.
             // Gedreht, damit auch dieses Gitter zu keiner Wand passt. 0 bis 1.
-            float hash3(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
+            // Zufall aus einer Stelle, ohne sin (nach Dave Hoskins): Mit sin von
+            // großen Zahlen rechnet die Grafikkarte ungenau, und das Rauschen
+            // bekäme Kanten
+            float hash3(vec3 p) { p = fract(p * 0.1031); p += dot(p, p.zyx + 31.32); return fract((p.x + p.y) * p.z); }
             vec3 gradient3(vec3 i) {
                 float a = hash3(i) * 6.28318, z = hash3(i + 19.19) * 2.0 - 1.0, r = sqrt(1.0 - z * z);
                 return vec3(r * cos(a), r * sin(a), z);
@@ -516,7 +537,7 @@ function surfaceMaterial(map, baker, uniforms, grime = 1, style = null, color = 
                 vec3 color = mix(base, base * vec3(0.78, 0.72, 0.56), dark * 0.45 * grime);
                 return mix(color, min(color * 1.12, vec3(1.0)), light * 0.5 * grime);
             }
-            float hash2(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+            float hash2(vec2 p) { vec3 q = fract(vec3(p.xyx) * 0.1031); q += dot(q, q.yzx + 33.33); return fract((q.x + q.y) * q.z); }
             // eine dunkle Linie der Breite w (Meter) bei d = 0, weich gezeichnet
             // (aa: wie viel ein Bildpunkt hier misst); weit weg verblasst sie,
             // statt zu flimmern
@@ -596,6 +617,37 @@ function surfaceMaterial(map, baker, uniforms, grime = 1, style = null, color = 
                 vec3 bounced = indirect * indirectIntensity * occlusion;
                 light = (useDirect ? direct : vec3(0.0)) + (useBounce ? bounced : vec3(0.0));
                 gl_FragColor = vec4(base * light, 1.0);
+                // Glanz: Wohin spiegelt die Fläche deinen Blick? Trifft der
+                // gespiegelte Strahl eine Leuchte des Raums, siehst du sie in der
+                // Fläche, weicher, je weiter sie weg ist. Flach darüber mehr
+                // (Fresnel). Jede Fliese ist ein klein wenig schief.
+                if (gloss > 0.0 && useTexture && useDirect) {
+                    vec3 n = normalize(vNormal);
+                    if (style == 2) {
+                        vec2 tile = floor(vUv * 10.0);
+                        n = normalize(n + (vec3(hash2(tile), hash2(tile + 7.3), hash2(tile + 3.1)) - 0.5) * 0.035);
+                    }
+                    vec3 view = normalize(vWorld - cameraPosition);
+                    vec3 r = reflect(view, n);
+                    vec3 seen = vec3(0.0);
+                    for (int i = 0; i < ${MIRRORED}; i++) {
+                        if (i >= lampCount) break;
+                        vec3 u = lampU[i], v = lampV[i];
+                        vec3 facing = normalize(cross(u, v));
+                        float along = dot(r, facing);
+                        if (abs(along) < 1e-4) continue;
+                        float t = dot(lampCenter[i] - vWorld, facing) / along;
+                        if (t <= 0.0) continue;
+                        vec3 local = vWorld + r * t - lampCenter[i];
+                        float a = abs(dot(local, u)) / dot(u, u), b = abs(dot(local, v)) / dot(v, v);
+                        float soft = 0.05 + 0.06 * t;   // nicht ganz glatt: weiter weg verschwommener
+                        float coverage = (1.0 - smoothstep(1.0 - soft / length(u), 1.0 + soft / length(u), a))
+                                       * (1.0 - smoothstep(1.0 - soft / length(v), 1.0 + soft / length(v), b));
+                        seen += lampColor[i] * coverage;
+                    }
+                    float fresnel = 0.04 + 0.96 * pow(1.0 - max(dot(-view, n), 0.0), 5.0);
+                    gl_FragColor.rgb += seen * gloss * fresnel * intensity;
+                }
                 // G: ein Punkt für jeden Punkt der Lichtkarte, an dem das Licht
                 // ausgerechnet wurde (nahe bei Statuen die feineren); zu kleine
                 // (weit weg) blenden aus, damit keine graue Fläche entsteht
@@ -883,12 +935,25 @@ async function start() {
         return textures.get(key);
     };
     const surfaceMaterials = [];
+    const mirrors = [];   // glänzende Flächen und die Leuchten, die sie spiegeln
     // was die Automap mit Räumen (V) ausblendet, damit man von oben hineinsieht
     const aboveRooms = [];
     for (const { kind, room, color, material: blockMaterial, geometry: mesh } of geometry.meshes) {
         const { style, color: surfaceColor } = lookFor(kind, room, color, blockMaterial);
         const material = surfaceMaterial(textureFor(kind, room, color, blockMaterial), baker, shared, GRIME[style] ?? 0.5, style, surfaceColor);
         surfaceMaterials.push(material);
+        // glänzend: die Leuchten unter der Decke dieses Raums, als Rechtecke
+        if (material.uniforms.gloss.value > 0) {
+            const mine = lights.map((light, i) => ({ light, i })).filter(({ light }) => light.room === room && light.kind !== 'bulb').slice(0, MIRRORED);
+            mine.forEach(({ light }, k) => {
+                const [w, d] = light.size;
+                material.uniforms.lampCenter.value[k].copy(light.position);
+                material.uniforms.lampU.value[k].set(1, light.tilt?.[0] ?? 0, 0).normalize().multiplyScalar(w / 2);
+                material.uniforms.lampV.value[k].set(0, light.tilt?.[1] ?? 0, 1).normalize().multiplyScalar(d / 2);
+            });
+            material.uniforms.lampCount.value = mine.length;
+            mirrors.push({ material, lamps: mine.map(({ light, i }) => ({ i, color: new THREE.Color(light.color) })) });
+        }
         const surface = new THREE.Mesh(mesh, material);
         surface.userData.room = room;
         scene.add(surface);
@@ -1355,8 +1420,13 @@ async function start() {
         player.updateMatrixWorld(true);
         const eye = new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
         const blooming = bloomActive();
+        const brightnessOf = (i) => (!on[i] ? 0.08 : lights[i].channel >= 0 ? values[lights[i].channel] : 1);
+        // in glänzenden Flächen: so hell wie die Leuchte selbst
+        for (const { material, lamps } of mirrors) {
+            lamps.forEach(({ i, color }, k) => material.uniforms.lampColor.value[k].set(color.r, color.g, color.b).multiplyScalar(brightnessOf(i) * (blooming ? PANEL_HDR : 1.2)));
+        }
         panels.forEach(({ light, material, glow }, i) => {
-            const brightness = !on[i] ? 0.08 : light.channel >= 0 ? values[light.channel] : 1;
+            const brightness = brightnessOf(i);
             material.color.setScalar(brightness * (blooming ? PANEL_HDR : 1));
             // die leuchtenden Teile einer Lampe aus einem Modell im selben Takt
             if (light.model) {
