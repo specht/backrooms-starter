@@ -219,7 +219,7 @@ Other models work as well, if their licence allows it. On
 [Poly Haven](https://polyhaven.com/models) every model is CC0: choose glTF and
 1K (the program uses only the colour texture, larger ones look the same) and
 unpack the ZIP into its own folder in `statues`. More CC0 models: the
-[Smithsonian's 3D scans](https://3d.si.edu/cc0) and
+[Smithsonian's 3D scans](https://3d.si.edu/collections) and
 [Sketchfab](https://sketchfab.com/search?features=downloadable&licenses=7c23a1ba438d4306920229c12afcb5f9&type=models)
 (download as GLB). Write down where a model comes from and under which
 licence, next to the `model =` line or in this README.
