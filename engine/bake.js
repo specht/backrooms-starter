@@ -1013,23 +1013,29 @@ function target(size, options = {}) {
 
 // Ein Zeichen in der Warteschlange der Grafikkarte (WebGL2-Fence): done sagt,
 // ob sie alles, was davor geschickt wurde, schon gezeichnet hat, took, wie
-// lange das gedauert hat (in ms, so genau, wie man nachsieht). Der Browser
-// schickt Arbeit nur ab; ohne dieses Zeichen sammelte sie sich an, bis die
-// Grafikkarte sekundenlang nichts anderes tut, auch nicht den Bildschirm.
+// lange das gedauert hat (in ms). Der Browser schickt Arbeit nur ab; ohne
+// dieses Zeichen sammelte sie sich an, bis die Grafikkarte sekundenlang
+// nichts anderes tut, auch nicht den Bildschirm. Nachgesehen wird alle
+// 2 ms, nicht nur einmal je Bild: Gibt der Browser selten Bilder (ein
+// verdeckter Tab, ein Bildgenerator), wäre took sonst immer so lang wie ein
+// Bild, und das Backen hielte die Grafikkarte für überlastet.
 export function gpuMark(renderer) {
     const gl = renderer.getContext();
     const sync = gl.isContextLost() ? null : gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
     gl.flush();
     const started = performance.now();
     let took = sync ? null : 0;
+    const check = () => {
+        if (took === null && (gl.isContextLost() || gl.clientWaitSync(sync, 0, 0) !== gl.TIMEOUT_EXPIRED)) {
+            took = performance.now() - started;
+            if (!gl.isContextLost()) gl.deleteSync(sync);
+        }
+        return took !== null;
+    };
+    const poll = () => { if (!check()) setTimeout(poll, 2); };
+    if (sync) setTimeout(poll, 2);
     return {
-        get done() {
-            if (took === null && gl.clientWaitSync(sync, 0, 0) !== gl.TIMEOUT_EXPIRED) {
-                took = performance.now() - started;
-                gl.deleteSync(sync);
-            }
-            return took !== null;
-        },
+        get done() { return check(); },
         get took() { return took ?? performance.now() - started; },
     };
 }
