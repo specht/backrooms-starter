@@ -26,10 +26,20 @@ function packRectangles(rects) {
     }
 }
 
-function faceNormal([c0, c1, c2]) {
-    const u = new THREE.Vector3(...c1).sub(new THREE.Vector3(...c0));
-    const v = new THREE.Vector3(...c2).sub(new THREE.Vector3(...c0));
-    return u.cross(v).normalize().toArray();
+// Die Normale einer Fläche aus allen ihren Ecken (Newell): auch richtig für
+// ein Viereck mit zwei gleichen Ecken, ein Dreieck. Solche entstehen, wo sich
+// zwei schräge Decken an einer Tür kreuzen; aus nur drei Ecken käme dort
+// keine Richtung heraus und im Licht NaN. Ohne Fläche: [0, 0, 0].
+function faceNormal(corners) {
+    const n = [0, 0, 0];
+    for (let i = 0; i < corners.length; i++) {
+        const [x0, y0, z0] = corners[i], [x1, y1, z1] = corners[(i + 1) % corners.length];
+        n[0] += (y0 - y1) * (z0 + z1);
+        n[1] += (z0 - z1) * (x0 + x1);
+        n[2] += (x0 - x1) * (y0 + y1);
+    }
+    const length = Math.hypot(...n);
+    return length > 1e-9 ? n.map((v) => v / length) : [0, 0, 0];
 }
 
 // In welche Richtung eine Wand ins Feld zeigt
@@ -126,7 +136,11 @@ export function buildGeometry(level, statueBoxes = []) {
     let faces = [];
     // Auflösung der Lichtkarte: detail Punkte pro Meter (level.ini)
     const texels = (meters) => Math.max(2, Math.round(meters * settings.detail));
-    const add = (kind, room, corners, w, h, subdivide = 1) => faces.push({ kind, room, corners, normal: faceNormal(corners), w, h, subdivide });
+    // eine Fläche ohne Fläche (alle Ecken auf einer Linie) gibt es nicht
+    const add = (kind, room, corners, w, h, subdivide = 1) => {
+        const normal = faceNormal(corners);
+        if (normal.some((v) => v !== 0)) faces.push({ kind, room, corners, normal, w, h, subdivide });
+    };
     // Der Boden einer Tür kann verdreht sein (an jeder Kante so schräg wie der
     // Raum dahinter): gezeichnet als feines Gitter, damit er genau auf der
     // Fläche liegt, mit der Strahlen und Füße rechnen
@@ -251,8 +265,9 @@ export function buildGeometry(level, statueBoxes = []) {
                             [b[0] * cell, high[1], b[1] * cell], [a[0] * cell, high[0], a[1] * cell]];
                         const w = texels(cell), h = texels(Math.max(high[0] - low[0], high[1] - low[1], 0.2));
                         // die Decke zwischen zwei Räumen: roher Beton, keine Tapete
-                        if (slab) faces.push({ kind: 'block', color: SLAB_COLOR, material: 'plain', room, corners, normal: faceNormal(corners), w, h });
-                        else add('wall', room, corners, w, h);
+                        const normal = faceNormal(corners);
+                        if (slab && normal.some((v) => v !== 0)) faces.push({ kind: 'block', color: SLAB_COLOR, material: 'plain', room, corners, normal, w, h });
+                        else if (!slab) add('wall', room, corners, w, h);
                     }
                 }
             }

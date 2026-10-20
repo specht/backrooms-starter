@@ -215,7 +215,8 @@ room's wallpaper). `material` makes it of `marble`, `wood`, `tiles`, `velvet`,
 <tr><td><code>height</code></td><td>in metres (2.0)</td></tr>
 <tr><td><code>rotation</code></td><td>in degrees, around the vertical axis</td></tr>
 <tr><td><code>offset</code></td><td>x, y, z in metres, out of the middle of its field, as in three.js: x east, y up, z south, such as <code>offset = 0, 1.6, -0.42</code> for a lamp on the north wall</td></tr>
-<tr><td><code>light</code></td><td>a colour: the model is a lamp. Its light comes from its glowing parts (emissive in the model) and shines in all directions; <code>power</code> and <code>flicker</code> as for a lamp</td></tr>
+<tr><td><code>light</code></td><td>a colour: the model is a lamp. Its light comes from its glowing parts (emissive in the model, or, when nothing is, the materials whose name says bulb or flame) and shines in all directions; <code>power</code> and <code>flicker</code> as for a lamp</td></tr>
+<tr><td><code>beam</code></td><td>for a lamp with a shade: its light falls only downwards, in a cone up to that many degrees from the vertical, such as <code>beam = 75</code>; <code>beam = up, 60</code> sends it upwards</td></tr>
 <tr><td><code>material</code></td><td><code>marble</code> instead of the model's own textures</td></tr>
 <tr><td><code>pedestal</code></td><td>a block under it: width, height, depth; <code>pedestal_color</code> paints it, <code>pedestal_material</code> makes it of marble, wood and so on</td></tr>
 <tr><td><code>tilt</code></td><td>in degrees, around the x axis, for a model that still lies down</td></tr>
@@ -253,6 +254,9 @@ room's wallpaper). `material` makes it of `marble`, `wood`, `tiles`, `velvet`,
   reduced to fewer triangles.
 - `statues/sofa_03/`: [Sofa 03](https://polyhaven.com/a/sofa_03) by Fran Calvente,
   `statues/industrial_wall_lamp/`: [Industrial Wall Lamp](https://polyhaven.com/a/industrial_wall_lamp),
+  `statues/industrial_wall_sconce/`: [Industrial Wall Sconce](https://polyhaven.com/a/industrial_wall_sconce) by Ulan Cabanilla,
+  `statues/brass_candleholders/`: the large candelabra from
+  [Brass Candleholders](https://polyhaven.com/a/brass_candleholders) by Tina (only that one, moved to the origin),
   and, for `tiefe/`, [Metal Office Desk](https://polyhaven.com/a/metal_office_desk),
   [School Chair 01](https://polyhaven.com/a/SchoolChair_01),
   [Vintage Wooden Drawer 01](https://polyhaven.com/a/vintage_wooden_drawer_01),

@@ -206,8 +206,13 @@ export function lightTexture(lights, on = null, texture = null) {
         const bulb = light.kind === 'bulb';
         data.set([light.position.x, light.position.y, light.position.z, bulb ? -light.radius : light.size[0]], i * 12);
         data.set([color.r * power, color.g * power, color.b * power, bulb ? light.size[0] * light.size[1] : light.size[1]], i * 12 + 4);
-        // wie steil die Decke über der Leuchte in x und z ansteigt: Sie liegt darin
-        data.set([light.channel, lightRange(light), light.tilt?.[0] ?? 0, light.tilt?.[1] ?? 0], i * 12 + 8);
+        // wie steil die Decke über der Leuchte in x und z ansteigt: Sie liegt darin.
+        // Bei einer Lampe aus einem Modell stattdessen ihr Kegel (beam): wohin
+        // (-1 nach unten, 1 nach oben, 0 ringsum) und wie weit (cos des Winkels)
+        const beam = bulb ? light.beam : null;
+        data.set([light.channel, lightRange(light),
+            bulb ? (beam ? (beam.up ? 1 : -1) : 0) : light.tilt?.[0] ?? 0,
+            bulb ? (beam ? Math.cos(THREE.MathUtils.degToRad(beam.angle)) : 0) : light.tilt?.[1] ?? 0], i * 12 + 8);
     });
     texture ??= new THREE.DataTexture(data, count * 3, 1, THREE.RGBAFormat, THREE.FloatType);
     texture.needsUpdate = true;
@@ -287,6 +292,12 @@ vec3 lampPoint(vec4 a, vec4 b, vec4 e) {
 }
 vec3 lampNormal(vec4 e) { return normalize(vec3(e.b, -1.0, e.a)); }
 
+// Wie viel vom Licht eines Kegels in Richtung along (cos zur Achse) ankommt,
+// bei einem Kegel bis zum Winkel mit dem cos edge
+float beamFacing(float along, float edge) {
+    return smoothstep(edge - 0.12, edge + 0.12, along);
+}
+
 // Eine Lampe aus einem Modell (a.w < 0, etwa eine Wandlampe) ist eine kleine
 // Kugel mit dem Radius -a.w, die nach allen Seiten gleich strahlt; b.w sagt,
 // wie viel Fläche einer Leuchte unter der Decke sie gleichkommt.
@@ -296,7 +307,13 @@ vec3 lightPoint(vec4 a, vec4 b, vec4 e) {
     return a.xyz + vec3(r * cos(phi), z, r * sin(phi)) * (-a.w);
 }
 // wie viel die Leuchte zur Fläche hin abgibt (l zeigt von der Fläche zur Leuchte)
-float lightFacing(vec4 a, vec4 e, vec3 l) { return a.w < 0.0 ? 1.0 : -dot(l, lampNormal(e)); }
+// Eine Lampe aus einem Modell mit Kegel (e.b: nach unten -1, nach oben 1):
+// innen ganz, zum Rand des Kegels weich auslaufend
+float lightFacing(vec4 a, vec4 e, vec3 l) {
+    if (a.w >= 0.0) return -dot(l, lampNormal(e));
+    if (e.b == 0.0) return 1.0;
+    return beamFacing(-l.y * e.b, e.a);
+}
 float lightArea(vec4 a, vec4 b) { return a.w < 0.0 ? b.w : a.w * b.w; }
 
 vec3 safeDirection(vec3 d) {

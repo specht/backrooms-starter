@@ -261,7 +261,18 @@ function makeThing(file, char, section, x, z) {
         // Stehlampe). Ihr Licht kommt aus ihren leuchtenden Teilen.
         if (entries.light !== undefined) {
             if (!/^#[0-9a-f]{6}$/i.test(String(entries.light))) throw new LevelError(file, section.line, `light = ${entries.light}: expected a colour such as #ffd9a0.`);
-            model.glow = { color: String(entries.light), power: entries.power ?? 1, flicker: entries.flicker ?? 0 };
+            model.glow = { color: String(entries.light), power: entries.power ?? 1, flicker: entries.flicker ?? 0, beam: null };
+            // beam = 70: unter einem Schirm, das Licht fällt in einem Kegel nach
+            // unten, so weit (Grad, von senkrecht gemessen); beam = up, 60 nach oben
+            if (entries.beam !== undefined) {
+                const parts = String(entries.beam).split(',').map((part) => part.trim());
+                const [direction, angle] = parts.length === 2 ? parts : ['down', parts[0]];
+                const degrees = Number(angle);
+                if (!['down', 'up'].includes(direction) || !(degrees > 0 && degrees <= 90)) {
+                    throw new LevelError(file, section.line, `beam = ${entries.beam}: expected an angle from 1 to 90 degrees, for example beam = 70 (downwards) or beam = up, 60.`);
+                }
+                model.glow.beam = { up: direction === 'up', angle: degrees };
+            }
         }
         return model;
     }

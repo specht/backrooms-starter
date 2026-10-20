@@ -267,7 +267,7 @@ function lightStatue(object, lights, ambient) {
                 if (distance > range) continue;
                 const fade = 1 - THREE.MathUtils.smoothstep(distance, 0.7 * range, range);
                 l.normalize();
-                const facing = light.kind === 'bulb' ? 1 : Math.max(-l.dot(down.get(light)), 0);
+                const facing = light.kind === 'bulb' ? bulbFacing(light, l) : Math.max(-l.dot(down.get(light)), 0);
                 const amount = Math.max(n.dot(l), 0) * facing * 30 * light.power
                     * light.size[0] * light.size[1] / (Math.PI * d2 + 0.05) * fade;
                 color.set(light.color);
@@ -292,9 +292,28 @@ function lightStatue(object, lights, ambient) {
             mesh.material.depthWrite = false;
         }
         if (old.emissiveMap && old.map) addGlow(mesh.material, old.emissiveMap, (old.emissiveIntensity ?? 1) * Math.max(old.emissive?.r ?? 1, old.emissive?.g ?? 1, old.emissive?.b ?? 1));
+        // eine Glühbirne ohne Leuchten im Modell (glowsByName): leuchtet in ihrer eigenen Farbe
+        else if (glowsByName(old) && old.map) addGlow(mesh.material, old.map, 1.2);
         mesh.userData.baseColor = mesh.material.color.clone();
         mesh.userData.map = mesh.material.map;
     });
+}
+
+// Wie viel Licht eine Lampe aus einem Modell in Richtung -l abgibt (l zeigt
+// zur Lampe): ringsum gleich, mit beam nur in ihrem Kegel, weich am Rand
+// (wie beamFacing in bake.js)
+function bulbFacing(light, l) {
+    if (!light.beam) return 1;
+    const edge = Math.cos(THREE.MathUtils.degToRad(light.beam.angle));
+    const along = light.beam.up ? -l.y : l.y;
+    const t = THREE.MathUtils.clamp((along - (edge - 0.12)) / 0.24, 0, 1);
+    return t * t * (3 - 2 * t);
+}
+
+// Manche Lampen-Modelle haben keine leuchtenden Teile (emissive), nur eine
+// Glühbirne, die so heißt: Ihr Material nennt »bulb« oder »flame«.
+function glowsByName(material) {
+    return /bulb|flame/i.test(material?.name ?? '') && !(material.emissiveMap || (material.emissive && material.emissive.getHex() !== 0));
 }
 
 // Das Licht einer Statue aus seinen Teilen, je nachdem, welche an sind
@@ -630,7 +649,7 @@ async function start() {
         const box = new THREE.Box3();
         object.traverse((mesh) => {
             const material = mesh.material;
-            if (mesh.isMesh && (material?.emissiveMap || (material?.emissive && material.emissive.getHex() !== 0))) box.expandByObject(mesh);
+            if (mesh.isMesh && (material?.emissiveMap || (material?.emissive && material.emissive.getHex() !== 0) || glowsByName(material))) box.expandByObject(mesh);
         });
         if (box.isEmpty()) box.setFromObject(object);
         const size = box.getSize(new THREE.Vector3());
@@ -639,7 +658,7 @@ async function start() {
             type: 'light', kind: 'bulb', char: thing.char, x: thing.x, z: thing.z, room: thing.room,
             color: thing.glow.color, power: thing.glow.power, flicker: thing.glow.flicker, channel,
             size: [BULB_SIZE, BULB_SIZE], radius: Math.min(0.08, Math.max(0.02, Math.min(size.x, size.y, size.z) / 3)),
-            tilt: null, position: box.getCenter(new THREE.Vector3()), model: object,
+            tilt: null, beam: thing.glow.beam, position: box.getCenter(new THREE.Vector3()), model: object,
         });
     });
 
