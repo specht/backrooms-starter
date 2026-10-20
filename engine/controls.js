@@ -1,9 +1,12 @@
-// Laufen: am Rechner mit Maus und Tastatur, mit einer VR-Brille mit den
-// Sticks der Controller. Wände und Statuen halten dich auf.
+// Laufen: am Rechner mit Maus und Tastatur, auf dem Handy mit zwei Daumen,
+// mit einer VR-Brille mit den Sticks der Controller. Wände und Statuen
+// halten dich auf.
 import * as THREE from 'three';
 
 const RADIUS = 0.25;      // so breit bist du, in Metern
 const EYE_HEIGHT = 1.6;   // Augenhöhe am Rechner
+const STICK_RADIUS = 55;  // so weit (Pixel) schiebt der Daumen den Stick bis zum Anschlag
+const TOUCH_TURN = 0.005; // so viel dreht ein Pixel Wischen (Bogenmaß)
 
 export class Walker {
     constructor(level, player, camera, renderer) {
@@ -17,6 +20,12 @@ export class Walker {
         this.enabled = () => true;
         this.mayCapture = () => true;  // ob ein Klick die Maus zum Umsehen fängt
         this.mayLook = () => true;     // ob die gefangene Maus gerade zum Umsehen dient
+        this.mayTouch = () => true;    // ob Finger auf dem Bild laufen und schauen (nicht in der Automap)
+        // Auf dem Handy: der linke Daumen schiebt einen Stick (x seitlich, y
+        // nach vorn, je -1 bis 1), der rechte wischt zum Umsehen
+        this.stick = { x: 0, y: 0 };
+        this.touches = new Map();
+        this.touched = false;
         // Blöcke, die bis unter Kopfhöhe reichen, stehen im Weg
         const cell = level.settings.cell;
         // (Statuen kommen mit addObstacle dazu, wenn sie geladen sind)
@@ -30,8 +39,9 @@ export class Walker {
 
         const canvas = renderer.domElement;
         canvas.addEventListener('click', () => {
-            if (!renderer.xr.isPresenting && this.mayCapture()) canvas.requestPointerLock?.();
+            if (!renderer.xr.isPresenting && !this.touched && this.mayCapture()) canvas.requestPointerLock?.();
         });
+        this.setupTouch(canvas);
         document.addEventListener('mousemove', (event) => {
             if (document.pointerLockElement !== canvas || !this.mayLook(event)) return;
             this.yaw -= event.movementX * 0.0022;
@@ -40,6 +50,66 @@ export class Walker {
         document.addEventListener('keydown', (event) => this.keys.add(event.code));
         document.addEventListener('keyup', (event) => this.keys.delete(event.code));
         window.addEventListener('blur', () => this.keys.clear());
+    }
+
+    // Ein Finger links ist der Stick: Wo er aufsetzt, ist die Mitte, ein Ring
+    // zeigt sie. Ein Finger rechts (oder ein zweiter links) wischt den Blick.
+    setupTouch(canvas) {
+        const ring = document.createElement('div');
+        ring.className = 'touch-stick';
+        const knob = document.createElement('div');
+        ring.appendChild(knob);
+        document.body.appendChild(ring);
+        const showStick = (touch) => {
+            ring.classList.toggle('active', !!touch);
+            if (!touch) return;
+            ring.style.left = `${touch.x0}px`;
+            ring.style.top = `${touch.y0}px`;
+            knob.style.transform = `translate(${this.stick.x * STICK_RADIUS}px, ${-this.stick.y * STICK_RADIUS}px)`;
+        };
+        const moving = () => [...this.touches.values()].find((t) => t.kind === 'move');
+
+        canvas.addEventListener('touchstart', (event) => {
+            this.touched = true;
+            document.body.classList.add('touch');
+            if (!this.mayTouch()) return;
+            event.preventDefault();
+            for (const t of event.changedTouches) {
+                const kind = t.clientX < window.innerWidth / 2 && !moving() ? 'move' : 'look';
+                this.touches.set(t.identifier, { kind, x0: t.clientX, y0: t.clientY, x: t.clientX, y: t.clientY });
+            }
+            showStick(moving());
+        }, { passive: false });
+        canvas.addEventListener('touchmove', (event) => {
+            if (!this.mayTouch()) return;
+            event.preventDefault();
+            for (const t of event.changedTouches) {
+                const touch = this.touches.get(t.identifier);
+                if (!touch) continue;
+                if (touch.kind === 'look') {
+                    this.yaw -= (t.clientX - touch.x) * TOUCH_TURN;
+                    this.pitch = THREE.MathUtils.clamp(this.pitch - (t.clientY - touch.y) * TOUCH_TURN, -1.4, 1.4);
+                } else {
+                    // bis zum Anschlag, weiter geht der Stick nicht
+                    let dx = (t.clientX - touch.x0) / STICK_RADIUS, dy = -(t.clientY - touch.y0) / STICK_RADIUS;
+                    const length = Math.hypot(dx, dy);
+                    if (length > 1) { dx /= length; dy /= length; }
+                    this.stick = { x: dx, y: dy };
+                }
+                touch.x = t.clientX;
+                touch.y = t.clientY;
+            }
+            showStick(moving());
+        }, { passive: false });
+        const end = (event) => {
+            for (const t of event.changedTouches) {
+                if (this.touches.get(t.identifier)?.kind === 'move') this.stick = { x: 0, y: 0 };
+                this.touches.delete(t.identifier);
+            }
+            showStick(moving());
+        };
+        canvas.addEventListener('touchend', end);
+        canvas.addEventListener('touchcancel', end);
     }
 
     // zurück zum @, in die Richtung aus der Level-Datei
@@ -109,9 +179,18 @@ export class Walker {
         if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) forward -= 1;
         if (this.keys.has('KeyD')) side += 1;
         if (this.keys.has('KeyA')) side -= 1;
+        // der Stick auf dem Handy: ein wenig geschoben geht langsam, ganz geschoben läuft
+        const pushed = Math.hypot(this.stick.x, this.stick.y);
+        let amount = 1;
+        if (forward === 0 && side === 0 && pushed > 0.15) {
+            forward = this.stick.y;
+            side = this.stick.x;
+            amount = pushed;
+        }
         if (forward === 0 && side === 0) return;
-        // gemächlich gehen (1,25 m/s), mit Shift laufen
-        const speed = (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight') ? 2.5 : 1.25) * dt;
+        // gemächlich gehen (1,25 m/s), mit Shift oder dem Stick am Anschlag laufen
+        const running = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight') || pushed > 0.95;
+        const speed = (running ? 2.5 : 1.25) * amount * dt;
         const length = Math.hypot(forward, side);
         const sin = Math.sin(this.yaw), cos = Math.cos(this.yaw);
         // Blickrichtung ist -z, um yaw gedreht

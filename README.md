@@ -69,8 +69,14 @@ Shift+L, or `?rebake` in the address, bakes the light again in any case.
 <tr><td>P</td><td>hide the panel at the top left, and show it again</td></tr>
 </table>
 
-Every switch is also shown at the top left and can be clicked. In VR the left
-thumbstick walks, the right one turns, the grip button opens the automap.
+Every switch is also shown at the top left and can be clicked; ☰ at the top
+right hides the panel and brings it back. In VR the left thumbstick walks, the
+right one turns, the grip button opens the automap.
+
+On a phone or tablet the left thumb walks: where it touches the picture, a
+ring appears, and pushing away from its middle walks that way (all the way:
+run). The right thumb swipes to look around. In the automap one finger turns
+it, two fingers zoom and move it.
 
 Where you stand is kept in the address (`?view=…`), so a reload brings you
 back to the same spot, as long as the floor plan has not changed. An open

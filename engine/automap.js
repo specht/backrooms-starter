@@ -202,6 +202,40 @@ export class Automap {
             event.preventDefault();
             this.distance = THREE.MathUtils.clamp(this.distance * Math.exp(event.deltaY * 0.001), 3, size * 4);
         }, { passive: false });
+
+        // Auf dem Handy: ein Finger dreht die Karte, zwei Finger zoomen
+        // (auseinander: näher heran) und verschieben sie (beide zusammen).
+        let fingers = null;
+        const read = (touches) => {
+            const list = [...touches];
+            const x = list.reduce((sum, t) => sum + t.clientX, 0) / list.length;
+            const y = list.reduce((sum, t) => sum + t.clientY, 0) / list.length;
+            const spread = list.length > 1 ? Math.hypot(list[0].clientX - list[1].clientX, list[0].clientY - list[1].clientY) : 0;
+            return { count: list.length, x, y, spread };
+        };
+        canvas.addEventListener('touchstart', (event) => {
+            if (!this.active) return;
+            event.preventDefault();
+            fingers = read(event.touches);
+        }, { passive: false });
+        canvas.addEventListener('touchmove', (event) => {
+            if (!this.active || !fingers) return;
+            event.preventDefault();
+            const now = read(event.touches);
+            if (now.count !== fingers.count) { fingers = now; return; }
+            if (now.count === 1) {
+                this.follow = false;
+                this.azimuth -= (now.x - fingers.x) * 0.008;
+                this.elevation = THREE.MathUtils.clamp(this.elevation + (now.y - fingers.y) * 0.008, -1.5, 1.5);
+            } else {
+                this.pan(now.x - fingers.x, now.y - fingers.y);
+                if (fingers.spread > 0 && now.spread > 0) {
+                    this.distance = THREE.MathUtils.clamp(this.distance * fingers.spread / now.spread, 3, size * 4);
+                }
+            }
+            fingers = now;
+        }, { passive: false });
+        canvas.addEventListener('touchend', (event) => { fingers = event.touches.length ? read(event.touches) : null; });
     }
 
     // Beim Öffnen fliegt die Kamera von deinen Augen aus nach oben und

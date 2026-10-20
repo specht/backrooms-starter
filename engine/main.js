@@ -54,6 +54,11 @@ const help = document.getElementById('help');
 // was die Maus und die Tasten gerade tun, unten im Kasten oben links
 const WALK_HELP = 'Click into the picture to look around with the mouse · WASD to walk, Shift to run';
 const AUTOMAP_HELP = 'Automap: drag to turn it, Shift+drag to move it, mouse wheel to zoom · V: rooms or wireframe · WASD still walks · M or Esc closes it';
+// auf dem Handy und Tablet (body.touch, sobald ein Finger das Bild berührt)
+const TOUCH_HELP = 'Left thumb: walk (push it all the way to run) · right thumb: look around · ☰ hides this panel';
+const TOUCH_AUTOMAP_HELP = 'Automap: one finger turns it, two fingers zoom and move it · Automap closes it';
+// Handy oder Tablet schon beim Laden: Kein Finger muss erst das Bild berühren
+if (window.matchMedia('(pointer: coarse)').matches) document.body.classList.add('touch');
 
 // Ein Schalter mit Lämpchen (grün, wenn an) und seiner Taste. Ohne state
 // ist es ein Knopf, der etwas tut. Er nimmt keinen Fokus, damit die Tasten
@@ -820,6 +825,7 @@ async function start() {
     // aber nicht die Maus, damit man die Karte ziehen kann. In VR schaltet die
     // Grifftaste sie um.
     walker.mayCapture = () => !automap.active;
+    walker.mayTouch = () => !automap.active;
     walker.mayLook = (event) => !(automap.active && (event.shiftKey || automap.dragging));
     for (let i = 0; i < 2; i++) renderer.xr.getController(i).addEventListener('squeezestart', () => automap.toggle());
 
@@ -859,6 +865,8 @@ async function start() {
     const toggleAutomap = () => automap.toggle(camera);
     // P: der Kasten oben links weg und wieder da
     const togglePanel = () => document.body.classList.toggle('panel-hidden');
+    // ☰ oben rechts bringt den Kasten wieder (auf dem Handy gibt es kein P)
+    document.getElementById('panel-button').addEventListener('click', togglePanel);
     const rebake = () => { restart = true; };
     // Save light: das Licht als Datei, die neben level.ini gehört
     const saveLight = async () => {
@@ -885,7 +893,8 @@ async function start() {
     ];
     const refreshControls = () => {
         for (const refresh of refreshers) refresh();
-        help.textContent = automap.active ? AUTOMAP_HELP : WALK_HELP;
+        const touch = document.body.classList.contains('touch');
+        help.textContent = automap.active ? (touch ? TOUCH_AUTOMAP_HELP : AUTOMAP_HELP) : (touch ? TOUCH_HELP : WALK_HELP);
     };
     refreshControls();
 
