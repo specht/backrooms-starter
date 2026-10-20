@@ -31,11 +31,8 @@ const INJECT_CHUNK = 1 << 18;         // Punkte der Lightmap je Schritt, die ihr
 const RAYS = 4;
 // Ein Durchgang wird Stück für Stück gezeichnet, ein Quadrat der Lightmap
 // auf einmal: Ein Handy oder Tablet gibt sonst auf (der GL-Kontext geht
-// verloren), wenn die Grafikkarte zu lange an einem Bild rechnet. Es fängt
-// klein an (FIRST_TILE); kommt die Grafikkarte gut mit, werden die Stücke
-// größer (largerTiles, bis TILE), wird schon eins zu langsam, kleiner
-// (smallerTiles).
-const FIRST_TILE = 128;
+// verloren), wenn die Grafikkarte zu lange an einem Bild rechnet. Wird
+// schon eins zu langsam, werden die Stücke kleiner (smallerTiles).
 const TILE = 512;
 const SMALLEST_TILE = 32;
 const LIGHT_SCALE = 30;               // macht power = 1 zu »hell unter der Lampe«
@@ -1013,7 +1010,7 @@ function target(size, options = {}) {
 
 // Ein Zeichen in der Warteschlange der Grafikkarte (WebGL2-Fence): done sagt,
 // ob sie alles, was davor geschickt wurde, schon gezeichnet hat, took, wie
-// lange das gedauert hat (in ms). Der Browser schickt Arbeit nur ab; ohne
+// lange das gedauert hat (in ms), at, wann sie damit fertig war. Der Browser schickt Arbeit nur ab; ohne
 // dieses Zeichen sammelte sie sich an, bis die Grafikkarte sekundenlang
 // nichts anderes tut, auch nicht den Bildschirm. Nachgesehen wird alle
 // 2 ms, nicht nur einmal je Bild: Gibt der Browser selten Bilder (ein
@@ -1024,10 +1021,11 @@ export function gpuMark(renderer) {
     const sync = gl.isContextLost() ? null : gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
     gl.flush();
     const started = performance.now();
-    let took = sync ? null : 0;
+    let took = sync ? null : 0, at = sync ? null : started;
     const check = () => {
         if (took === null && (gl.isContextLost() || gl.clientWaitSync(sync, 0, 0) !== gl.TIMEOUT_EXPIRED)) {
-            took = performance.now() - started;
+            at = performance.now();
+            took = at - started;
             if (!gl.isContextLost()) gl.deleteSync(sync);
         }
         return took !== null;
@@ -1037,6 +1035,7 @@ export function gpuMark(renderer) {
     return {
         get done() { return check(); },
         get took() { return took ?? performance.now() - started; },
+        get at() { check(); return at; },
     };
 }
 
@@ -1060,7 +1059,7 @@ export class LightBaker {
         this.geometry = geometry;
         this.voxelSource = voxels;
         this.atlasSize = geometry.atlasSize;
-        this.tileSize = Math.min(FIRST_TILE, this.atlasSize);
+        this.tileSize = Math.min(TILE, this.atlasSize);
         this.wantedTile = this.tileSize;
         this.prepared = false;
         this.saved = null;
@@ -1352,14 +1351,6 @@ export class LightBaker {
     // Ein Stück dauert zu lange: ab dem nächsten Durchgang halb so groß
     smallerTiles() {
         if (this.wantedTile > SMALLEST_TILE) this.wantedTile /= 2;
-    }
-
-    // Viele Stücke je Bild sind kein Problem: ab dem nächsten Durchgang
-    // doppelt so groß (weniger Aufrufe). true, wenn sie größer werden.
-    largerTiles() {
-        if (this.wantedTile !== this.tileSize || this.wantedTile >= Math.min(TILE, this.atlasSize)) return false;
-        this.wantedTile *= 2;
-        return true;
     }
 
     startBounce() {

@@ -1833,24 +1833,14 @@ async function start() {
             // schon eins zu lange, werden die Stücke kleiner (bake.js, TILE)
             // Neue Stücke erst, wenn die Grafikkarte die letzten gezeichnet
             // hat: So sammelt sich keine Arbeit an, und der Bildschirm kommt
-            // dazwischen dran. Mehr, solange sie unter 30 ms brauchte (sie
-            // sieht einmal je Bild nach), weniger, wenn über 40 ms. Wie lange
-            // ein Bild dauert, zählt nicht: Ein großes, scharfes Bild oder ein
-            // Browser, der selten Bilder gibt, bremste sonst das Backen auf
-            // ein kleines Stück je Bild, auch wenn die Grafikkarte nichts zu
-            // tun hat; schon eins zu
-            // lange, werden die Stücke kleiner, viele schnelle größer
+            // dazwischen dran. So viele, dass ein Bild etwa 30 bis 50 ms
+            // dauert; schon eins zu lange, werden die Stücke kleiner
             // (bake.js, TILE).
             if (!bakeMark || bakeMark.done) {
                 if (!baker.prepared) tilesPerFrame = 2;   // noch keine Arbeit: nicht schon hochzählen
-                else if (bakeMark) {
-                    const took = bakeMark.took;
-                    if (took > 40) tilesPerFrame = Math.max(1, Math.floor(tilesPerFrame / 2));
-                    else if (took < 30) tilesPerFrame = Math.min(256, tilesPerFrame + Math.ceil(tilesPerFrame / 4));
-                    if (took > 250 && tilesPerFrame === 1) baker.smallerTiles();
-                    // vier Stücke werden eins: so viel Arbeit wie vorher
-                    if (tilesPerFrame >= 16 && baker.largerTiles()) tilesPerFrame = Math.ceil(tilesPerFrame / 4);
-                }
+                else if (frameTime > 50) tilesPerFrame = Math.max(1, Math.floor(tilesPerFrame / 2));
+                else if (frameTime < 30) tilesPerFrame = Math.min(256, tilesPerFrame + Math.ceil(tilesPerFrame / 4));
+                if (frameTime > 400 && tilesPerFrame === 1) baker.smallerTiles();
                 for (let i = 0; i < tilesPerFrame && !baker.done; i++) {
                     if (!allOn && baker.bouncing) break;
                     baker.step();
