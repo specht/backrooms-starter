@@ -1389,7 +1389,8 @@ export class LightBaker {
     // Ecke, in der Welt); 64 Durchgänge, verteilt auf mehrere Bilder, damit
     // die Grafikkarte nie lange an einem rechnet. Liefert (async) drei Zahlen
     // pro Ecke: direktes Licht (direct = true) oder Bounce-Licht.
-    async vertexLight(positions, normals, direct) {
+    // progress: (0 bis 1) => …, wie weit es ist
+    async vertexLight(positions, normals, direct, progress = null) {
         const count = positions.length / 3;
         const rowLength = 1024, rows = Math.max(1, Math.ceil(count / rowLength));
         const pack = (values) => {
@@ -1461,7 +1462,8 @@ export class LightBaker {
             done = to;
             const took = await gpuIdle(renderer);
             batch = took > 40 ? Math.max(1, batch >> 1) : took < 15 ? Math.min(4096, batch * 2) : batch;
-            await new Promise((resolve) => setTimeout(resolve, 16));
+            progress?.(done / units);
+            await new Promise((resolve) => setTimeout(resolve, 8));
         }
         const half = new Uint16Array(rowLength * rows * 4);
         renderer.readRenderTargetPixels(result, 0, 0, rowLength, rows, half);

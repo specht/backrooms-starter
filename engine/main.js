@@ -445,7 +445,8 @@ function restoreModelLight(models, saved) {
 
 // Nach dem Backen: das Licht für jede Ecke jedes Modells auf der Grafikkarte,
 // mit Schatten des Modells auf sich selbst, direktes und Bounce-Licht getrennt.
-async function bounceModels(models, baker, parts) {
+// progress: (0 bis 1) => …, wie weit es ist
+async function bounceModels(models, baker, parts, progress = null) {
     const meshes = [];
     for (const model of models) model.traverse((mesh) => { if (mesh.isMesh && mesh.userData.direct) meshes.push(mesh); });
     const total = meshes.reduce((sum, mesh) => sum + mesh.geometry.attributes.position.count, 0);
@@ -464,8 +465,8 @@ async function bounceModels(models, baker, parts) {
             normals.set([n.x, n.y, n.z], offset * 3);
         }
     }
-    const direct = await baker.vertexLight(positions, normals, true);
-    const bounced = await baker.vertexLight(positions, normals, false);
+    const direct = await baker.vertexLight(positions, normals, true, (part) => progress?.(part / 2));
+    const bounced = await baker.vertexLight(positions, normals, false, (part) => progress?.(0.5 + part / 2));
     // ein ungültiger Wert (NaN) machte mit Bloom das ganze Bild schwarz
     for (const values of [direct, bounced]) for (let i = 0; i < values.length; i++) if (!Number.isFinite(values[i])) values[i] = 0;
     offset = 0;
@@ -1579,7 +1580,7 @@ async function start() {
     // Save light: das Licht als Datei, die neben level.ini gehört
     const saveLight = async () => {
         if (!baker.done || !modelsBounced) {
-            report('The light is not baked yet.');
+            report(baker.done ? 'The models are still getting their light: save it when they have it.' : 'The light is not baked yet.');
             return;
         }
         if (!packedLight) await keepLight();
@@ -1877,9 +1878,13 @@ async function start() {
         if (baker.done && !modelsBounced && bouncing !== bakeRound) {
             // über mehrere Bilder; fängt das Licht inzwischen neu an (Shift+L), zählt es nicht
             const round = bouncing = bakeRound;
-            bounceModels(models, baker, parts).then(() => {
+            const baked = status.textContent;
+            bounceModels(models, baker, parts, (part) => {
+                if (round === bakeRound) report(`Light for the models: ${Math.round(part * 100)} %`);
+            }).then(() => {
                 if (round !== bakeRound) return;
                 modelsBounced = true;
+                report(baked);
                 setTimeout(keepLight, 200);
             });
         }
