@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Textures</title>
+<!--
+    Die Texturen aus engine/textures.js, ohne das Level drumherum.
+    textures.html                  alle Texturen
+    textures.html?show=marble      Marmor Schritt für Schritt (auch wallpaper, wood)
+    textures.html?tile=marble      dieselbe Textur sechsmal nebeneinander: Sieht man die Nähte?
+    &edges                         dazu feine Linien, wo eine Wiederholung endet
+    &bare                          ohne Beschriftung (für Bilder)
+-->
+<style>
+    body { margin: 0; min-height: 100vh; background: #121110; color: #d8d2c4; font: 15px system-ui, sans-serif; display: flex; align-items: center; justify-content: center; }
+    main { display: flex; flex-wrap: wrap; gap: 28px; justify-content: center; padding: 28px; }
+    figure { margin: 0; }
+    figcaption { margin-top: 8px; text-align: center; }
+    canvas { display: block; width: var(--size); height: var(--size); image-rendering: auto; box-shadow: 0 2px 14px rgba(0, 0, 0, 0.5); }
+    .tiled { position: relative; }
+    .tiled .edges { position: absolute; inset: 0; pointer-events: none; }
+    body.bare figcaption { display: none; }
+</style>
+<script type="importmap">
+    { "imports": { "three": "./vendor/three/build/three.module.min.js", "three/addons/": "./vendor/three/addons/" } }
+</script>
+</head>
+<body>
+<main id="main"></main>
+<script type="module">
+import { wallpaperTexture, carpetTexture, ceilingTexture, marbleTexture, woodTexture, tileTexture, velvetTexture, plainTexture } from './engine/textures.js';
+
+const params = new URLSearchParams(location.search);
+if (params.has('bare')) document.body.classList.add('bare');
+const main = document.getElementById('main');
+
+// jede Textur in einer Farbe, wie sie im Level vorkommt
+const textures = {
+    wallpaper: { label: 'wallpaper', make: (step) => wallpaperTexture('#c9b458', step),
+        steps: ['one colour', 'stripes', 'diamonds', 'stains'] },
+    marble: { label: 'marble', make: (step) => marbleTexture(512, 1, step),
+        steps: ['noise', 'turbulence: noise in four sizes', 'stripes from a sine', 'the sine bent by the turbulence'] },
+    wood: { label: 'wood', make: (step) => woodTexture('#b07a48', step),
+        steps: ['boards, each its own tone', 'grain from a sine', 'the grain bent', 'joints'] },
+    carpet: { label: 'carpet', make: () => carpetTexture('#8c7a45') },
+    ceiling: { label: 'ceiling', make: () => ceilingTexture('#d8d0a8') },
+    tiles: { label: 'tiles', make: () => tileTexture('#d6e4e1') },
+    velvet: { label: 'velvet', make: () => velvetTexture('#7a1424') },
+    plain: { label: 'plain', make: () => plainTexture('#6b6a65') },
+};
+
+// ein Bild der Textur, count × count mal nebeneinander
+function draw(texture, count, size, edges) {
+    const source = texture.image;
+    const canvas = document.createElement('canvas');
+    const scale = window.devicePixelRatio || 1;
+    canvas.width = canvas.height = Math.round(size * scale);
+    canvas.style.setProperty('--size', `${size}px`);
+    const context = canvas.getContext('2d');
+    const per = canvas.width / count;
+    for (let j = 0; j < count; j++) for (let i = 0; i < count; i++) context.drawImage(source, i * per, j * per, per, per);
+    if (edges) {
+        context.strokeStyle = 'rgba(255, 64, 96, 0.9)';
+        context.lineWidth = Math.max(1, scale);
+        for (let k = 1; k < count; k++) {
+            context.beginPath(); context.moveTo(k * per, 0); context.lineTo(k * per, canvas.height); context.stroke();
+            context.beginPath(); context.moveTo(0, k * per); context.lineTo(canvas.width, k * per); context.stroke();
+        }
+    }
+    return canvas;
+}
+
+function figure(canvas, caption) {
+    const element = document.createElement('figure');
+    element.append(canvas);
+    const text = document.createElement('figcaption');
+    text.textContent = caption;
+    element.append(text);
+    main.append(element);
+}
+
+const show = params.get('show'), tile = params.get('tile');
+const room = Math.min(window.innerWidth, window.innerHeight * 1.6);
+if (show && textures[show]?.steps) {
+    const { make, steps } = textures[show];
+    const size = Math.floor(Math.min((window.innerWidth - 56 - 28 * (steps.length - 1)) / steps.length, window.innerHeight - 120));
+    steps.forEach((caption, i) => figure(draw(make(i + 1), 1, size), `${i + 1}. ${caption}`));
+} else if (tile && textures[tile]) {
+    const size = Math.floor(Math.min(window.innerWidth - 56, window.innerHeight - 90));
+    figure(draw(textures[tile].make(), 3, size, params.has('edges')), `${textures[tile].label}, nine times`);
+} else {
+    const names = Object.keys(textures);
+    const size = Math.floor(Math.min((room - 56 - 28 * 3) / 4, 260));
+    for (const name of names) figure(draw(textures[name].make(), 1, size), textures[name].label);
+}
+</script>
+</body>
+</html>

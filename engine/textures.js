@@ -1,5 +1,7 @@
 // Tapete, Teppich und Deckenplatten, im Browser gemalt: keine Bilddateien.
 // Jede Textur ist ein Quadrat von einem Meter und wiederholt sich.
+// Tapete, Marmor und Holz nehmen als Letztes step: Mit einer Zahl hören sie
+// nach so vielen Schritten auf (textures.html zeigt sie Schritt für Schritt).
 import * as THREE from 'three';
 
 // Ein Zufall, der bei jedem Start gleich ist: dieselben Flecken an denselben Stellen.
@@ -52,16 +54,18 @@ function blotches(context, size, rng, color, count, radius, alpha) {
     }
 }
 
-export function wallpaperTexture(base) {
+export function wallpaperTexture(base, step = Infinity) {
     return canvasTexture(512, (context, size) => {
         const rng = random(7);
         context.fillStyle = base;
         context.fillRect(0, 0, size, size);
+        if (step < 2) return;
         // feine senkrechte Streifen
         for (let x = 0; x < size; x += 16) {
             context.fillStyle = shade(base, x % 32 === 0 ? 0.93 : 1.04);
             context.fillRect(x, 0, 6, size);
         }
+        if (step < 3) return;
         // ein blasses Rautenmuster, wie es alte Tapeten haben
         context.strokeStyle = shade(base, 0.86);
         context.lineWidth = 2;
@@ -76,6 +80,7 @@ export function wallpaperTexture(base) {
                 context.stroke();
             }
         }
+        if (step < 4) return;
         // vergilbte und feuchte Stellen
         blotches(context, size, rng, 'rgb(120, 96, 30)', 10, 70, 0.10);
         blotches(context, size, rng, 'rgb(255, 245, 190)', 6, 50, 0.08);
@@ -185,7 +190,8 @@ export function plainTexture(base) {
 // deren Verlauf ein Rauschen in mehreren Größen verbiegt (Turbulenz). Jede
 // Größe wiederholt sich genau über die Breite der Textur: nahtlos.
 // size: 512 für Statuen; meters: auf Wänden und Böden so viele Meter pro Wiederholung
-export function marbleTexture(size = 512, meters = 1) {
+// step 1: nur das Rauschen, 2: die Turbulenz, 3: Streifen aus dem Sinus, 4: von der Turbulenz verbogen
+export function marbleTexture(size = 512, meters = 1, step = Infinity) {
     const texture = canvasTexture(size, (context, size) => {
         const rng = random(41);
         const values = Array.from({ length: 64 * 64 }, () => rng());
@@ -207,10 +213,12 @@ export function marbleTexture(size = 512, meters = 1) {
                     turbulence += noise((x / size) * scale, (y / size) * scale, scale) / octave;
                 }
                 // eine Ader ist dort, wo der Sinus nahe null ist: schmal und hellgrau
-                const vein = Math.abs(Math.sin(((x + y) / size) * Math.PI * 3 + turbulence * 5));
+                const vein = Math.abs(Math.sin(((x + y) / size) * Math.PI * 3 + (step >= 4 ? turbulence * 5 : 0)));
                 const line = 1 - Math.min(1, vein / 0.08);
                 const cloud = 0.94 + 0.06 * noise((x / size) * 8, (y / size) * 8, 8);
-                const shade = cloud * (1 - 0.32 * line);
+                let shade = cloud * (1 - 0.32 * line);
+                if (step === 1) shade = noise((x / size) * 4, (y / size) * 4, 4);
+                if (step === 2) shade = turbulence / 2.08;   // höchstens 1 + 1/2 + 1/3 + 1/4
                 const i = (y * size + x) * 4;
                 image.data[i] = 240 * shade;
                 image.data[i + 1] = 236 * shade;
@@ -234,7 +242,8 @@ function rgb(hex) {
 // Jedes Brett hat seinen eigenen Ton, eine Maserung aus feinen Linien, die
 // sich sanft hin und her biegen, und irgendwo eine Fuge quer, wo es endet.
 // Alles wiederholt sich genau nach einem Meter: nahtlos.
-export function woodTexture(base) {
+// step 1: die Bretter in ihren Tönen, 2: mit Maserung, gerade, 3: gebogen, 4: mit Fugen
+export function woodTexture(base, step = Infinity) {
     return canvasTexture(512, (context, size) => {
         const rng = random(57);
         const [r, g, b] = rgb(base);
@@ -247,11 +256,11 @@ export function woodTexture(base) {
             const t = (y / size) * Math.PI * 2;
             for (let x = 0; x < size; x++) {
                 const board = Math.floor(x / width), u = x - board * width;
-                const bend = Math.sin(2 * t + phase[board]) * 3 + Math.sin(5 * t + 2 * phase[board]) * 1.2;
+                const bend = step >= 3 ? Math.sin(2 * t + phase[board]) * 3 + Math.sin(5 * t + 2 * phase[board]) * 1.2 : 0;
                 const grain = 0.5 + 0.5 * Math.sin((u + bend) * 0.9 + 5 * phase[board]);
-                let f = tones[board] * (0.9 + 0.12 * grain);
-                if (u < 1.5) f *= 0.55;                                        // Fuge zwischen zwei Brettern
-                if (Math.abs((((y - ends[board]) % size) + size) % size) < 1.5) f *= 0.6;   // Fuge quer
+                let f = tones[board] * (step >= 2 ? 0.9 + 0.12 * grain : 0.96);
+                if (step >= 4 && u < 1.5) f *= 0.55;                                        // Fuge zwischen zwei Brettern
+                if (step >= 4 && Math.abs((((y - ends[board]) % size) + size) % size) < 1.5) f *= 0.6;   // Fuge quer
                 const i = (y * size + x) * 4;
                 image.data[i] = Math.min(255, r * f);
                 image.data[i + 1] = Math.min(255, g * f);

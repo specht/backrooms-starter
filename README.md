@@ -110,6 +110,7 @@ its room is among them. In the automap, U shows it.
 <tr><td><code>statues/</code></td><td>3D models (glTF or GLB): a statue, a sofa, a wall lamp</td></tr>
 <tr><td><code>level.light</code></td><td>saved light, if you saved it (»Save light«)</td></tr>
 <tr><td><code>engine/</code></td><td>the program: reading the level, building it, baking the light, walking</td></tr>
+<tr><td><code>textures.html</code></td><td>the textures on their own: <code>?show=marble</code> (also <code>wallpaper</code>, <code>wood</code>) step by step, <code>?tile=marble&amp;edges</code> nine times side by side</td></tr>
 <tr><td><code>vendor/three/</code></td><td>three.js r185 (MIT licence)</td></tr>
 </table>
 
