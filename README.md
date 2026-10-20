@@ -189,7 +189,7 @@ it. Either side of the door may say it.
 
 A door is as deep as the wall, one field. Its reveal (sides, lintel, vault)
 is light plaster, and on each face of the wall a casing frames the opening,
-in the colour of that room's skirting board (none without one).
+in the colour of that room's skirting board, or painted light without one.
 `casing = off` in a door's section leaves it out on both sides.
 
 Rooms may lie on top of each other: a ramp leads up one storey, and the room
@@ -223,7 +223,7 @@ just as a door places its neighbour. Whoever steps onto the hole falls.
 <tr><td><code>walls</code></td><td><code>wallpaper</code>, <code>marble</code>, <code>wood</code> (vertical boards), <code>tiles</code> (10 cm, as in a pool), <code>velvet</code> (vertical stripes, as in a cinema) or <code>plain</code>, in the colour of <code>wallpaper</code></td></tr>
 <tr><td><code>floor</code></td><td><code>carpet</code>, <code>marble</code>, <code>wood</code> (floorboards), <code>tiles</code> or <code>plain</code>, in the colour of <code>carpet</code></td></tr>
 <tr><td><code>wallpaper</code>, <code>carpet</code>, <code>ceiling</code></td><td>colours, such as <code>#c9b458</code></td></tr>
-<tr><td><code>baseboard</code></td><td>the skirting board: height and colour, such as <code>0.08, #86763c</code>; without it, 8 cm and half as bright as the wallpaper; <code>none</code>: no skirting board</td></tr>
+<tr><td><code>baseboard</code></td><td>the skirting board: height and colour, such as <code>0.08, #86763c</code>; without it, 8 cm and a little darker than the wallpaper; <code>none</code>: no skirting board. Along a sloping floor (a ramp) there is none</td></tr>
 <tr><td><code>dado</code></td><td>the lower part of the walls different: height and colour, such as <code>dado = 1.2, #1a1a1a</code>; <code>dado_material</code> says what it is made of (without: like the walls)</td></tr>
 <tr><td><code>dado_rail</code></td><td>a strip along the top of the dado: height and colour, such as <code>dado_rail = 0.05, #d8d0b8</code></td></tr>
 <tr><td><code>cornice</code></td><td>a crown moulding where wall and ceiling meet, slanted at 45°: height and colour, such as <code>cornice = 0.12, #e8e2d0</code></td></tr>

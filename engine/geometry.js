@@ -125,9 +125,11 @@ const ROUND_SIDES = 32;         // so viele schmale Flächen hat eine runde Säu
 const ARCH_STEPS = 64;          // so viele Stücke hat der Halbkreis eines Bogens, wie breit er auch ist
 // Eine Tür zwischen zwei Räumen: innen (Laibung, Sturz, Gewölbe) heller Putz,
 // auf beiden Seiten der Wand um die Öffnung eine Bekleidung in der Farbe der
-// Sockelleiste ihres Raums, so breit und so weit vor der Wand
+// Sockelleiste ihres Raums (ohne: hell gestrichen), so breit und so weit vor der Wand
 const LINING_COLOR = '#e4dfd4';
+const THRESHOLD_COLOR = '#cdc6b8';   // der Boden in der Tür: eine Schwelle aus hellem Stein, von Bekleidung zu Bekleidung
 const CASING_WIDTH = 0.08;
+const CASING_PAINT = '#d9d3c6';   // die Bekleidung in einem Raum ohne Sockelleiste
 const CASING_DEPTH = 0.02;     // etwas weiter vor als die Sockelleiste (1,5 cm), die darunter endet
 
 export function buildGeometry(level, modelBoxes = []) {
@@ -230,7 +232,8 @@ export function buildGeometry(level, modelBoxes = []) {
             add('ceiling', r, [[x0, h(x, z), z0], [x1, h(x + w, z), z0], [x1, h(x + w, z + d), z1], [x0, h(x, z + d), z1]],
                 texels(w * cell), texels(d * cell), door ? DOOR_GRID : 1);
         }
-        // die Durchgänge dieses Raums: Boden und Decke in zwei Hälften, jede wie ihr Raum
+        // die Durchgänge dieses Raums: unten eine Schwelle über die ganze
+        // Tiefe der Tür, oben der Sturz aus Putz, beide für die zwei Räume gleich
         const k = room.layer;
         for (let z = 0; z < depth; z++) {
             for (let x = 0; x < width; x++) {
@@ -238,11 +241,12 @@ export function buildGeometry(level, modelBoxes = []) {
                 const pass = passage(x, z, k);
                 if (!pass) continue;
                 const top = level.ceilingOfCell(x, z, k);
+                const fl = (cx, cz) => floorAt(cx, cz, r);
+                const sill = [[x * cell, fl(x, z + 1), (z + 1) * cell], [(x + 1) * cell, fl(x + 1, z + 1), (z + 1) * cell], [(x + 1) * cell, fl(x + 1, z), z * cell], [x * cell, fl(x, z), z * cell]];
+                const normal = faceNormal(sill);
+                if (normal.some((v) => v !== 0)) faces.push({ kind: 'block', color: THRESHOLD_COLOR, material: 'plain', room: r, corners: sill, normal, w: texels(cell), h: texels(cell) });
                 for (const [half, owner] of [[0, pass.near], [1, pass.far]]) {
                     const [hx0, hx1, hz0, hz1] = pass.axis === 'z' ? [x, x + 1, z + half / 2, z + (half + 1) / 2] : [x + half / 2, x + (half + 1) / 2, z, z + 1];
-                    const fl = (cx, cz) => floorAt(cx, cz, owner);
-                    add('floor', owner, [[hx0 * cell, fl(hx0, hz1), hz1 * cell], [hx1 * cell, fl(hx1, hz1), hz1 * cell], [hx1 * cell, fl(hx1, hz0), hz0 * cell], [hx0 * cell, fl(hx0, hz0), hz0 * cell]],
-                        texels((hx1 - hx0) * cell), texels((hz1 - hz0) * cell));
                     if (level.ceilingOpen(x, z, k) || level.archAt(x, z, k)) continue;
                     lining(owner, [[hx0 * cell, top(hx0, hz0), hz0 * cell], [hx1 * cell, top(hx1, hz0), hz0 * cell], [hx1 * cell, top(hx1, hz1), hz1 * cell], [hx0 * cell, top(hx0, hz1), hz1 * cell]],
                         texels((hx1 - hx0) * cell), texels((hz1 - hz0) * cell));
@@ -458,7 +462,8 @@ export function buildGeometry(level, modelBoxes = []) {
                 texels(length), texels(Math.max(ha - fa0, hb - fb0)));
             // Sockelleiste: vorne und oben, 1,5 cm vor der Wand
             crown(room, direction, a, b, ha, hb);
-            const board = pool ? null : level.rooms[room].settings.baseboard;
+            // nur wo der Boden an der Wand waagerecht ist: an einer Rampe klettert sie nicht die Wand hinauf
+            const board = pool || Math.abs(fa0 - fb0) > 1e-3 ? null : level.rooms[room].settings.baseboard;
             if (board) {
                 const n = INWARD[direction], depthOut = 0.015, y = board.height;
                 // Die Enden: An einer äußeren Ecke (die Wand biegt weg, wie an
@@ -547,7 +552,7 @@ export function buildGeometry(level, modelBoxes = []) {
 
     // Die Bekleidung einer Tür: auf jeder Seite der Wand um die Öffnung eine
     // Leiste, CASING_WIDTH breit und CASING_DEPTH vor der Wand, in der Farbe
-    // der Sockelleiste des Raums auf dieser Seite (ohne Sockelleiste keine).
+    // der Sockelleiste des Raums auf dieser Seite (ohne Sockelleiste hell gestrichen).
     // Seitlich vom Boden bis an den Sturz, oben quer darüber; bei einer runden
     // Tür im Bogen um die Öffnung. Rechnet in »along« (entlang der Wand) und
     // »across« (quer durch sie), Meter.
@@ -573,9 +578,9 @@ export function buildGeometry(level, modelBoxes = []) {
                 const top = level.ceilingOfCell(x, z, k);
                 const arch = level.archAt(x, z, k);
                 for (const [owner, face, out] of [[pass.near, c0, -1], [pass.far, c0 + cell, 1]]) {
+                    // in der Farbe der Sockelleiste, ohne Sockelleiste hell gestrichen
                     const board = level.rooms[owner].settings.baseboard;
-                    if (!board) continue;
-                    const color = board.color, front = face + out * CASING_DEPTH;
+                    const color = board ? board.color : CASING_PAINT, front = face + out * CASING_DEPTH;
                     const floorY = (a) => floorAt((alongX ? a : face) / cell, (alongX ? face : a) / cell, owner);
                     const roomTop = (a) => ceiling((alongX ? a : face) / cell, (alongX ? face : a) / cell, owner);
                     // ein Kasten vor der Wand: entlang lo..hi, von y0 bis y1; sides: welche Seiten offen liegen
