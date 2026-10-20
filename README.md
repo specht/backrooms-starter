@@ -19,7 +19,7 @@ Serve this folder with any static web server and open `index.html`:
 Opening `index.html` directly as a file does not work: the browser does not
 let a page load the room files from disk.
 
-## Two levels
+## Three levels
 
 - `level.ini` and `rooms/`: your level. It starts small: a room, a corridor
   and two coloured rooms. Build on it.
@@ -27,6 +27,12 @@ let a page load the room files from disk.
   that opens up nine metres high, a colonnade, a gallery of pedestals, a
   marble hall with a statue and a way over ramps on which nothing is level. Open it with `index.html?level=lobby/level.ini`.
   Its light is already baked (`lobby/level.light`), so it is there at once.
+- `tiefe/`: »Level 1: Die Tiefe«, rooms above and below each other: a narrow
+  corridor whose wallpaper turns grey, a hall of columns with an opening
+  eight metres above an abyss, an office upstairs with a hole in its floor, a
+  pit, low cellars, a tiled hall under the earth and a red corridor that
+  climbs back up. Open it with `index.html?level=tiefe/level.ini`; its light
+  is baked too.
 
 After a change to a room, reload the page.
 
@@ -188,7 +194,7 @@ just as a door places its neighbour. Whoever steps onto the hole falls.
 <tr><td><code>light</code></td><td>its colour, such as <code>#fff3cf</code></td></tr>
 <tr><td><code>power</code></td><td>how bright (1.0)</td></tr>
 <tr><td><code>size</code></td><td>width and length in metres, or one number for a square lamp (0.85); bigger lamps cast softer shadows</td></tr>
-<tr><td><code>flicker</code></td><td><code>1</code>: the lamp flickers now and then</td></tr>
+<tr><td><code>flicker</code></td><td><code>1</code>: the lamp flickers now and then. Flickering lamps can have up to four different colours in a level; with more, some share a colour in between</td></tr>
 </table>
 
 A lamp hangs just below the ceiling, in the middle of its field.
@@ -247,7 +253,15 @@ room's wallpaper). `material` makes it of `marble`, `wood`, `tiles`, `velvet`,
   reduced to fewer triangles.
 - `statues/sofa_03/`: [Sofa 03](https://polyhaven.com/a/sofa_03) by Fran Calvente,
   `statues/industrial_wall_lamp/`: [Industrial Wall Lamp](https://polyhaven.com/a/industrial_wall_lamp),
-  both from [Poly Haven](https://polyhaven.com/models), CC0, glTF at 1K.
+  and, for `tiefe/`, [Metal Office Desk](https://polyhaven.com/a/metal_office_desk),
+  [School Chair 01](https://polyhaven.com/a/SchoolChair_01),
+  [Vintage Wooden Drawer 01](https://polyhaven.com/a/vintage_wooden_drawer_01),
+  [Worn Metal Rack](https://polyhaven.com/a/worn_metal_rack),
+  [Old Bed Frame](https://polyhaven.com/a/old_bed_frame),
+  [Plastic Monobloc Chair 01](https://polyhaven.com/a/plastic_monobloc_chair_01),
+  [Rockingchair 01](https://polyhaven.com/a/Rockingchair_01) and
+  [Small Wooden Table 01](https://polyhaven.com/a/small_wooden_table_01),
+  all from [Poly Haven](https://polyhaven.com/models), CC0, glTF at 1K.
 - `vendor/three/`: [three.js](https://threejs.org/), MIT licence, see
   `vendor/three/LICENSE`.
 - `engine/fonts/vcr-osd-mono.ttf`: [VCR OSD Mono](https://www.dafont.com/vcr-osd-mono.font)

@@ -485,6 +485,45 @@ function flickerValue(t, seed) {
     return noise(step) > 0.7 ? 0.08 + 0.3 * noise(step + 0.5) : 1;
 }
 
+// Welcher Kanal eine flackernde Leuchte bekommt. Ein Kanal speichert nur,
+// wie hell sein Licht ist, und hat eine Farbe: Leuchten verschiedener Farbe
+// brauchen verschiedene Kanäle (sonst färbte eine rote Leuchte alle weißen
+// ihres Kanals rot). Jede Farbe bekommt einen Kanal, übrige Kanäle die
+// Farben mit den meisten Leuchten; innerhalb einer Farbe geht es reihum, so
+// flackern nicht alle im selben Takt. Mehr als vier Farben: Eine Farbe
+// teilt sich die Kanäle der ähnlichsten.
+function flickerChannels(level) {
+    const hex = (color) => new THREE.Color(color).getHexString();
+    const counts = new Map();
+    for (const t of level.things) {
+        const color = t.type === 'light' ? (t.flicker > 0 ? t.color ?? '#fff3cf' : null) : t.glow?.flicker > 0 ? t.glow.color : null;
+        if (color) counts.set(hex(color), (counts.get(hex(color)) ?? 0) + 1);
+    }
+    const colors = [...counts.keys()].sort((a, b) => counts.get(b) - counts.get(a));
+    const kept = colors.slice(0, FLICKER_CHANNELS);
+    const channels = new Map(kept.map((c, i) => [c, [i]]));
+    // übrige Kanäle reihum an die häufigsten Farben
+    for (let i = kept.length, k = 0; i < FLICKER_CHANNELS && kept.length; i++, k = (k + 1) % kept.length) channels.get(kept[k]).push(i);
+    const nearest = (c) => {
+        const a = new THREE.Color(`#${c}`);
+        let best = kept[0], distance = Infinity;
+        for (const k of kept) {
+            const b = new THREE.Color(`#${k}`);
+            const d = (a.r - b.r) ** 2 + (a.g - b.g) ** 2 + (a.b - b.b) ** 2;
+            if (d < distance) { distance = d; best = k; }
+        }
+        return best;
+    };
+    const next = new Map();
+    return (color) => {
+        const group = channels.get(hex(color)) ?? channels.get(nearest(hex(color)));
+        const key = group.join(',');
+        const n = next.get(key) ?? 0;
+        next.set(key, n + 1);
+        return group[n % group.length];
+    };
+}
+
 // Ein kurzer Fingerabdruck des Grundrisses (Größe und Felder)
 function layoutPrint(level) {
     let hash = 2166136261;
@@ -537,10 +576,10 @@ async function start() {
     scene.add(player);
 
     // Leuchten: in der Mitte ihres Feldes, knapp unter der Decke. Flackernde
-    // bekommen reihum einen von vier Kanälen.
-    let nextChannel = 0;
+    // bekommen einen von vier Kanälen (flickerChannel).
+    const flickerChannel = flickerChannels(level);
     const lights = level.things.filter((t) => t.type === 'light').map((t) => {
-        const channel = t.flicker > 0 ? nextChannel++ % FLICKER_CHANNELS : -1;
+        const channel = t.flicker > 0 ? flickerChannel(t.color ?? '#fff3cf') : -1;
         // Die Leuchte liegt in der Ebene der Decke über ihr: Wie steil die in
         // x und z ansteigt, ergibt sich aus ihrer Höhe an den Rändern der
         // Leuchte (unter einem First steigt sie zu beiden Seiten gleich, dort
@@ -595,7 +634,7 @@ async function start() {
         });
         if (box.isEmpty()) box.setFromObject(object);
         const size = box.getSize(new THREE.Vector3());
-        const channel = thing.glow.flicker > 0 ? nextChannel++ % FLICKER_CHANNELS : -1;
+        const channel = thing.glow.flicker > 0 ? flickerChannel(thing.glow.color) : -1;
         lights.push({
             type: 'light', kind: 'bulb', char: thing.char, x: thing.x, z: thing.z, room: thing.room,
             color: thing.glow.color, power: thing.glow.power, flicker: thing.glow.flicker, channel,

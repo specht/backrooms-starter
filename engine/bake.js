@@ -179,15 +179,21 @@ export function lightRange(light) {
 // dieser Farbe. Teilen sich Leuchten verschiedener Farbe einen Kanal, gilt
 // die Farbe der letzten.
 const LUMA = [0.2126, 0.7152, 0.0722];
+// Die Farbe jedes Kanals: die seiner Leuchten, nach ihrer Stärke gemittelt
+// (teilen sich Leuchten verschiedener Farbe einen Kanal, weil es mehr als
+// vier Farben gibt, flackern sie in einer Farbe dazwischen)
 export function channelColors(lights, count) {
-    const colors = Array.from({ length: count }, () => new THREE.Vector3(1, 1, 1));
+    const sums = Array.from({ length: count }, () => new THREE.Vector3());
     for (const light of lights) {
         if (light.channel < 0) continue;
         const c = new THREE.Color(light.color);
-        const luma = c.r * LUMA[0] + c.g * LUMA[1] + c.b * LUMA[2];
-        colors[light.channel].set(c.r, c.g, c.b).divideScalar(Math.max(luma, 1e-3));
+        sums[light.channel].add(new THREE.Vector3(c.r, c.g, c.b).multiplyScalar(light.power ?? 1));
     }
-    return colors;
+    return sums.map((sum) => {
+        if (sum.lengthSq() === 0) return new THREE.Vector3(1, 1, 1);
+        const luma = sum.x * LUMA[0] + sum.y * LUMA[1] + sum.z * LUMA[2];
+        return sum.divideScalar(Math.max(luma, 1e-6));
+    });
 }
 
 export function lightTexture(lights, on = null, texture = null) {

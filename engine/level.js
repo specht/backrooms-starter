@@ -217,10 +217,11 @@ function parseRoom(id, source) {
         if (!/[0-9]/.test(char)) continue;
         const door = values(section).door;
         if (door === undefined) throw new LevelError(file, section.line, `[${char}] is a door and needs door = room digit.`);
-        const match = String(door).match(/^([a-z0-9_-]+)\s+([0-9])$/i);
-        if (!match) throw new LevelError(file, section.line, `door = ${door}: expected the name of a room and a digit, for example door = flur 2.`);
+        // door = flur 2, -4: der Boden dort liegt 4 m tiefer (eine Tür hoch in der Wand)
+        const match = String(door).match(/^([a-z0-9_-]+)\s+([0-9])(?:\s*,\s*(-?\d+(?:\.\d+)?))?$/i);
+        if (!match) throw new LevelError(file, section.line, `door = ${door}: expected the name of a room and a digit, for example door = flur 2 (or door = halle 1, -4 when the floor there lies 4 m lower).`);
         if (!doors[char]) throw new LevelError(file, section.line, `[${char}] describes a door, but there is no ${char} in the floor plan.`);
-        links.push({ from: char, room: match[1], to: match[2], line: section.line });
+        links.push({ from: char, room: match[1], to: match[2], rise: Number(match[3] ?? 0), line: section.line });
     }
     // [_] below = raum: der Raum unter dem Loch im Boden; sein ^ liegt genau
     // darunter, seine Decke um slab (Meter, die Dicke der Decke) unter
@@ -363,8 +364,8 @@ export async function loadLevel(levelFile, fetchText) {
             if (shape(mine) !== shape(theirs)) {
                 throw new LevelError(room.file, link.line, `door ${link.from} is ${mine.cells.length} field${mine.cells.length > 1 ? 's' : ''} wide, door ${link.to} of ${link.room} ${theirs.cells.length}${theirs.cells.length > 1 && shape(theirs) !== shape(mine) && theirs.cells.length === mine.cells.length ? ' (the other way round)' : ''}: both sides of a door need the same width, in the same direction.`);
             }
-            edges.push({ a: room, da: room.doors[link.from], b: other, db: other.doors[link.to], line: link.line });
-            edges.push({ a: other, da: other.doors[link.to], b: room, db: room.doors[link.from], line: link.line, back: room });
+            edges.push({ a: room, da: room.doors[link.from], b: other, db: other.doors[link.to], line: link.line, rise: link.rise });
+            edges.push({ a: other, da: other.doors[link.to], b: room, db: room.doors[link.from], line: link.line, back: room, rise: -link.rise });
         }
     }
 
@@ -422,11 +423,12 @@ export async function loadLevel(levelFile, fetchText) {
             const z = room.offset.z + edge.da.z - edge.db.z;
             if (!edge.b.offset) {
                 edge.b.offset = { x, z };
-                edge.b.elevation = doorFloor(edge.a, edge.da) - edge.b.floorRelative(edge.db.x + 0.5, edge.db.z + 0.5);
+                edge.b.elevation = doorFloor(edge.a, edge.da) + edge.rise - edge.b.floorRelative(edge.db.x + 0.5, edge.db.z + 0.5);
                 placed.push(edge.b);
-            } else if (Math.abs(doorFloor(edge.a, edge.da) - doorFloor(edge.b, edge.db)) > 0.01) {
+            } else if (Math.abs(doorFloor(edge.a, edge.da) + edge.rise - doorFloor(edge.b, edge.db)) > 0.01) {
                 const source = edge.back ?? edge.a;
-                throw new LevelError(source.file, edge.line, `this door doesn't fit: the floors of ${edge.a.id} and ${edge.b.id} are at different heights there (${doorFloor(edge.a, edge.da).toFixed(2)} m and ${doorFloor(edge.b, edge.db).toFixed(2)} m). Other doors or ramps already set them.`);
+                const wanted = edge.rise ? ` (with ${Math.abs(edge.rise)} m ${edge.rise > 0 ? 'up' : 'down'} to ${edge.b.id})` : '';
+                throw new LevelError(source.file, edge.line, `this door doesn't fit: the floors of ${edge.a.id} and ${edge.b.id} are at different heights there (${doorFloor(edge.a, edge.da).toFixed(2)} m and ${doorFloor(edge.b, edge.db).toFixed(2)} m)${wanted}. Other doors or ramps already set them.`);
             } else if (edge.b.offset.x !== x || edge.b.offset.z !== z) {
                 const source = edge.back ?? edge.a;
                 throw new LevelError(source.file, edge.line, `this door doesn't fit: other doors already place the rooms ${edge.a.id} and ${edge.b.id} differently.`);
@@ -523,6 +525,19 @@ export async function loadLevel(levelFile, fetchText) {
             if (Math.abs(fa - fb) < 0.01) { cells[k * size + place] = 'void'; owner[k * size + place] = -1; }
         }
     }
+    // Eine Tür hoch in der Wand (door = …, -4): Ihr Feld gehört dem oberen
+    // Raum, sein Boden liegt dort; auf der unteren Seite ist darunter Wand
+    const raisedDoorPlaces = new Set();
+    for (const edge of edges) {
+        if (edge.hole || !(edge.rise < 0)) continue;   // jede Tür einmal: von oben gesehen
+        const high = edge.a, low = edge.b;
+        for (const c of edge.da.cells) {
+            const place = (high.oz + c.z) * width + high.ox + c.x;
+            raisedDoorPlaces.add(place);
+            if (high.layer === low.layer) owner[high.layer * size + place] = high.index;
+            else { cells[low.layer * size + place] = 'void'; owner[low.layer * size + place] = -1; }
+        }
+    }
     const doorCells = new Set();
     for (let k = 0; k < layers; k++) for (const place of doorPlaces) if (cells[k * size + place] === 'floor') doorCells.add(k * size + place);
 
@@ -601,6 +616,7 @@ export async function loadLevel(levelFile, fetchText) {
     // Kante am nächsten an der Tür liegt.
     const doorCorners = new Map();   // Feld (mit Schicht) -> Höhe an den Ecken (x0z0, x1z0, x0z1, x1z1)
     for (const at of doorCells) {
+        if (raisedDoorPlaces.has(at % size)) continue;   // eine hohe Tür bleibt eben, auf der Höhe des oberen Bodens
         const k = Math.floor(at / size), gx = at % width, gz = Math.floor((at % size) / width);
         const own = roomList[owner[at]];
         const corners = [[gx, gz], [gx + 1, gz], [gx, gz + 1], [gx + 1, gz + 1]];
