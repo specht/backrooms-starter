@@ -7,6 +7,8 @@ const RADIUS = 0.25;      // so breit bist du, in Metern
 const EYE_HEIGHT = 1.6;   // Augenhöhe am Rechner
 const STICK_RADIUS = 55;  // so weit (Pixel) schiebt der Daumen den Stick bis zum Anschlag
 const TOUCH_TURN = 0.005; // so viel dreht ein Pixel Wischen (Bogenmaß)
+const FALL_FROM = 0.3;    // liegt der Boden tiefer als das unter den Füßen, fällt man
+const GRAVITY = 9.81;     // m/s²
 
 export class Walker {
     constructor(level, player, camera, renderer) {
@@ -29,9 +31,12 @@ export class Walker {
         // Blöcke, die bis unter Kopfhöhe reichen, stehen im Weg
         const cell = level.settings.cell;
         // (Statuen kommen mit addObstacle dazu, wenn sie geladen sind)
+        // (y0 bis y1: wie hoch er reicht, damit ein Block in einem Raum
+        // darüber unten nicht im Weg steht)
         this.boxes = level.things.filter((t) => t.type === 'block' && t.base + t.offset[1] < 1.7).map((t) => {
             const cx = (t.x + 0.5) * cell + t.offset[0], cz = (t.z + 0.5) * cell + t.offset[2];
-            return { x0: cx - t.size[0] / 2, x1: cx + t.size[0] / 2, z0: cz - t.size[2] / 2, z1: cz + t.size[2] / 2 };
+            const y0 = t.floor + t.base + t.offset[1];
+            return { x0: cx - t.size[0] / 2, x1: cx + t.size[0] / 2, z0: cz - t.size[2] / 2, z1: cz + t.size[2] / 2, y0, y1: y0 + t.size[1] };
         });
         camera.position.set(0, EYE_HEIGHT, 0);
         const { start, settings } = level;
@@ -115,24 +120,33 @@ export class Walker {
     // zurück zum @, in die Richtung aus der Level-Datei
     toStart() {
         const { start, settings } = this.level;
-        this.player.position.set((start.x + 0.5) * settings.cell, 0, (start.z + 0.5) * settings.cell);
-        this.stand();
+        this.player.position.set((start.x + 0.5) * settings.cell, this.level.floorAt(start.x + 0.5, start.z + 0.5, start.room), (start.z + 0.5) * settings.cell);
         // Himmelsrichtung im Uhrzeigersinn, Drehung (yaw) gegen den Uhrzeigersinn
         this.yaw = -THREE.MathUtils.degToRad(start.heading ?? 0);
         this.pitch = 0;
     }
 
-    // auf den Boden an der Stelle, wo du stehst: Auf einer Rampe geht es hinauf
+    // auf den Boden an der Stelle, wo du stehst: Auf einer Rampe geht es
+    // hinauf. Liegen Räume übereinander, auf den, auf dem deine Füße sind.
+    // Liegt der Boden viel tiefer (ein Loch), fällt man dorthin (update).
     stand() {
         const p = this.player.position;
-        p.y = this.level.floorAtPoint(p.x, p.z);
+        const floor = this.level.floorAtPoint(p.x, p.z, p.y);
+        if (floor > p.y - FALL_FROM) p.y = floor;
     }
 
+    // Kein Boden, auf den man von hier aus treten kann: in keinem Raum dort
+    // einer bis eine Stufe über den Füßen, unter einer Decke über dem Kopf
+    // Über einem Loch ist auch Boden: tief unten, man fällt hinein.
     solid(x, z) {
-        const { width, depth, cells, settings } = this.level;
+        const { settings } = this.level;
         const cx = Math.floor(x / settings.cell), cz = Math.floor(z / settings.cell);
-        if (cx < 0 || cz < 0 || cx >= width || cz >= depth) return true;
-        return cells[cz * width + cx] !== 'floor';
+        const y = this.player.position.y;
+        return !this.level.slabs(cx, cz).some(({ room, layer }) => {
+            const floor = this.level.floorAt(x / settings.cell, z / settings.cell, room);
+            const ceiling = this.level.ceilingOfCell(cx, cz, layer)(x / settings.cell, z / settings.cell);
+            return floor <= y + 0.45 && ceiling > Math.max(floor, y) + 1.0;
+        });
     }
 
     // Etwas, um das man herumgehen muss: sein Grundriss, x0 bis x1 und z0 bis z1 in Metern
@@ -143,7 +157,9 @@ export class Walker {
     // Passt ein Kreis mit RADIUS an diese Stelle? Geprüft an acht Punkten des Rands.
     free(x, z) {
         if (this.solid(x, z)) return false;
+        const y = this.player.position.y;
         for (const box of this.boxes) {
+            if (box.y0 !== undefined && (box.y1 < y + 0.1 || box.y0 > y + 1.7)) continue;
             const nx = Math.max(box.x0, Math.min(x, box.x1)), nz = Math.max(box.z0, Math.min(z, box.z1));
             if ((x - nx) ** 2 + (z - nz) ** 2 < RADIUS * RADIUS) return false;
         }
@@ -162,8 +178,18 @@ export class Walker {
         this.stand();
     }
 
+    // Fallen: schneller und schneller, bis auf den Boden darunter
+    fall(dt) {
+        const p = this.player.position;
+        const floor = this.level.floorAtPoint(p.x, p.z, p.y);
+        if (p.y <= floor + 1e-4) { this.falling = 0; return; }
+        this.falling = (this.falling ?? 0) + GRAVITY * dt;
+        p.y = Math.max(floor, p.y - this.falling * dt);
+    }
+
     update(dt) {
         if (!this.enabled()) return;
+        this.fall(dt);
         if (this.renderer.xr.isPresenting) {
             this.updateVR(dt);
             return;

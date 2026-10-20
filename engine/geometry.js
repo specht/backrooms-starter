@@ -110,11 +110,15 @@ function addDetail(faces, boxes) {
 }
 
 // statueBoxes: der Kasten um jede Statue, für feinere Lichtkarte in ihrer Nähe
+const SLAB_COLOR = '#8e8a80';   // die Decke zwischen zwei Räumen übereinander, am Rand eines Lochs
+
 export function buildGeometry(level, statueBoxes = []) {
-    const { width, depth, cells, owner, settings } = level;
+    const { width, depth, layers, settings } = level;
     const cell = settings.cell;
-    const at = (x, z) => (x < 0 || z < 0 || x >= width || z >= depth ? 'void' : cells[z * width + x]);
-    const roomOf = (x, z) => owner[z * width + x];
+    // Räume können übereinander liegen (Schichten, level.js): at und roomOf
+    // fragen eine Schicht, slabs alle
+    const at = (x, z, k = 0) => level.kindAt(x, z, k);
+    const roomOf = (x, z, k = 0) => level.roomAt(x, z, k);
     // Decken- und Bodenhöhe an einer Ecke (in Feldern), so wie der Raum dieses Feldes sie will
     const ceiling = (x, z, room) => level.ceilingAt(x, z, room);
     const floorAt = (x, z, room) => level.floorAt(x, z, room);
@@ -133,16 +137,21 @@ export function buildGeometry(level, statueBoxes = []) {
     // Feld). Unter einem Satteldach nur Streifen entlang des Firsts, denn
     // die Decke knickt am First; auf einer Rampe Streifen quer zu ihr, denn
     // der Boden knickt an ihren Enden. Beides: einzelne Felder.
-    const rectangles = (room, onlyAlong) => {
+    // forCeiling: Felder für die Decke (auch über einem Loch im eigenen
+    // Boden, aber nicht unter einem Loch in der eigenen Decke)
+    const rectangles = (room, onlyAlong, forCeiling = false) => {
         const used = new Set();
+        const k = level.rooms[room].layer;
+        const kinds = forCeiling ? ['floor', 'hole'] : ['floor'];
         // Türen mit verdrehtem Boden (zwischen zwei verschieden schrägen
         // Räumen) sind eigene Felder; alle anderen gehören zum Boden ihres Raums
-        const door = (x, z) => level.twistedDoors.has(z * width + x);
-        const inRoom = (x, z) => at(x, z) === 'floor' && roomOf(x, z) === room && !used.has(z * width + x) && !door(x, z);
+        const door = (x, z) => level.twistedDoors.has(level.index(x, z, k));
+        const mine = (x, z) => kinds.includes(at(x, z, k)) && roomOf(x, z, k) === room && !(forCeiling && level.ceilingOpen(x, z, k));
+        const inRoom = (x, z) => mine(x, z) && !used.has(z * width + x) && !door(x, z);
         const result = [];
         for (let z = 0; z < depth; z++) {
             for (let x = 0; x < width; x++) {
-                if (at(x, z) === 'floor' && roomOf(x, z) === room && door(x, z)) { result.push({ x, z, w: 1, d: 1, door: true }); continue; }
+                if (mine(x, z) && door(x, z)) { result.push({ x, z, w: 1, d: 1, door: true }); continue; }
                 if (!inRoom(x, z)) continue;
                 let w = 1, d = 1;
                 if (onlyAlong !== 'z' && onlyAlong !== 'cell') while (inRoom(x + w, z)) w += 1;
@@ -169,7 +178,7 @@ export function buildGeometry(level, statueBoxes = []) {
             add('floor', r, [[x0, f(x, z + d), z1], [x1, f(x + w, z + d), z1], [x1, f(x + w, z), z0], [x0, f(x, z), z0]],
                 texels(w * cell), texels(d * cell), door ? DOOR_GRID : 1);
         }
-        for (const { x, z, w, d, door } of rectangles(r, both)) {
+        for (const { x, z, w, d, door } of rectangles(r, both, true)) {
             const x0 = x * cell, x1 = (x + w) * cell, z0 = z * cell, z1 = (z + d) * cell;
             add('ceiling', r, [[x0, h(x, z), z0], [x1, h(x + w, z), z0], [x1, h(x + w, z + d), z1], [x0, h(x, z + d), z1]],
                 texels(w * cell), texels(d * cell), door ? DOOR_GRID : 1);
@@ -179,44 +188,71 @@ export function buildGeometry(level, statueBoxes = []) {
     // Wände: erst jedes Stück einzeln, dann Stücke auf derselben Linie im
     // selben Raum zu einer Fläche zusammen, solange ihre Oberkante gerade bleibt
     const pieces = new Map();
-    for (let z = 0; z < depth; z++) {
-        for (let x = 0; x < width; x++) {
-            if (at(x, z) !== 'floor') continue;
-            const room = roomOf(x, z);
-            const h = (cx, cz) => ceiling(cx, cz, room);
-            // [Nachbar, Richtung, Linie, Stelle entlang der Linie]
-            const edges = [
-                [x, z - 1, 'north', z, x],
-                [x, z + 1, 'south', z + 1, x],
-                [x - 1, z, 'west', x, z],
-                [x + 1, z, 'east', x + 1, z],
-            ];
-            for (const [nx, nz, direction, line, along] of edges) {
-                if (at(nx, nz) === 'wall') {
-                    const key = `${room}:${direction}:${line}`;
-                    if (!pieces.has(key)) pieces.set(key, { room, direction, line, list: [] });
-                    pieces.get(key).list.push(along);
-                } else if (at(nx, nz) === 'floor' && roomOf(nx, nz) !== room) {
-                    // Durchgang in einen Raum mit anderer Decke: ist dessen Decke
-                    // hier niedriger, sieht man von dieser Seite ein Stück Wand
-                    // darüber, von seiner unteren Kante bis zur eigenen Decke.
+    // Die Lücken einer Wand: Von unten nach oben ist Wand, wo hinter der
+    // Kante keine Luft ist. Luft hinter ihr kommt von jedem Raum, der dort
+    // einen Boden hat, in jeder Schicht (a und b: die beiden Enden der Kante).
+    // slab: die Lücke liegt zwischen zwei Räumen übereinander dahinter (die
+    // Decke zwischen ihnen, etwa am Rand eines Lochs), nicht unter oder über allem
+    const gaps = (bottom, top, open) => {
+        const result = [];
+        let low = bottom, between = false;
+        for (const o of [...open].sort((p, q) => p.floor[0] + p.floor[1] - q.floor[0] - q.floor[1])) {
+            const high = [Math.min(o.floor[0], top[0]), Math.min(o.floor[1], top[1])];
+            if (high[0] > low[0] + 0.01 || high[1] > low[1] + 0.01) result.push([low, [Math.max(high[0], low[0]), Math.max(high[1], low[1])], between]);
+            low = [Math.max(low[0], o.ceiling[0]), Math.max(low[1], o.ceiling[1])];
+            between = true;
+        }
+        if (top[0] > low[0] + 0.01 || top[1] > low[1] + 0.01) result.push([[Math.min(low[0], top[0]), Math.min(low[1], top[1])], top, false]);
+        return result;
+    };
+    for (let k = 0; k < layers; k++) {
+        for (let z = 0; z < depth; z++) {
+            for (let x = 0; x < width; x++) {
+                if (at(x, z, k) !== 'floor') continue;
+                const room = roomOf(x, z, k);
+                const h = level.ceilingOfCell(x, z, k);   // unter einem Loch: bis an die Decke darüber
+                const f = (cx, cz) => floorAt(cx, cz, room);
+                // [Nachbar, Richtung, Linie, Stelle entlang der Linie]
+                const edges = [
+                    [x, z - 1, 'north', z, x],
+                    [x, z + 1, 'south', z + 1, x],
+                    [x - 1, z, 'west', x, z],
+                    [x + 1, z, 'east', x + 1, z],
+                ];
+                for (const [nx, nz, direction, line, along] of edges) {
+                    // derselbe Raum in derselben Schicht: keine Wand, außer am Rand des
+                    // Schachts unter einem Loch (er reicht höher als der Nachbar)
+                    if (at(nx, nz, k) === 'floor' && roomOf(nx, nz, k) === room &&
+                        level.ceilingOpen(x, z, k) === level.ceilingOpen(nx, nz, k)) continue;
                     const [a, b] = wallEnds(direction, line, along, along + 1);
-                    const other = roomOf(nx, nz);
-                    // Liegt sein Boden hier höher, sieht man eine Stufe hinauf
-                    const fa = floorAt(a[0], a[1], room), fb = floorAt(b[0], b[1], room);
-                    const ga = floorAt(a[0], a[1], other), gb = floorAt(b[0], b[1], other);
-                    if (ga > fa + 0.01 || gb > fb + 0.01) {
-                        add('wall', room, [[a[0] * cell, fa, a[1] * cell], [b[0] * cell, fb, b[1] * cell],
-                            [b[0] * cell, Math.max(gb, fb), b[1] * cell], [a[0] * cell, Math.max(ga, fa), a[1] * cell]],
-                            texels(cell), texels(Math.max(ga - fa, gb - fb, 0.2)));
+                    const bottom = [f(a[0], a[1]), f(b[0], b[1])], top = [h(a[0], a[1]), h(b[0], b[1])];
+                    // Luft dahinter, die mit der eigenen überlappt
+                    const open = level.slabs(nx, nz).map((slab) => {
+                        const top = level.ceilingOfCell(nx, nz, slab.layer);
+                        return {
+                            floor: [floorAt(a[0], a[1], slab.room), floorAt(b[0], b[1], slab.room)],
+                            ceiling: [top(a[0], a[1]), top(b[0], b[1])],
+                        };
+                    }).filter((o) => o.ceiling[0] > bottom[0] + 0.01 || o.ceiling[1] > bottom[1] + 0.01)
+                        .filter((o) => o.floor[0] < top[0] - 0.01 || o.floor[1] < top[1] - 0.01);
+                    if (!open.length && !level.ceilingOpen(x, z, k)) {
+                        // eine ganze Wand: Stücke auf einer Linie werden unten zusammengelegt
+                        // (nicht am Schacht unter einem Loch: die reicht bis an die Decke darüber)
+                        const key = `${room}:${direction}:${line}`;
+                        if (!pieces.has(key)) pieces.set(key, { room, direction, line, list: [] });
+                        pieces.get(key).list.push(along);
+                        continue;
                     }
-                    const ha = h(a[0], a[1]), hb = h(b[0], b[1]);
-                    const la = ceiling(a[0], a[1], other), lb = ceiling(b[0], b[1], other);
-                    if (la < ha - 0.01 || lb < hb - 0.01) {
-                        const bottomA = Math.min(la, ha), bottomB = Math.min(lb, hb);
-                        add('wall', room, [[a[0] * cell, bottomA, a[1] * cell], [b[0] * cell, bottomB, b[1] * cell],
-                            [b[0] * cell, hb, b[1] * cell], [a[0] * cell, ha, a[1] * cell]],
-                            texels(cell), texels(Math.max(ha - bottomA, hb - bottomB, 0.2)));
+                    // Durchgang zu einem Raum mit anderem Boden oder anderer Decke:
+                    // eine Stufe darunter, ein Stück Wand darüber, und dazwischen
+                    // eine Decke zwischen zwei Räumen übereinander
+                    for (const [low, high, slab] of gaps(bottom, top, open)) {
+                        const corners = [[a[0] * cell, low[0], a[1] * cell], [b[0] * cell, low[1], b[1] * cell],
+                            [b[0] * cell, high[1], b[1] * cell], [a[0] * cell, high[0], a[1] * cell]];
+                        const w = texels(cell), h = texels(Math.max(high[0] - low[0], high[1] - low[1], 0.2));
+                        // die Decke zwischen zwei Räumen: roher Beton, keine Tapete
+                        if (slab) faces.push({ kind: 'block', color: SLAB_COLOR, material: 'plain', room, corners, normal: faceNormal(corners), w, h });
+                        else add('wall', room, corners, w, h);
                     }
                 }
             }
@@ -263,8 +299,9 @@ export function buildGeometry(level, statueBoxes = []) {
                 const lengthCells = Math.abs(b[0] - a[0]) + Math.abs(b[1] - a[1]);
                 const d = [(b[0] - a[0]) / lengthCells, (b[1] - a[1]) / lengthCells];
                 const alongX = direction === 'north' || direction === 'south';
+                const layer = level.rooms[room].layer;
                 const corner = (p, out) => {
-                    const probe = (side) => at(Math.floor(p[0] + out[0] * 0.5 + n[0] * 0.5 * side), Math.floor(p[1] + out[1] * 0.5 + n[2] * 0.5 * side));
+                    const probe = (side) => at(Math.floor(p[0] + out[0] * 0.5 + n[0] * 0.5 * side), Math.floor(p[1] + out[1] * 0.5 + n[2] * 0.5 * side), layer);
                     if (probe(-1) === 'floor') return 'outer';
                     if (probe(1) !== 'floor') return 'inner';
                     return 'straight';
@@ -301,7 +338,7 @@ export function buildGeometry(level, statueBoxes = []) {
         const cx = (block.x + 0.5) * cell + block.offset[0], cz = (block.z + 0.5) * cell + block.offset[2];
         const x0 = cx - w / 2, x1 = cx + w / 2, z0 = cz - d / 2, z1 = cz + d / 2;
         const y0 = block.floor + block.base + block.offset[1], y1 = y0 + h;   // auf dem Boden seines Felds (oder höher)
-        const room = roomOf(block.x, block.z);
+        const room = block.room;
         const put = (corners, sw, sh) => faces.push({ kind: 'block', color: block.color, material: block.material, room, corners, normal: faceNormal(corners), w: texels(sw), h: texels(sh) });
         put([[x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]], w, d);                 // oben
         if (block.base > 0.001) put([[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]], w, d); // unten

@@ -72,6 +72,8 @@ const MODEL_DEFAULTS = {
 };
 
 const SLOPES = ['flat', 'north', 'east', 'south', 'west', 'gable'];
+const MAX_LAYERS = 8;     // so viele Räume dürfen übereinander liegen
+const STEP = 0.45;        // so hoch reicht ein Schritt: ein Boden bis hier über den Füßen trägt noch
 const RAMPS = ['north', 'east', 'south', 'west'];
 
 export class LevelError extends Error {
@@ -164,8 +166,11 @@ function parseRoom(id, source) {
     const depth = rows.length;
     const cells = [];
     const things = [];
-    const doors = {};      // Ziffer -> Feld
+    const doors = {};      // Ziffer -> Tür: ihr erstes Feld (x, z) und alle Felder (cells)
     const links = [];      // door = raum ziffer
+    // Löcher: _ im Boden (darunter liegt ein anderer Raum), ^ in der Decke
+    // (darüber einer). Beide dürfen viele Felder groß sein.
+    const holes = { down: [], up: [] };
     let start = null;
     rows.forEach((row, z) => {
         for (let x = 0; x < width; x++) {
@@ -173,10 +178,21 @@ function parseRoom(id, source) {
             let kind = 'floor';
             if (char === '#') kind = 'wall';
             else if (char === ' ') kind = 'void';
+            else if (char === '_') { kind = 'hole'; holes.down.push({ x, z }); }
+            else if (char === '^') holes.up.push({ x, z });
             else if (char === '@') start = { x, z, line: row.line };
             else if (/[0-9]/.test(char)) {
-                if (doors[char]) throw new LevelError(file, row.line, `door ${char} appears twice. Every digit is a door of its own.`);
-                doors[char] = { x, z, line: row.line };
+                // Dieselbe Ziffer mehrmals in einer Reihe: eine breitere Tür
+                const door = doors[char];
+                if (!door) {
+                    doors[char] = { x, z, line: row.line, cells: [{ x, z }] };
+                } else {
+                    const last = door.cells[door.cells.length - 1];
+                    const across = last.z === z && x === last.x + 1 && door.cells.every((c) => c.z === z);
+                    const down = last.x === x && z === last.z + 1 && door.cells.every((c) => c.x === x);
+                    if (!across && !down) throw new LevelError(file, row.line, `door ${char} appears twice, apart. A wide door is the same digit side by side (111) or one below the other; every other door gets its own digit.`);
+                    door.cells.push({ x, z });
+                }
             } else if (/[A-Za-z]/.test(char)) {
                 const entry = legend[char];
                 if (!entry) throw new LevelError(file, row.line, `${char} is in the floor plan, but there is no section [${char}] saying what it is.`);
@@ -192,7 +208,7 @@ function parseRoom(id, source) {
                     thing.base = size[1];
                 }
             } else if (char !== '.') {
-                throw new LevelError(file, row.line, `the character »${char}« can't be used in a floor plan. Allowed: # . @ space, letters and digits.`);
+                throw new LevelError(file, row.line, `the character »${char}« can't be used in a floor plan. Allowed: # . @ _ ^ space, letters and digits.`);
             }
             cells.push(kind);
         }
@@ -206,7 +222,22 @@ function parseRoom(id, source) {
         if (!doors[char]) throw new LevelError(file, section.line, `[${char}] describes a door, but there is no ${char} in the floor plan.`);
         links.push({ from: char, room: match[1], to: match[2], line: section.line });
     }
-    return { id, file, settings, heights, width, depth, cells, things, doors, links, start };
+    // [_] below = raum: der Raum unter dem Loch im Boden; sein ^ liegt genau
+    // darunter, seine Decke um slab (Meter, die Dicke der Decke) unter
+    // diesem Boden
+    let below = null;
+    const holeSection = sections.find((section) => section.name === '_');
+    if (holes.down.length) {
+        const entries = values(holeSection);
+        if (!holeSection || entries.below === undefined) throw new LevelError(file, holeSection?.line ?? null, 'the floor plan has a hole in the floor (_): say in [_] which room lies below it, for example below = keller.');
+        const slab = entries.slab ?? 0.3;
+        if (!(slab >= 0 && slab <= 20)) throw new LevelError(file, holeSection.line, `slab = ${entries.slab}: the floor between the two rooms is 0 to 20 metres thick.`);
+        below = { room: String(entries.below), slab, line: holeSection.line };
+        links.push({ hole: true, room: below.room, line: holeSection.line });
+    } else if (holeSection) {
+        throw new LevelError(file, holeSection.line, '[_] describes a hole in the floor, but there is no _ in the floor plan.');
+    }
+    return { id, file, settings, heights, width, depth, cells, things, doors, links, start, holes, below };
 }
 
 // offset = x, y, z: ein Ding um so viele Meter aus der Mitte seines Felds
@@ -317,16 +348,36 @@ export async function loadLevel(levelFile, fetchText) {
     for (const room of rooms.values()) {
         for (const link of room.links) {
             const other = rooms.get(link.room);
+            if (link.hole) {
+                // ein Loch: oben das _ dieses Raums, unten das ^ des anderen, gleich geformt
+                if (!other.holes.up.length) throw new LevelError(room.file, link.line, `below = ${link.room}: that room has no hole in its ceiling (^) under this one.`);
+                const shape = (cells) => cells.map((c) => `${c.x - cells[0].x},${c.z - cells[0].z}`).join(' ');
+                if (shape(room.holes.down) !== shape(other.holes.up)) throw new LevelError(room.file, link.line, `the hole in the floor (_) and the hole in the ceiling (^) of ${link.room} have different shapes: they need to be the same fields.`);
+                edges.push({ a: room, b: other, hole: 'down', line: link.line });
+                edges.push({ a: other, b: room, hole: 'up', line: link.line, back: room });
+                continue;
+            }
             if (!other.doors[link.to]) throw new LevelError(room.file, link.line, `room ${link.room} has no door ${link.to}.`);
+            const [mine, theirs] = [room.doors[link.from], other.doors[link.to]];
+            const shape = (door) => `${door.cells.length}${door.cells.length > 1 && door.cells[1].x === door.cells[0].x ? '|' : '-'}`;
+            if (shape(mine) !== shape(theirs)) {
+                throw new LevelError(room.file, link.line, `door ${link.from} is ${mine.cells.length} field${mine.cells.length > 1 ? 's' : ''} wide, door ${link.to} of ${link.room} ${theirs.cells.length}${theirs.cells.length > 1 && shape(theirs) !== shape(mine) && theirs.cells.length === mine.cells.length ? ' (the other way round)' : ''}: both sides of a door need the same width, in the same direction.`);
+            }
             edges.push({ a: room, da: room.doors[link.from], b: other, db: other.doors[link.to], line: link.line });
             edges.push({ a: other, da: other.doors[link.to], b: room, db: room.doors[link.from], line: link.line, back: room });
         }
     }
 
+    // Jedes Loch in der Decke braucht einen Raum darüber, der es meint
+    for (const room of rooms.values()) {
+        if (room.holes.up.length && !edges.some((e) => e.a === room && e.hole === 'up')) {
+            throw new LevelError(room.file, null, `the hole in the ceiling (^) leads nowhere: the room above needs _ in its floor plan and [_] below = ${room.id}.`);
+        }
+    }
     // Jede Tür braucht ein Gegenstück: sonst führte sie ins Nichts
     for (const room of rooms.values()) {
         for (const [char, door] of Object.entries(room.doors)) {
-            if (!edges.some((e) => e.a === room && e.da === door)) {
+            if (!edges.some((e) => !e.hole && e.a === room && e.da === door)) {
                 throw new LevelError(room.file, door.line, `door ${char} leads nowhere. Describe it with [${char}] and door = room digit, or let another room point to it.`);
             }
         }
@@ -337,13 +388,36 @@ export async function loadLevel(levelFile, fetchText) {
     startRoom.offset = { x: 0, z: 0 };
     // Die Höhe jedes Raums: Auf einer Tür liegen beide Böden gleich hoch. Der
     // Startraum liegt bei 0, jeder andere Raum so, dass es an seiner Tür passt.
-    for (const room of rooms.values()) room.floorRelative = floorFunction(room);
+    for (const room of rooms.values()) {
+        room.floorRelative = floorFunction(room);
+        room.ceilingRelative = ceilingFunction(room);
+    }
     startRoom.elevation = 0;
     const doorFloor = (room, door) => room.elevation + room.floorRelative(door.x + 0.5, door.z + 0.5);
     const placed = [startRoom];
     for (let i = 0; i < placed.length; i++) {
         const room = placed[i];
         for (const edge of edges.filter((e) => e.a === room)) {
+            if (edge.hole) {
+                // durch ein Loch: der Raum darunter (oder darüber), Feld auf Feld
+                const upper = edge.hole === 'down' ? edge.a : edge.b, lower = edge.hole === 'down' ? edge.b : edge.a;
+                const top = upper.holes.down[0], bottom = lower.holes.up[0];
+                const slab = upper.below.slab;
+                const floorAbove = (r) => r.elevation + r.floorRelative(top.x + 0.5, top.z + 0.5);
+                const ceilingBelow = (r) => r.elevation + r.floorRelative(bottom.x + 0.5, bottom.z + 0.5) + r.ceilingRelative(bottom.x + 0.5, bottom.z + 0.5);
+                const [mine, theirs] = edge.hole === 'down' ? [top, bottom] : [bottom, top];
+                const x = room.offset.x + mine.x - theirs.x, z = room.offset.z + mine.z - theirs.z;
+                if (!edge.b.offset) {
+                    edge.b.offset = { x, z };
+                    edge.b.elevation = edge.hole === 'down'
+                        ? floorAbove(upper) - slab - lower.floorRelative(bottom.x + 0.5, bottom.z + 0.5) - lower.ceilingRelative(bottom.x + 0.5, bottom.z + 0.5)
+                        : ceilingBelow(lower) + slab - upper.floorRelative(top.x + 0.5, top.z + 0.5);
+                    placed.push(edge.b);
+                } else if (edge.b.offset.x !== x || edge.b.offset.z !== z || Math.abs(floorAbove(upper) - slab - ceilingBelow(lower)) > 0.01) {
+                    throw new LevelError(upper.file, edge.line, `the hole between ${upper.id} and ${lower.id} doesn't fit: doors or other holes already place the two rooms differently.`);
+                }
+                continue;
+            }
             const x = room.offset.x + edge.da.x - edge.db.x;
             const z = room.offset.z + edge.da.z - edge.db.z;
             if (!edge.b.offset) {
@@ -360,43 +434,141 @@ export async function loadLevel(levelFile, fetchText) {
         }
     }
 
-    // Ein gemeinsames Raster für alle Räume, mit einem Feld Rand
+    // Ein gemeinsames Raster für alle Räume, mit einem Feld Rand. Räume
+    // können übereinander liegen: Das Raster hat dafür Schichten (layers),
+    // jede ein ganzer Grundriss. Ein Raum kommt in die unterste Schicht, in
+    // der er keinen anderen überdeckt; wo nichts übereinander liegt, gibt es
+    // nur Schicht 0. Welcher Raum oben liegt, sagen die Höhen, nicht die
+    // Nummer der Schicht.
     const minX = Math.min(...placed.map((r) => r.offset.x)) - 1;
     const minZ = Math.min(...placed.map((r) => r.offset.z)) - 1;
     const maxX = Math.max(...placed.map((r) => r.offset.x + r.width)) + 1;
     const maxZ = Math.max(...placed.map((r) => r.offset.z + r.depth)) + 1;
     const width = maxX - minX, depth = maxZ - minZ;
-    const cells = new Array(width * depth).fill('void');
-    const owner = new Array(width * depth).fill(-1);    // welcher Raum
+    const size = width * depth;
+    const cells = [];                 // je Schicht width * depth Felder hintereinander
+    const owner = [];                 // welcher Raum
+    const addLayer = () => {
+        for (let i = 0; i < size; i++) { cells.push('void'); owner.push(-1); }
+    };
+    addLayer();
     const roomList = [...placed];
-    const doorCells = new Set();
+    const doorPlaces = new Set();     // Felder mit einer Tür, in x und z (jede Schicht)
     roomList.forEach((room, index) => {
         room.index = index;
         // Boden und Decke, in Metern über dem Boden des Startraums: Die Decke
         // liegt height über dem Boden, so steigt sie mit einer Rampe mit.
-        const above = ceilingFunction(room);
+        const above = room.ceilingRelative;
         room.floorAt = (x, z) => room.elevation + room.floorRelative(x, z);
         room.ceilingAt = (x, z) => room.floorAt(x, z) + above(x, z);
-        room.ceilingRelative = above;
         room.ox = room.offset.x - minX;
         room.oz = room.offset.z - minZ;
-        for (const door of Object.values(room.doors)) doorCells.add((room.oz + door.z) * width + room.ox + door.x);
+        for (const door of Object.values(room.doors)) for (const c of door.cells) doorPlaces.add((room.oz + c.z) * width + room.ox + c.x);
     });
-    roomList.forEach((room) => {
+    // Passt der Raum in Schicht k? Wände dürfen sich teilen, Türen auch
+    const fits = (room, k) => {
         for (let z = 0; z < room.depth; z++) {
             for (let x = 0; x < room.width; x++) {
                 const kind = room.cells[z * room.width + x];
                 if (kind === 'void') continue;
-                const at = (room.oz + z) * width + room.ox + x;
-                const here = cells[at];
-                if (here === 'void') { cells[at] = kind; owner[at] = room.index; continue; }
+                const place = (room.oz + z) * width + room.ox + x;
+                const here = cells[k * size + place];
+                if (here === 'void') continue;
                 if (here === 'wall' && kind === 'wall') continue;
-                if (doorCells.has(at) && here === 'floor' && kind === 'floor') continue;
-                const other = roomList[owner[at]];
-                throw new LevelError(room.file, null, `room ${room.id} overlaps room ${other.id} (column ${x + 1}, row ${z + 1} of the floor plan of ${room.id}).`);
+                if (doorPlaces.has(place) && here === 'floor' && kind === 'floor') continue;
+                return roomList[owner[k * size + place]];
+            }
+        }
+        return null;
+    };
+    roomList.forEach((room) => {
+        let k = 0;
+        let other = fits(room, 0);
+        while (other) {
+            k += 1;
+            if (k >= MAX_LAYERS) throw new LevelError(room.file, null, `room ${room.id} overlaps room ${other.id}, and there are already ${MAX_LAYERS} rooms on top of each other here.`);
+            if (cells.length < (k + 1) * size) addLayer();
+            other = fits(room, k);
+        }
+        room.layer = k;
+        for (let z = 0; z < room.depth; z++) {
+            for (let x = 0; x < room.width; x++) {
+                const kind = room.cells[z * room.width + x];
+                if (kind === 'void') continue;
+                const at = k * size + (room.oz + z) * width + room.ox + x;
+                if (cells[at] === 'void') { cells[at] = kind; owner[at] = room.index; }
             }
         }
     });
+    const layers = cells.length / size;
+    const index = (x, z, k = 0) => k * size + z * width + x;
+    const kindAt = (x, z, k = 0) => (x < 0 || z < 0 || x >= width || z >= depth ? 'void' : cells[index(x, z, k)]);
+    // Alle Böden an einem Feld, über alle Schichten: [{ layer, room }]
+    const slabs = (x, z) => {
+        const list = [];
+        for (let k = 0; k < layers; k++) if (kindAt(x, z, k) === 'floor') list.push({ layer: k, room: owner[index(x, z, k)] });
+        return list;
+    };
+    // Eine Tür zwischen zwei Räumen in verschiedenen Schichten liegt nur in
+    // einer: Die andere sieht durch sie hindurch in den Nachbarraum (nur so
+    // gibt es ihren Boden nicht doppelt)
+    for (let place = 0; place < size; place++) {
+        if (!doorPlaces.has(place)) continue;
+        const floors = [];
+        for (let k = 0; k < layers; k++) if (cells[k * size + place] === 'floor') floors.push(k);
+        for (const k of floors.slice(1)) {
+            const a = roomList[owner[floors[0] * size + place]], b = roomList[owner[k * size + place]];
+            const gx = place % width, gz = Math.floor(place / width);
+            const fa = a.floorAt(gx + 0.5 - a.ox, gz + 0.5 - a.oz), fb = b.floorAt(gx + 0.5 - b.ox, gz + 0.5 - b.oz);
+            if (Math.abs(fa - fb) < 0.01) { cells[k * size + place] = 'void'; owner[k * size + place] = -1; }
+        }
+    }
+    const doorCells = new Set();
+    for (let k = 0; k < layers; k++) for (const place of doorPlaces) if (cells[k * size + place] === 'floor') doorCells.add(k * size + place);
+
+    // Unter einem Loch hat der untere Raum keine Decke: Dort reicht seine
+    // Luft bis an die Decke des Raums darüber (ein Schacht durch beide)
+    const openCeiling = new Map();   // Feld (mit Schicht) des unteren Raums -> Raum darüber
+    for (const upper of roomList) {
+        if (!upper.below) continue;
+        const lower = rooms.get(upper.below.room);
+        for (const c of upper.holes.down) {
+            const at = index(upper.ox + c.x, upper.oz + c.z, lower.layer);
+            if (cells[at] !== 'floor' || owner[at] !== lower.index) throw new LevelError(upper.file, upper.below.line, `under the hole (_) at column ${c.x + 1}, row ${c.z + 1} there is no floor of ${lower.id}.`);
+            openCeiling.set(at, upper.index);
+        }
+        for (const thing of lower.things) {
+            if (thing.type !== 'light' || !lower.holes.up.some((c) => c.x === thing.x && c.z === thing.z)) continue;
+            throw new LevelError(lower.file, null, `the lamp ${thing.char} hangs under the hole in the ceiling (^): there is no ceiling there to hold it.`);
+        }
+    }
+    // Die Decke über einem Feld der Schicht k, an einer Stelle (cx, cz in
+    // Feldern des Bauwerks): unter einem Loch die des Raums darüber
+    // (vor dem fertigen Level, beim Prüfen der Höhen, ohne die Böden der Türen)
+    let built = null;
+    const ceilingOfCell = (x, z, k) => {
+        const room = roomList[openCeiling.get(index(x, z, k)) ?? owner[index(x, z, k)]];
+        return (cx, cz) => (built ? built.ceilingAt(cx, cz, room.index) : room.ceilingAt(cx - room.ox, cz - room.oz));
+    };
+
+    // Übereinander heißt: Der obere Boden liegt nirgends unter der Decke des
+    // unteren Raums (an allen vier Ecken eines Felds)
+    for (let z = 0; z < depth; z++) {
+        for (let x = 0; x < width; x++) {
+            const here = slabs(x, z);
+            for (let i = 0; i < here.length; i++) {
+                for (let j = i + 1; j < here.length; j++) {
+                    const a = roomList[here[i].room], b = roomList[here[j].room];
+                    const corners = [[x, z], [x + 1, z], [x, z + 1], [x + 1, z + 1]];
+                    const top = (slab) => ceilingOfCell(x, z, slab.layer);
+                    const apart = (lower, upper, lowerSlab) => corners.every(([cx, cz]) =>
+                        upper.floorAt(cx - upper.ox, cz - upper.oz) >= top(lowerSlab)(cx, cz) - 0.001);
+                    if (apart(a, b, here[i]) || apart(b, a, here[j])) continue;
+                    throw new LevelError(b.file, null, `room ${b.id} and room ${a.id} lie in the same place at the same height (column ${x - b.ox + 1}, row ${z - b.oz + 1} of the floor plan of ${b.id}). Rooms on top of each other need the upper floor at or above the lower ceiling.`);
+                }
+            }
+        }
+    }
 
     // Leuchten, Statuen und der Start in Feldern des ganzen Bauwerks
     const things = [];
@@ -416,7 +588,7 @@ export async function loadLevel(levelFile, fetchText) {
                 heading = typeof look === 'number' ? look : HEADINGS[String(look).toLowerCase()];
                 if (heading === undefined) throw new LevelError(room.file, null, `look = ${look}: allowed are north, east, south, west or a number in degrees.`);
             }
-            start = { x: room.start.x + room.ox, z: room.start.z + room.oz, heading };
+            start = { x: room.start.x + room.ox, z: room.start.z + room.oz, heading, layer: room.layer, room: room.index };
         }
     }
     if (!start) throw new LevelError(`rooms/${settings.start}.room`, null, 'the level has no @: where do you start?');
@@ -425,33 +597,41 @@ export async function loadLevel(levelFile, fetchText) {
     // Raum mit Rampe quer zur Tür). Ihr Feld hat darum keine eigene Höhe:
     // An jeder Kante liegt es so hoch wie der Boden dahinter, dazwischen
     // läuft es gerade (bilinear). So bleibt keine Lücke und keine Stufe.
-    const doorCorners = new Map();   // Feld -> Höhe an den Ecken (x0z0, x1z0, x0z1, x1z1)
+    // Der Boden dahinter: in welcher Schicht auch immer, der, der an der
+    // Kante am nächsten an der Tür liegt.
+    const doorCorners = new Map();   // Feld (mit Schicht) -> Höhe an den Ecken (x0z0, x1z0, x0z1, x1z1)
     for (const at of doorCells) {
-        const gx = at % width, gz = Math.floor(at / width);
+        const k = Math.floor(at / size), gx = at % width, gz = Math.floor((at % size) / width);
         const own = roomList[owner[at]];
         const corners = [[gx, gz], [gx + 1, gz], [gx, gz + 1], [gx + 1, gz + 1]];
-        const heights = corners.map(([cx, cz]) => own.floorAt(cx - own.ox, cz - own.oz));
+        const mine = corners.map(([cx, cz]) => own.floorAt(cx - own.ox, cz - own.oz));
+        const heights = [...mine];
         // [Nachbar, die beiden Ecken an der Kante zu ihm]
         for (const [dx, dz, edge] of [[-1, 0, [0, 2]], [1, 0, [1, 3]], [0, -1, [0, 1]], [0, 1, [2, 3]]]) {
-            const n = (gz + dz) * width + gx + dx;
-            if (cells[n] !== 'floor' || doorCells.has(n)) continue;
-            const room = roomList[owner[n]];
-            for (const k of edge) heights[k] = room.floorAt(corners[k][0] - room.ox, corners[k][1] - room.oz);
+            let best = null;
+            for (const slab of slabs(gx + dx, gz + dz)) {
+                if (doorCells.has(index(gx + dx, gz + dz, slab.layer))) continue;
+                const room = roomList[slab.room];
+                const gap = Math.max(...edge.map((c) => Math.abs(room.floorAt(corners[c][0] - room.ox, corners[c][1] - room.oz) - mine[c])));
+                if (gap < 1.0 && (!best || gap < best.gap)) best = { room, gap };
+            }
+            if (!best) continue;
+            for (const c of edge) heights[c] = best.room.floorAt(corners[c][0] - best.room.ox, corners[c][1] - best.room.oz);
         }
         // Nur wo es nötig ist: Liegen beide Böden so, dass der Raum der Tür
         // sie ohnehin trifft, bleibt sie ein Teil seines Bodens (ohne Naht)
-        const mine = corners.map(([cx, cz]) => own.floorAt(cx - own.ox, cz - own.oz));
-        if (heights.some((h, k) => Math.abs(h - mine[k]) > 1e-3)) doorCorners.set(at, heights);
+        if (heights.some((h, c) => Math.abs(h - mine[c]) > 1e-3)) doorCorners.set(at, heights);
     }
     // Türen mit eigenem, verdrehtem Boden
     const twistedDoors = new Set(doorCorners.keys());
     // Der Boden einer Tür an (x, z) in Feldern, wenn dort eine Tür dieses Raums ist, sonst null
     const doorPatch = (x, z, roomIndex) => {
+        const k = roomList[roomIndex].layer;
         for (const cx of Number.isInteger(x) ? [x - 1, x] : [Math.floor(x)]) {
             for (const cz of Number.isInteger(z) ? [z - 1, z] : [Math.floor(z)]) {
                 if (cx < 0 || cz < 0 || cx >= width || cz >= depth) continue;
-                const heights = doorCorners.get(cz * width + cx);
-                if (!heights || owner[cz * width + cx] !== roomIndex) continue;
+                const heights = doorCorners.get(index(cx, cz, k));
+                if (!heights || owner[index(cx, cz, k)] !== roomIndex) continue;
                 const fx = x - cx, fz = z - cz;
                 return (heights[0] * (1 - fx) + heights[1] * fx) * (1 - fz) + (heights[2] * (1 - fx) + heights[3] * fx) * fz;
             }
@@ -460,20 +640,20 @@ export async function loadLevel(levelFile, fetchText) {
     };
 
     const level = {
-        settings, width, depth, cells, owner, rooms: roomList, things, start, twistedDoors,
+        settings, width, depth, layers, cells, owner, rooms: roomList, things, start, twistedDoors,
+        index, kindAt, slabs, ceilingOfCell,
+        // Hat dieses Feld (Schicht k) keine Decke, weil darüber ein Loch ist?
+        ceilingOpen: (x, z, k) => openCeiling.has(index(x, z, k)),
+        // welcher Raum an einem Feld in Schicht k ist (-1: keiner)
+        roomAt(x, z, k = 0) {
+            return x < 0 || z < 0 || x >= width || z >= depth ? -1 : owner[index(x, z, k)];
+        },
         // Bodenhöhe an einer Stelle der Welt (in Feldern), im Raum dieses Feldes
         floorAt(x, z, roomIndex) {
             const door = doorPatch(x, z, roomIndex);
             if (door !== null) return door;
             const room = roomList[roomIndex];
             return room.floorAt(x - room.ox, z - room.oz);
-        },
-        // der Boden an einer Stelle der Welt in Metern, im Raum, dem das Feld gehört
-        floorAtPoint(x, z) {
-            const cx = Math.floor(x / settings.cell), cz = Math.floor(z / settings.cell);
-            const index = owner[cz * width + cx];
-            if (index === undefined || index < 0) return 0;
-            return level.floorAt(x / settings.cell, z / settings.cell, index);
         },
         // Deckenhöhe: so hoch über dem Boden, wie der Raum es dort will
         ceilingAt(x, z, roomIndex) {
@@ -482,14 +662,42 @@ export async function loadLevel(levelFile, fetchText) {
             if (door !== null) return door + room.ceilingRelative(x - room.ox, z - room.oz);
             return room.ceilingAt(x - room.ox, z - room.oz);
         },
+        // Auf welchem Boden steht, wer an einer Stelle der Welt (in Metern)
+        // mit den Füßen auf Höhe y ist? Der höchste, der nicht mehr als eine
+        // Stufe (STEP) über den Füßen liegt; ohne y der unterste. -1: keiner.
+        roomAtPoint(x, z, y = null) {
+            const cx = Math.floor(x / settings.cell), cz = Math.floor(z / settings.cell);
+            let best = -1, bestFloor = -Infinity, lowest = -1, lowestFloor = Infinity;
+            for (const slab of slabs(cx, cz)) {
+                const floor = level.floorAt(x / settings.cell, z / settings.cell, slab.room);
+                if (floor < lowestFloor) { lowest = slab.room; lowestFloor = floor; }
+                if (y !== null && floor <= y + STEP && floor > bestFloor) { best = slab.room; bestFloor = floor; }
+            }
+            return y === null || best < 0 ? lowest : best;
+        },
+        // der Boden an einer Stelle der Welt in Metern (für Füße auf Höhe y)
+        floorAtPoint(x, z, y = null) {
+            const room = level.roomAtPoint(x, z, y);
+            if (room < 0) return 0;
+            return level.floorAt(x / settings.cell, z / settings.cell, room);
+        },
+        // Ist an einem Punkt der Welt (in Metern) Luft, in irgendeinem Raum?
+        // margin < 0: nur wirklich zwischen Boden und Decke
+        openAt(x, y, z, margin = 0.01) {
+            const cx = Math.floor(x / settings.cell), cz = Math.floor(z / settings.cell);
+            return slabs(cx, cz).some(({ room, layer }) =>
+                y >= level.floorAt(x / settings.cell, z / settings.cell, room) - margin &&
+                y <= ceilingOfCell(cx, cz, layer)(x / settings.cell, z / settings.cell) + margin);
+        },
     };
+    built = level;
     checkClosed(level);
     if (start.heading === null) {
         // ohne look: dorthin, wo man am weitesten sieht
         let best = -1;
         for (const [heading, dx, dz] of [[0, 0, -1], [90, 1, 0], [180, 0, 1], [270, -1, 0]]) {
             let free = 0;
-            while (cells[(start.z + dz * (free + 1)) * width + start.x + dx * (free + 1)] === 'floor') free += 1;
+            while (kindAt(start.x + dx * (free + 1), start.z + dz * (free + 1), start.layer) === 'floor') free += 1;
             if (free > best) { best = free; start.heading = heading; }
         }
     }
@@ -497,17 +705,23 @@ export async function loadLevel(levelFile, fetchText) {
 }
 
 // Ein Feld mit Boden darf nicht an »nichts« grenzen, sonst fiele man hinaus.
+// Ein Nachbar in einer anderen Schicht zählt, wenn sein Boden dort auf
+// gleicher Höhe weitergeht (eine Tür zu einem Raum über oder unter anderen).
 // (Wer das doch will: noclip ist eine andere Geschichte.)
 function checkClosed(level) {
-    const { width, depth, cells, owner, rooms } = level;
-    const at = (x, z) => (x < 0 || z < 0 || x >= width || z >= depth ? 'void' : cells[z * width + x]);
-    for (let z = 0; z < depth; z++) {
-        for (let x = 0; x < width; x++) {
-            if (at(x, z) !== 'floor') continue;
-            for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-                if (at(x + dx, z + dz) !== 'void') continue;
-                const room = rooms[owner[z * width + x]];
-                throw new LevelError(room.file, null, `at column ${x - room.ox + 1}, row ${z - room.oz + 1} of the floor plan the floor has no wall next to it. Close the room with #.`);
+    const { width, depth, layers, rooms, kindAt, slabs } = level;
+    for (let k = 0; k < layers; k++) {
+        for (let z = 0; z < depth; z++) {
+            for (let x = 0; x < width; x++) {
+                if (kindAt(x, z, k) !== 'floor') continue;
+                const room = rooms[level.roomAt(x, z, k)];
+                for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+                    if (kindAt(x + dx, z + dz, k) !== 'void') continue;
+                    const here = level.floorAt(x + 0.5, z + 0.5, room.index);
+                    const across = slabs(x + dx, z + dz).some((slab) => Math.abs(level.floorAt(x + dx + 0.5, z + dz + 0.5, slab.room) - here) < 1.0);
+                    if (across) continue;
+                    throw new LevelError(room.file, null, `at column ${x - room.ox + 1}, row ${z - room.oz + 1} of the floor plan the floor has no wall next to it. Close the room with #.`);
+                }
             }
         }
     }

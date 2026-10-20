@@ -35,28 +35,34 @@ const LIGHT_SCALE = 30;               // macht power = 1 zu »hell unter der Lam
 // Nur Statuen kommen in ein feines Raster aus Voxeln.
 // maxTextureSize: wie viele Voxel eine 3D-Textur je Richtung haben darf
 export function buildGrid(level, statues, maxHeight, maxTextureSize = 2048) {
-    const { width, depth, cells, owner, settings } = level;
+    const { width, depth, layers, settings } = level;
     const cell = settings.cell;
-    const info = new Float32Array(width * depth * 4);      // Art, Statue, Block
-    const ceilings = new Float32Array(width * depth * 4);  // Deckenhöhe an den vier Ecken
-    const floors = new Float32Array(width * depth * 4);    // Bodenhöhe an den vier Ecken
-    const blockMin = new Float32Array(width * depth * 4);
-    const blockMax = new Float32Array(width * depth * 4);
-    for (let z = 0; z < depth; z++) {
-        for (let x = 0; x < width; x++) {
-            const i = (z * width + x) * 4;
-            const kind = cells[z * width + x];
-            info[i] = kind === 'floor' ? 1 : kind === 'wall' ? 2 : 0;
-            if (kind !== 'floor') continue;
-            const room = owner[z * width + x];
-            ceilings.set([level.ceilingAt(x, z, room), level.ceilingAt(x + 1, z, room),
-                level.ceilingAt(x, z + 1, room), level.ceilingAt(x + 1, z + 1, room)], i);
-            floors.set([level.floorAt(x, z, room), level.floorAt(x + 1, z, room),
-                level.floorAt(x, z + 1, room), level.floorAt(x + 1, z + 1, room)], i);
+    // Jede Schicht (Räume übereinander, level.js) ist ein ganzer Grundriss:
+    // in den Texturen untereinander, Schicht k ab Zeile k * depth
+    const count = width * depth * layers;
+    const info = new Float32Array(count * 4);      // Art, Statue, Block
+    const ceilings = new Float32Array(count * 4);  // Deckenhöhe an den vier Ecken
+    const floors = new Float32Array(count * 4);    // Bodenhöhe an den vier Ecken
+    const blockMin = new Float32Array(count * 4);
+    const blockMax = new Float32Array(count * 4);
+    for (let k = 0; k < layers; k++) {
+        for (let z = 0; z < depth; z++) {
+            for (let x = 0; x < width; x++) {
+                const i = level.index(x, z, k) * 4;
+                const kind = level.kindAt(x, z, k);
+                info[i] = kind === 'floor' ? 1 : kind === 'wall' ? 2 : 0;
+                if (kind !== 'floor') continue;
+                const room = level.roomAt(x, z, k);
+                const top = level.ceilingOfCell(x, z, k);   // unter einem Loch: die Decke des Raums darüber
+                ceilings.set([top(x, z), top(x + 1, z), top(x, z + 1), top(x + 1, z + 1)], i);
+                floors.set([level.floorAt(x, z, room), level.floorAt(x + 1, z, room),
+                    level.floorAt(x, z + 1, room), level.floorAt(x + 1, z + 1, room)], i);
+            }
         }
     }
-    // Ein Block gilt in jedem Feld, das er bedeckt (pro Feld einer)
+    // Ein Block gilt in jedem Feld, das er bedeckt (pro Feld einer), in der Schicht seines Raums
     for (const block of level.things.filter((t) => t.type === 'block')) {
+        const k = level.rooms[block.room].layer;
         const [w, h, d] = block.size;
         const cx = (block.x + 0.5) * cell + block.offset[0], cz = (block.z + 0.5) * cell + block.offset[2];
         const y0 = block.floor + block.base + block.offset[1];   // auf dem Boden seines Felds (oder höher)
@@ -64,7 +70,7 @@ export function buildGrid(level, statues, maxHeight, maxTextureSize = 2048) {
         for (let z = Math.floor(min[2] / cell); z < Math.ceil(max[2] / cell); z++) {
             for (let x = Math.floor(min[0] / cell); x < Math.ceil(max[0] / cell); x++) {
                 if (x < 0 || z < 0 || x >= width || z >= depth) continue;
-                const i = (z * width + x) * 4;
+                const i = level.index(x, z, k) * 4;
                 if (info[i + 2] > 0) continue;
                 info[i + 2] = 1;
                 blockMin.set([...min, 1], i);
@@ -111,7 +117,8 @@ export function buildGrid(level, statues, maxHeight, maxTextureSize = 2048) {
             if (vx < 0 || vy < 0 || vz < 0 || vx >= nx || vy >= ny || vz >= nz) return;
             data[(vz * ay + oy + vy) * ax + ox + vx] = 255;
             const fx = Math.floor((origin.x + (vx + 0.5) * voxel) / cell), fz = Math.floor((origin.z + (vz + 0.5) * voxel) / cell);
-            if (fx >= 0 && fz >= 0 && fx < width && fz < depth) info[(fz * width + fx) * 4 + 1] = 1;
+            // eine Statue: in jeder Schicht vermerkt (geprüft wird ohnehin nur ihr Kasten)
+            if (fx >= 0 && fz >= 0 && fx < width && fz < depth) for (let k = 0; k < layers; k++) info[level.index(fx, fz, k) * 4 + 1] = 1;
         };
         object.updateMatrixWorld(true);
         object.traverse((mesh) => {
@@ -146,13 +153,13 @@ export function buildGrid(level, statues, maxHeight, maxTextureSize = 2048) {
     statueGrids.needsUpdate = true;
 
     const texture = (array) => {
-        const t = new THREE.DataTexture(array, width, depth, THREE.RGBAFormat, THREE.FloatType);
+        const t = new THREE.DataTexture(array, width, depth * layers, THREE.RGBAFormat, THREE.FloatType);
         t.needsUpdate = true;
         return t;
     };
     return {
         info: texture(info), ceilings: texture(ceilings), floors: texture(floors), blockMin: texture(blockMin), blockMax: texture(blockMax),
-        voxels, statueGrids, statueCount: grids.length, cells: new THREE.Vector2(width, depth), cell,
+        voxels, statueGrids, statueCount: grids.length, cells: new THREE.Vector2(width, depth), layers, cell,
     };
 }
 
@@ -247,6 +254,7 @@ uniform float bottom;          // der tiefste Boden
 uniform sampler2D blockMin;
 uniform sampler2D blockMax;
 uniform vec2 cellCount;
+uniform int layerCount;        // Räume übereinander: so viele Grundrisse untereinander in den Texturen
 uniform float cellMeters;
 uniform float top;
 uniform uint pass;
@@ -361,10 +369,26 @@ float boxHit(vec3 a, vec3 dir, vec3 lo, vec3 hi) {
     return tFar < max(tNear, 0.0) ? -1.0 : max(tNear, 0.0);
 }
 
+// Höhe einer Fläche (vier Ecken h) an der Stelle q im Feld (0 bis 1)
+float cornerHeight(vec4 h, vec2 q) { return mix(mix(h.x, h.y, q.x), mix(h.z, h.w, q.x), q.y); }
+
+// In welcher Schicht ist an der Stelle q des Felds cell auf Höhe y Luft?
+// -1: in keiner, dort ist Wand, Boden oder Decke dazwischen
+int layerAt(ivec2 cell, vec2 q, float y) {
+    for (int k = 0; k < 8; k++) {
+        if (k >= layerCount) break;
+        ivec2 c = ivec2(cell.x, cell.y + k * int(cellCount.y));
+        if (texelFetch(cellInfo, c, 0).r != 1.0) continue;
+        if (y >= cornerHeight(texelFetch(cellFloor, c, 0), q) - 0.005 && y <= cornerHeight(texelFetch(cellCeiling, c, 0), q) + 0.005) return k;
+    }
+    return -1;
+}
+
 // Wie weit kommt ein Strahl von a in Richtung dir, bevor er auf etwas trifft?
 // Feld für Feld durch den Grundriss (2D-DDA); in jedem Feld genau: Wand,
 // Decke (auch schräg), Boden, Block, und in Feldern mit Statuen deren Voxel.
-// -1: bis maxLength nichts im Weg.
+// Liegen Räume übereinander, gilt in jedem Feld der, in dessen Luft der
+// Strahl hineinkommt. -1: bis maxLength nichts im Weg.
 float trace(vec3 a, vec3 dir, float maxLength) {
     vec2 p = a.xz / cellMeters;
     vec2 d = dir.xz / cellMeters;
@@ -376,26 +400,29 @@ float trace(vec3 a, vec3 dir, float maxLength) {
     float tEnter = 0.0;
     for (int i = 0; i < 256; i++) {
         if (any(lessThan(cell, ivec2(0))) || any(greaterThanEqual(cell, ivec2(cellCount)))) return tEnter;
-        vec4 info = texelFetch(cellInfo, cell, 0);
-        if (info.r != 1.0) return tEnter;                       // Wand oder nichts
         float tExit = min(min(tMax.x, tMax.y), maxLength);
+        vec2 q0 = clamp(p + d * tEnter - vec2(cell), 0.0, 1.0), q1 = clamp(p + d * tExit - vec2(cell), 0.0, 1.0);
+        // nur eine Schicht (nichts übereinander): wie früher, ohne Suche
+        int k = layerCount == 1 ? (texelFetch(cellInfo, cell, 0).r == 1.0 ? 0 : -1) : layerAt(cell, q0, a.y + dir.y * tEnter);
+        if (k < 0) return tEnter;                               // Wand oder nichts
+        ivec2 at = ivec2(cell.x, cell.y + k * int(cellCount.y));
+        vec4 info = texelFetch(cellInfo, at, 0);
         float hit = 1e9;
         // die Decke: Abstand darunter am Anfang und am Ende des Stücks, dazwischen gerade
-        vec4 h = texelFetch(cellCeiling, cell, 0);
-        vec2 q0 = clamp(p + d * tEnter - vec2(cell), 0.0, 1.0), q1 = clamp(p + d * tExit - vec2(cell), 0.0, 1.0);
+        vec4 h = texelFetch(cellCeiling, at, 0);
         float f0 = a.y + dir.y * tEnter - mix(mix(h.x, h.y, q0.x), mix(h.z, h.w, q0.x), q0.y);
         float f1 = a.y + dir.y * tExit - mix(mix(h.x, h.y, q1.x), mix(h.z, h.w, q1.x), q1.y);
         if (f0 >= 0.0) hit = tEnter;
         else if (f1 > 0.0) hit = tEnter + (tExit - tEnter) * (-f0) / (f1 - f0);
         // der Boden, auch schräg: Höhe über ihm am Anfang und am Ende des Stücks
-        vec4 g = texelFetch(cellFloor, cell, 0);
+        vec4 g = texelFetch(cellFloor, at, 0);
         float g0 = a.y + dir.y * tEnter - mix(mix(g.x, g.y, q0.x), mix(g.z, g.w, q0.x), q0.y);
         float g1 = a.y + dir.y * tExit - mix(mix(g.x, g.y, q1.x), mix(g.z, g.w, q1.x), q1.y);
         if (g0 <= 0.0) hit = min(hit, tEnter);
         else if (g1 < 0.0) hit = min(hit, tEnter + (tExit - tEnter) * g0 / (g0 - g1));
         // ein Block
         if (info.b > 0.5) {
-            float tBox = boxHit(a, dir, texelFetch(blockMin, cell, 0).xyz, texelFetch(blockMax, cell, 0).xyz);
+            float tBox = boxHit(a, dir, texelFetch(blockMin, at, 0).xyz, texelFetch(blockMax, at, 0).xyz);
             if (tBox >= 0.0 && tBox <= tExit) hit = min(hit, max(tBox, tEnter));
         }
         // eine Statue
@@ -433,8 +460,11 @@ vec3 hemisphere(vec3 n) {
 vec3 outOfBlocks(vec3 p, vec3 n) {
     ivec2 cell = ivec2(floor(p.xz / cellMeters));
     if (any(lessThan(cell, ivec2(0))) || any(greaterThanEqual(cell, ivec2(cellCount)))) return p;
-    if (texelFetch(cellInfo, cell, 0).b < 0.5) return p;
-    vec3 lo = texelFetch(blockMin, cell, 0).xyz, hi = texelFetch(blockMax, cell, 0).xyz;
+    int k = layerAt(cell, p.xz / cellMeters - vec2(cell), p.y);
+    if (k < 0) return p;
+    ivec2 at = ivec2(cell.x, cell.y + k * int(cellCount.y));
+    if (texelFetch(cellInfo, at, 0).b < 0.5) return p;
+    vec3 lo = texelFetch(blockMin, at, 0).xyz, hi = texelFetch(blockMax, at, 0).xyz;
     if (any(lessThan(p, lo - 0.001)) || any(greaterThan(p, hi + 0.001))) return p;
     // Die Flächen des Blocks selbst liegen auf seinem Rand und zeigen aus ihm
     // heraus: die bleiben. Ein Boden unter einer Säule zeigt in sie hinein.
@@ -847,6 +877,7 @@ export class LightBaker {
             statueGrids: { value: voxels.statueGrids },
             statueCount: { value: voxels.statueCount },
             cellInfo: { value: voxels.info },
+            layerCount: { value: voxels.layers },
             cellCeiling: { value: voxels.ceilings },
             cellFloor: { value: voxels.floors },
             bottom: { value: geometry.minHeight - 0.01 },

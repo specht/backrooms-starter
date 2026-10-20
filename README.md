@@ -128,19 +128,44 @@ In `[map]`, every character is one metre:
 <tr><td><code>@</code></td><td>you start here (once in the whole level)</td></tr>
 <tr><td>space</td><td>nothing, outside the room</td></tr>
 <tr><td>a letter</td><td>a lamp, a block or a statue, described in a section <code>[letter]</code></td></tr>
-<tr><td>a digit</td><td>a door, described in a section <code>[digit]</code></td></tr>
+<tr><td>a digit</td><td>a door, described in a section <code>[digit]</code>; the same digit side by side (<code>111</code>) or one below the other is one wide door</td></tr>
+<tr><td><code>_</code></td><td>a hole in the floor: below it lies another room, described in <code>[_]</code></td></tr>
+<tr><td><code>^</code></td><td>a hole in the ceiling: the room above has its <code>_</code> here</td></tr>
 </table>
 
 How high a room lies follows from its doors: on a door, both floors are at
 the same height, starting from the room in `start`. A door where the floors
 cannot meet is reported.
 
-A door is one field that belongs to two rooms: `[1]` with `door = gang 1`
-means »this 1 is the same field as the 1 in `rooms/gang.room`«. One of the two
-rooms describing the door is enough. The rooms are laid next to each other at
-their doors, and all of them together are one building, so there can be as
-many rooms as you like. A room that would overlap another one, or a floor
-field without a wall next to it, is reported with the file and the line.
+A door is one field (or a row of fields) that belongs to two rooms: `[1]`
+with `door = gang 1` means »this 1 is the same field as the 1 in
+`rooms/gang.room`«. One of the two rooms describing the door is enough, and
+two rooms may share several doors. A wide door (`111`) needs an equally wide
+one on the other side. The rooms are laid next to each other at their doors,
+and all of them together are one building, so there can be as many rooms as
+you like. A floor field without a wall next to it, or two rooms in the same
+place at the same height, is reported with the file and the line.
+
+Rooms may lie on top of each other: a ramp leads up one storey, and the room
+up there may lie over the one below, as long as its floor is not below that
+room's ceiling. A hole joins two rooms like a door, only vertically:
+
+```ini
+# rooms/oben.room: a hole in the floor (_), two fields by two
+[map]
+##########
+#...__...#
+#...__...#
+##########
+
+[_]
+below = keller     # the room underneath; its ^ lies right below
+slab = 0.3         # how thick the floor between the two is, in metres (0.3)
+```
+
+In `rooms/keller.room` the same fields are `^` (a hole in the ceiling). The
+hole places the room below so that its ceiling lies `slab` under this floor,
+just as a door places its neighbour. Whoever steps onto the hole falls.
 
 ### `[room]`
 

@@ -488,7 +488,8 @@ function flickerValue(t, seed) {
 // Ein kurzer Fingerabdruck des Grundrisses (Größe und Felder)
 function layoutPrint(level) {
     let hash = 2166136261;
-    for (const char of `${level.width}x${level.depth}:${level.cells.join('')}`) {
+    // (mit Schichten nur, wenn Räume übereinander liegen: alte Adressen bleiben gültig)
+    for (const char of `${level.width}x${level.depth}${level.layers > 1 ? `x${level.layers}` : ''}:${level.cells.join('')}`) {
         hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
     }
     return (hash >>> 0).toString(36);
@@ -766,11 +767,12 @@ async function start() {
     const lineFree = (from, to) => {
         const cell = settings.cell;
         const x0 = from.x / cell, z0 = from.z / cell, x1 = to.x / cell, z1 = to.z / cell;
-        const steps = Math.ceil(Math.max(Math.abs(x1 - x0), Math.abs(z1 - z0)) * 2) + 1;
+        // dicht genug, auch senkrecht: sonst sähe man durch die Decke in den Raum darüber
+        const steps = Math.ceil(Math.max(Math.abs(x1 - x0), Math.abs(z1 - z0), Math.abs(to.y - from.y) * 2) * 2) + 1;
         for (let k = 1; k < steps; k++) {
             const t = k / steps;
-            const cx = Math.floor(x0 + (x1 - x0) * t), cz = Math.floor(z0 + (z1 - z0) * t);
-            if (level.cells[cz * level.width + cx] !== 'floor') return false;
+            // Luft in irgendeinem Raum, auch übereinander liegenden
+            if (!level.openAt(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t, from.z + (to.z - from.z) * t, -0.002)) return false;
         }
         ray.origin.copy(from);
         ray.direction.subVectors(to, from);
@@ -799,9 +801,9 @@ async function start() {
     // knapper; unter dem, was über Kopfhöhe hängt (eine Wandlampe), hindurch
     for (const object of statues) {
         const box = new THREE.Box3().setFromObject(object);
-        const floor = level.floorAtPoint((box.min.x + box.max.x) / 2, (box.min.z + box.max.z) / 2);
+        const floor = level.floorAtPoint((box.min.x + box.max.x) / 2, (box.min.z + box.max.z) / 2, box.min.y);
         if (box.min.y - floor > 1.7) continue;
-        walker.addObstacle({ x0: box.min.x + 0.05, x1: box.max.x - 0.05, z0: box.min.z + 0.05, z1: box.max.z - 0.05 });
+        walker.addObstacle({ x0: box.min.x + 0.05, x1: box.max.x - 0.05, z0: box.min.z + 0.05, z1: box.max.z - 0.05, y0: box.min.y, y1: box.max.y });
     }
     // ?view=x,z,blick,neigung,grundriss: an diese Stelle (in Feldern des
     // Bauwerks) und in diese Richtung (in Grad). Der Grundriss ist ein kurzer
@@ -809,9 +811,11 @@ async function start() {
     const layout = layoutPrint(level);
     const place = params.get('view')?.split(',') ?? [];
     const view = place.slice(0, 4).map(Number);
-    const sameLevel = place.length < 5 || place[4] === layout;
+    const sameLevel = place.length < 5 || place[4] === '' || place[4] === layout;   // leer: gilt immer
     if (sameLevel && view.length >= 2 && view.every(Number.isFinite)) {
-        player.position.set((view[0] + 0.5) * settings.cell, 0, (view[1] + 0.5) * settings.cell);
+        // die Höhe der Füße (sechste Zahl): Liegen Räume übereinander, sagt sie, in welchem
+        const feet = Number(place[5]);
+        player.position.set((view[0] + 0.5) * settings.cell, Number.isFinite(feet) ? feet : -1e6, (view[1] + 0.5) * settings.cell);
         walker.yaw = THREE.MathUtils.degToRad(view[2] ?? 0);
         walker.pitch = THREE.MathUtils.degToRad(view[3] ?? 0);
         walker.stand();   // auf den Boden dort, auch auf einer Rampe
@@ -966,7 +970,7 @@ async function start() {
     const rememberPlace = () => {
         const x = (player.position.x / settings.cell - 0.5).toFixed(2);
         const z = (player.position.z / settings.cell - 0.5).toFixed(2);
-        const place = `${x},${z},${Math.round(THREE.MathUtils.radToDeg(walker.yaw))},${Math.round(THREE.MathUtils.radToDeg(walker.pitch))},${layout}`;
+        const place = `${x},${z},${Math.round(THREE.MathUtils.radToDeg(walker.yaw))},${Math.round(THREE.MathUtils.radToDeg(walker.pitch))},${layout},${player.position.y.toFixed(2)}`;
         // die Automap auch: offen, gedreht, verschoben, gezoomt
         const map = automap.state();
         if (`${place}|${map}` === lastPlace) return;
