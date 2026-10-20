@@ -55,7 +55,10 @@ export function buildGrid(level, statues, maxHeight, maxTextureSize = 2048) {
                 const room = level.roomAt(x, z, k);
                 const top = level.ceilingOfCell(x, z, k);   // unter einem Loch: die Decke des Raums darüber
                 ceilings.set([top(x, z), top(x + 1, z), top(x, z + 1), top(x + 1, z + 1)], i);
-                floors.set([level.floorAt(x, z, room), level.floorAt(x + 1, z, room),
+                // ein Becken: der Boden tief unten, im ganzen Feld gleich
+                const pool = level.poolAt(x, z, k);
+                if (pool) floors.set([pool.bottom, pool.bottom, pool.bottom, pool.bottom], i);
+                else floors.set([level.floorAt(x, z, room), level.floorAt(x + 1, z, room),
                     level.floorAt(x, z + 1, room), level.floorAt(x + 1, z + 1, room)], i);
             }
         }

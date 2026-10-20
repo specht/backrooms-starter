@@ -5,7 +5,7 @@
 //
 //   #  Wand          .  Boden          @  hier startest du (nur einmal im Level)
 //   Leerzeichen: nichts, außerhalb des Raums
-//   ein Buchstabe: eine Leuchte, ein Block oder eine Statue, erklärt in [Buchstabe]
+//   ein Buchstabe: eine Leuchte, ein Block, eine Statue oder Wasser, erklärt in [Buchstabe]
 //   eine Ziffer: eine Tür zu einem anderen Raum, erklärt in [Ziffer]
 //
 // Eine Tür ist ein Feld, das zwei Räumen gehört: [1] mit door = flur 2
@@ -69,6 +69,13 @@ const BLOCK_DEFAULTS = {
 const MODEL_DEFAULTS = {
     height: 2.0,
     rotation: 0,
+};
+
+const POOL_DEFAULTS = {
+    water: 0.15,          // so tief unter dem Boden liegt das Wasser, in Metern; off: ein leeres Becken
+    railing: 'off',       // on: ein Geländer aus Metall rundherum, wo man am Rand steht
+    color: '#bcd8da',     // die Fliesen des Beckens
+    tint: '#bff0f3',      // die Farbe des Wassers: So sieht Weiß hinter 2 m Wasser aus
 };
 
 const SLOPES = ['flat', 'north', 'east', 'south', 'west', 'gable'];
@@ -238,6 +245,8 @@ function parseRoom(id, source) {
     } else if (holeSection) {
         throw new LevelError(file, holeSection.line, '[_] describes a hole in the floor, but there is no _ in the floor plan.');
     }
+    const pool = things.find((thing) => thing.type === 'pool');
+    if (pool && settings.ramp) throw new LevelError(file, legend[pool.char].line, 'a pool needs a level floor: a room with a pool can\'t have a ramp.');
     return { id, file, settings, heights, width, depth, cells, things, doors, links, start, holes, below };
 }
 
@@ -295,7 +304,23 @@ function makeThing(file, char, section, x, z) {
         if (block.material !== null && !BLOCK_MATERIALS.includes(block.material)) throw new LevelError(file, section.line, `material = ${block.material} does not exist. Possible: ${BLOCK_MATERIALS.join(', ')}.`);
         return block;
     }
-    throw new LevelError(file, section.line, `[${char}] needs light = ... (a lamp), block = ... (a block) or model = ... (a statue).`);
+    if (entries.pool !== undefined) {
+        // pool = tiefe: ein Becken, so tief unter dem Boden (in Metern);
+        // water = so tief unter dem Boden steht das Wasser darin. Jedes Feld
+        // mit diesem Buchstaben gehört dazu.
+        const pool = { type: 'pool', char, x, z, ...POOL_DEFAULTS, ...entries, depth: entries.pool };
+        if (!(typeof pool.depth === 'number' && pool.depth >= 0.2 && pool.depth <= 20)) throw new LevelError(file, section.line, `pool = ${entries.pool}: expected how deep the pool goes below the floor, 0.2 to 20 metres, for example pool = 2.`);
+        if (String(pool.water) === 'off') pool.water = null;
+        else if (!(typeof pool.water === 'number' && pool.water >= 0 && pool.water < pool.depth - 0.05)) {
+            throw new LevelError(file, section.line, `water = ${pool.water}: expected how far below the floor the water lies, from 0 to less than the depth of the pool (${pool.depth} m), or off for an empty pool.`);
+        }
+        if (!['on', 'off'].includes(String(pool.railing))) throw new LevelError(file, section.line, `railing = ${pool.railing}: expected on or off.`);
+        if (!/^#[0-9a-f]{6}$/i.test(String(pool.color))) throw new LevelError(file, section.line, `color = ${pool.color}: expected a colour for the tiles of the pool, such as #bcd8da.`);
+        if (!/^#[0-9a-f]{6}$/i.test(String(pool.tint))) throw new LevelError(file, section.line, `tint = ${pool.tint}: expected the colour of the water, such as #bff0f3 (clear) or #6f8f5a (murky).`);
+        pool.railing = String(pool.railing) === 'on';
+        return pool;
+    }
+    throw new LevelError(file, section.line, `[${char}] needs light = ... (a lamp), block = ... (a block), model = ... (a statue) or pool = ... (a pool).`);
 }
 
 // Wie hoch die Decke eines Raums an einer Stelle ist (x, z in Feldern des Raums)
@@ -577,8 +602,48 @@ export async function loadLevel(levelFile, fetchText) {
         return (cx, cz) => (built ? built.ceilingAt(cx, cz, room.index) : room.ceilingAt(cx - room.ox, cz - room.oz));
     };
 
+    // Becken: Felder, deren Boden um pool tiefer liegt als der ihres Raums;
+    // das Wasser darin steht water unter dem Rand (surface: seine Höhe, null
+    // ohne Wasser). Zusammenhängende Felder desselben Buchstabens sind ein Becken.
+    const water = new Map();          // Feld (mit Schicht) -> Becken
+    const pools = [];
+    for (const room of roomList) {
+        const cellsOf = new Map();
+        for (const thing of room.things.filter((t) => t.type === 'pool')) {
+            const at = index(room.ox + thing.x, room.oz + thing.z, room.layer);
+            if (cells[at] !== 'floor' || owner[at] !== room.index) continue;
+            cellsOf.set(at, thing);
+        }
+        for (const [first, thing] of cellsOf) {
+            if (water.has(first)) continue;
+            const pool = { room: room.index, layer: room.layer, char: thing.char, depth: thing.depth,
+                surface: thing.water === null ? null : room.elevation - thing.water, bottom: room.elevation - thing.depth,
+                railing: thing.railing, color: thing.color, tint: thing.tint, cells: [] };
+            const todo = [first];
+            water.set(first, pool);
+            while (todo.length) {
+                const at = todo.pop();
+                const x = at % width, z = Math.floor((at % size) / width);
+                pool.cells.push({ x, z });
+                for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+                    if (x + dx < 0 || z + dz < 0 || x + dx >= width || z + dz >= depth) continue;
+                    const next = index(x + dx, z + dz, room.layer);
+                    if (water.has(next) || cellsOf.get(next)?.char !== thing.char) continue;
+                    water.set(next, pool);
+                    todo.push(next);
+                }
+            }
+            pools.push(pool);
+        }
+    }
+    // Wie tief der Boden eines Felds unter dem seines Raums liegt (ein Becken), sonst 0
+    const sunk = (x, z, k) => {
+        const pool = water.get(index(x, z, k));
+        return pool ? roomList[pool.room].elevation - pool.bottom : 0;
+    };
+
     // Übereinander heißt: Der obere Boden liegt nirgends unter der Decke des
-    // unteren Raums (an allen vier Ecken eines Felds)
+    // unteren Raums (an allen vier Ecken eines Felds), auch nicht der Boden eines Beckens
     for (let z = 0; z < depth; z++) {
         for (let x = 0; x < width; x++) {
             const here = slabs(x, z);
@@ -587,9 +652,13 @@ export async function loadLevel(levelFile, fetchText) {
                     const a = roomList[here[i].room], b = roomList[here[j].room];
                     const corners = [[x, z], [x + 1, z], [x, z + 1], [x + 1, z + 1]];
                     const top = (slab) => ceilingOfCell(x, z, slab.layer);
-                    const apart = (lower, upper, lowerSlab) => corners.every(([cx, cz]) =>
-                        upper.floorAt(cx - upper.ox, cz - upper.oz) >= top(lowerSlab)(cx, cz) - 0.001);
-                    if (apart(a, b, here[i]) || apart(b, a, here[j])) continue;
+                    const apart = (lower, upper, lowerSlab, upperSlab) => corners.every(([cx, cz]) =>
+                        upper.floorAt(cx - upper.ox, cz - upper.oz) - sunk(x, z, upperSlab.layer) >= top(lowerSlab)(cx, cz) - 0.001);
+                    if (apart(a, b, here[i], here[j]) || apart(b, a, here[j], here[i])) continue;
+                    if (sunk(x, z, here[i].layer) || sunk(x, z, here[j].layer)) {
+                        const [upper, lower] = sunk(x, z, here[i].layer) ? [a, b] : [b, a];
+                        throw new LevelError(upper.file, null, `the pool in room ${upper.id} reaches down into room ${lower.id} below it (column ${x - upper.ox + 1}, row ${z - upper.oz + 1}). Make the pool shallower or the room below lower.`);
+                    }
                     throw new LevelError(b.file, null, `room ${b.id} and room ${a.id} lie in the same place at the same height (column ${x - b.ox + 1}, row ${z - b.oz + 1} of the floor plan of ${b.id}). Rooms on top of each other need the upper floor at or above the lower ceiling.`);
                 }
             }
@@ -668,7 +737,9 @@ export async function loadLevel(levelFile, fetchText) {
 
     const level = {
         settings, width, depth, layers, cells, owner, rooms: roomList, things, start, twistedDoors,
-        index, kindAt, slabs, ceilingOfCell,
+        index, kindAt, slabs, ceilingOfCell, pools,
+        // das Becken an einem Feld in Schicht k, oder null
+        poolAt: (x, z, k = 0) => (x < 0 || z < 0 || x >= width || z >= depth ? null : water.get(index(x, z, k)) ?? null),
         // Hat dieses Feld (Schicht k) keine Decke, weil darüber ein Loch ist?
         ceilingOpen: (x, z, k) => openCeiling.has(index(x, z, k)),
         // welcher Raum an einem Feld in Schicht k ist (-1: keiner)
@@ -696,7 +767,7 @@ export async function loadLevel(levelFile, fetchText) {
             const cx = Math.floor(x / settings.cell), cz = Math.floor(z / settings.cell);
             let best = -1, bestFloor = -Infinity, lowest = -1, lowestFloor = Infinity;
             for (const slab of slabs(cx, cz)) {
-                const floor = level.floorAt(x / settings.cell, z / settings.cell, slab.room);
+                const floor = level.floorAt(x / settings.cell, z / settings.cell, slab.room) - sunk(cx, cz, slab.layer);
                 if (floor < lowestFloor) { lowest = slab.room; lowestFloor = floor; }
                 if (y !== null && floor <= y + STEP && floor > bestFloor) { best = slab.room; bestFloor = floor; }
             }
@@ -706,14 +777,16 @@ export async function loadLevel(levelFile, fetchText) {
         floorAtPoint(x, z, y = null) {
             const room = level.roomAtPoint(x, z, y);
             if (room < 0) return 0;
-            return level.floorAt(x / settings.cell, z / settings.cell, room);
+            return level.floorAt(x / settings.cell, z / settings.cell, room) - sunk(Math.floor(x / settings.cell), Math.floor(z / settings.cell), roomList[room].layer);
         },
+        // wie tief der Boden eines Felds in Schicht k unter dem seines Raums liegt: in einem Becken dessen Tiefe, sonst 0
+        sunk,
         // Ist an einem Punkt der Welt (in Metern) Luft, in irgendeinem Raum?
         // margin < 0: nur wirklich zwischen Boden und Decke
         openAt(x, y, z, margin = 0.01) {
             const cx = Math.floor(x / settings.cell), cz = Math.floor(z / settings.cell);
             return slabs(cx, cz).some(({ room, layer }) =>
-                y >= level.floorAt(x / settings.cell, z / settings.cell, room) - margin &&
+                y >= level.floorAt(x / settings.cell, z / settings.cell, room) - sunk(cx, cz, layer) - margin &&
                 y <= ceilingOfCell(cx, cz, layer)(x / settings.cell, z / settings.cell) + margin);
         },
     };

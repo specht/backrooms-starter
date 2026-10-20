@@ -160,7 +160,9 @@ export function buildGeometry(level, statueBoxes = []) {
         // Türen mit verdrehtem Boden (zwischen zwei verschieden schrägen
         // Räumen) sind eigene Felder; alle anderen gehören zum Boden ihres Raums
         const door = (x, z) => level.twistedDoors.has(level.index(x, z, k));
-        const mine = (x, z) => kinds.includes(at(x, z, k)) && roomOf(x, z, k) === room && !(forCeiling && level.ceilingOpen(x, z, k));
+        // ein Becken hat seinen eigenen Boden, tief unten (pools unten); die Decke darüber gehört dem Raum
+        const mine = (x, z) => kinds.includes(at(x, z, k)) && roomOf(x, z, k) === room && !(forCeiling && level.ceilingOpen(x, z, k))
+            && (forCeiling || !level.poolAt(x, z, k));
         const inRoom = (x, z) => mine(x, z) && !used.has(z * width + x) && !door(x, z);
         const result = [];
         for (let z = 0; z < depth; z++) {
@@ -251,9 +253,11 @@ export function buildGeometry(level, statueBoxes = []) {
                         .filter((o) => o.floor[0] < top[0] - 0.01 || o.floor[1] < top[1] - 0.01);
                     if (!open.length && !level.ceilingOpen(x, z, k)) {
                         // eine ganze Wand: Stücke auf einer Linie werden unten zusammengelegt
-                        // (nicht am Schacht unter einem Loch: die reicht bis an die Decke darüber)
-                        const key = `${room}:${direction}:${line}`;
-                        if (!pieces.has(key)) pieces.set(key, { room, direction, line, list: [] });
+                        // (nicht am Schacht unter einem Loch: die reicht bis an die Decke darüber).
+                        // Über einem Becken ist sie ein eigenes Stück: ohne Sockelleiste
+                        const pool = level.poolAt(x, z, k) !== null;
+                        const key = `${room}:${direction}:${line}${pool ? ':pool' : ''}`;
+                        if (!pieces.has(key)) pieces.set(key, { room, direction, line, pool, list: [] });
                         pieces.get(key).list.push(along);
                         continue;
                     }
@@ -273,7 +277,7 @@ export function buildGeometry(level, statueBoxes = []) {
             }
         }
     }
-    for (const { room, direction, line, list } of pieces.values()) {
+    for (const { room, direction, line, pool, list } of pieces.values()) {
         list.sort((p, q) => p - q);
         const h = (cx, cz) => ceiling(cx, cz, room);
         const f = (cx, cz) => floorAt(cx, cz, room);
@@ -301,7 +305,7 @@ export function buildGeometry(level, statueBoxes = []) {
                 [b[0] * cell, hb, b[1] * cell], [a[0] * cell, ha, a[1] * cell]],
                 texels(length), texels(Math.max(ha - fa0, hb - fb0)));
             // Sockelleiste: vorne und oben, 1,5 cm vor der Wand
-            const board = level.rooms[room].settings.baseboard;
+            const board = pool ? null : level.rooms[room].settings.baseboard;
             if (board) {
                 const n = INWARD[direction], depthOut = 0.015, y = board.height;
                 // Die Enden: An einer äußeren Ecke (die Wand biegt weg, wie an
@@ -344,6 +348,58 @@ export function buildGeometry(level, statueBoxes = []) {
                 put([[ta[0], fa0 + y, ta[1]], [tb[0], fb0 + y, tb[1]], [tfb[0], fb0 + y, tfb[1]], [tfa[0], fa0 + y, tfa[1]]], length + topStart + topEnd, Math.max(depthOut, 0.2), [0, 1, 0]);
             }
             start = end + 1;
+        }
+    }
+
+    // Becken: ihr Boden tief unten und ringsum Wände aus Fliesen, vom Boden
+    // des Beckens bis zum Rand (dem Boden des Raums) oder bis zum Boden
+    // eines flacheren Beckens daneben. Darüber gilt, was ohnehin dort ist.
+    for (const pool of level.pools) {
+        const { room, layer: k, bottom } = pool;
+        const tiles = (corners, w, h) => {
+            const normal = faceNormal(corners);
+            if (normal.some((v) => v !== 0)) faces.push({ kind: 'block', color: pool.color, material: 'tiles', room, corners, normal, w, h });
+        };
+        const inPool = new Set(pool.cells.map(({ x, z }) => z * width + x));
+        // der Boden: die größten Rechtecke aus seinen Feldern
+        const used = new Set();
+        const free = (x, z) => inPool.has(z * width + x) && !used.has(z * width + x);
+        for (const { x, z } of [...pool.cells].sort((p, q) => p.z - q.z || p.x - q.x)) {
+            if (!free(x, z)) continue;
+            let w = 1, d = 1;
+            while (free(x + w, z)) w += 1;
+            while ([...Array(w).keys()].every((i) => free(x + i, z + d))) d += 1;
+            for (let dz = 0; dz < d; dz++) for (let dx = 0; dx < w; dx++) used.add((z + dz) * width + x + dx);
+            const x0 = x * cell, x1 = (x + w) * cell, z0 = z * cell, z1 = (z + d) * cell;
+            tiles([[x0, bottom, z1], [x1, bottom, z1], [x1, bottom, z0], [x0, bottom, z0]], texels(w * cell), texels(d * cell));
+        }
+        // die Wände: Stück für Stück, dann gleich hohe auf einer Linie zusammen
+        const walls = new Map();
+        for (const { x, z } of pool.cells) {
+            for (const [nx, nz, direction, line, along] of [[x, z - 1, 'north', z, x], [x, z + 1, 'south', z + 1, x], [x - 1, z, 'west', x, z], [x + 1, z, 'east', x + 1, z]]) {
+                if (inPool.has(nz * width + nx)) continue;
+                const other = level.poolAt(nx, nz, k);
+                const [a, b] = wallEnds(direction, line, along, along + 1);
+                const top = other ? [other.bottom, other.bottom] : [floorAt(a[0], a[1], room), floorAt(b[0], b[1], room)];
+                if (top[0] < bottom + 0.01 && top[1] < bottom + 0.01) continue;   // das tiefere Becken daneben baut sie
+                const key = `${direction}:${line}:${top[0].toFixed(3)}:${top[1].toFixed(3)}`;
+                if (!walls.has(key)) walls.set(key, { direction, line, top, list: [] });
+                walls.get(key).list.push(along);
+            }
+        }
+        for (const { direction, line, top, list } of walls.values()) {
+            list.sort((p, q) => p - q);
+            let start = 0;
+            while (start < list.length) {
+                let end = start;
+                // nur wo die Oberkante eben ist (kein Raum mit Rampe hat ein Becken, nur Türen könnten anders liegen)
+                while (end + 1 < list.length && list[end + 1] === list[end] + 1 && Math.abs(top[0] - top[1]) < 1e-3) end += 1;
+                const [a, b] = wallEnds(direction, line, list[start], list[end] + 1);
+                const length = (list[end] + 1 - list[start]) * cell;
+                tiles([[a[0] * cell, bottom, a[1] * cell], [b[0] * cell, bottom, b[1] * cell], [b[0] * cell, top[1], b[1] * cell], [a[0] * cell, top[0], a[1] * cell]],
+                    texels(length), texels(Math.max(top[0], top[1]) - bottom));
+                start = end + 1;
+            }
         }
     }
 

@@ -30,7 +30,7 @@ let a page load the room files from disk.
 - `tiefe/`: »Level 1: Die Tiefe«, rooms above and below each other: a narrow
   corridor whose wallpaper turns grey, a hall of columns with an opening
   eight metres above an abyss, an office upstairs with a hole in its floor, a
-  pit, low cellars, a tiled hall under the earth and a red corridor that
+  pit, low cellars, a tiled hall under the earth with a pool and a red corridor that
   climbs back up. Open it with `index.html?level=tiefe/level.ini`; its light
   is baked too.
 
@@ -221,6 +221,35 @@ room's wallpaper). `material` makes it of `marble`, `wood`, `tiles`, `velvet`,
 <tr><td><code>pedestal</code></td><td>a block under it: width, height, depth; <code>pedestal_color</code> paints it, <code>pedestal_material</code> makes it of marble, wood and so on</td></tr>
 <tr><td><code>tilt</code></td><td>in degrees, around the x axis, for a model that still lies down</td></tr>
 </table>
+
+### A pool
+
+Every field with the letter is part of the pool; fields of the same letter
+next to each other are one pool. Its floor lies `pool` below the floor of the
+room, lined with tiles, and the water stands `water` below the edge. You can't
+walk into water; into an empty pool you fall (Shift+R takes you back). A room
+with a pool has no ramp.
+
+```
+[W]
+pool = 2.2         # how deep the pool goes below the floor, in metres
+water = 0.25       # how far below the floor the water stands
+railing = on
+```
+
+<table>
+<tr><td><code>pool</code></td><td>depth below the floor, 0.2 to 20 metres</td></tr>
+<tr><td><code>water</code></td><td>how far below the floor the water stands (0.15); <code>off</code>: an empty pool</td></tr>
+<tr><td><code>tint</code></td><td>the colour of the water: what white looks like behind 2 m of it (<code>#bff0f3</code>, clear); <code>#6f8f5a</code> is murky</td></tr>
+<tr><td><code>color</code></td><td>the tiles of the pool (<code>#bcd8da</code>)</td></tr>
+<tr><td><code>railing</code></td><td><code>on</code>: a metal railing wherever you can stand at the edge</td></tr>
+</table>
+
+The water reflects the room and shows the floor of the pool, bluer the more
+water lies in between, with small slow waves and light dancing on the floor
+(`engine/water.js`). For that the room is drawn twice more for every picture
+in which water is seen: once mirrored, once only what lies under the water.
+In VR the water is a simple, half transparent surface.
 
 ### `level.ini`
 

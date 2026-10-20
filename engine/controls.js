@@ -136,14 +136,18 @@ export class Walker {
     }
 
     // Kein Boden, auf den man von hier aus treten kann: in keinem Raum dort
-    // einer bis eine Stufe über den Füßen, unter einer Decke über dem Kopf
+    // einer bis eine Stufe über den Füßen, unter einer Decke über dem Kopf,
+    // und kein Wasser
     // Über einem Loch ist auch Boden: tief unten, man fällt hinein.
     solid(x, z) {
         const { settings } = this.level;
         const cx = Math.floor(x / settings.cell), cz = Math.floor(z / settings.cell);
         const y = this.player.position.y;
         return !this.level.slabs(cx, cz).some(({ room, layer }) => {
-            const floor = this.level.floorAt(x / settings.cell, z / settings.cell, room);
+            // ins Wasser geht man nicht; in ein leeres Becken fällt man hinein
+            const pool = this.level.poolAt(cx, cz, layer);
+            if (pool && pool.surface !== null) return false;
+            const floor = this.level.floorAt(x / settings.cell, z / settings.cell, room) - this.level.sunk(cx, cz, layer);
             const ceiling = this.level.ceilingOfCell(cx, cz, layer)(x / settings.cell, z / settings.cell);
             return floor <= y + 0.45 && ceiling > Math.max(floor, y) + 1.0;
         });

@@ -17,6 +17,8 @@ import { Walker } from './controls.js';
 import { Automap } from './automap.js';
 import { fingerprint, encodeLight, findLight, writeCache, download, lightFileName } from './lightstore.js';
 import { VHSPass } from './vhs.js';
+import { Water } from './water.js';
+import { railing } from './railing.js';
 
 const params = new URLSearchParams(location.search);
 const PASSES_PER_FRAME = 4;    // pro Bild, solange gebacken wird
@@ -242,12 +244,34 @@ function lampNormal(light) {
     return new THREE.Vector3(light.tilt?.[0] ?? 0, -1, light.tilt?.[1] ?? 0).normalize();
 }
 
+// Das direkte Licht an einem Punkt p einer Fläche mit der Richtung n:
+// Leuchten in der Nähe plus Umgebungslicht, ohne Schatten. In out (r, g, b).
+function lightAt(p, n, lights, ambient, out, self = null) {
+    const color = new THREE.Color(), l = new THREE.Vector3();
+    let r = ambient, g = ambient, b = ambient;
+    for (const light of lights) {
+        if (light.model && light.model === self) continue;   // eine Lampe beleuchtet sich nicht selbst
+        l.copy(light.position).sub(p);
+        const d2 = l.lengthSq();
+        const range = lightRange(light), distance = Math.sqrt(d2);
+        if (distance > range) continue;
+        const fade = 1 - THREE.MathUtils.smoothstep(distance, 0.7 * range, range);
+        l.normalize();
+        const facing = light.kind === 'bulb' ? bulbFacing(light, l) : Math.max(-l.dot(lampNormal(light)), 0);
+        const amount = Math.max(n.dot(l), 0) * facing * 30 * light.power
+            * light.size[0] * light.size[1] / (Math.PI * d2 + 0.05) * fade;
+        color.set(light.color);
+        r += color.r * amount; g += color.g * amount; b += color.b * amount;
+    }
+    out[0] = r; out[1] = g; out[2] = b;
+    return out;
+}
+
 // Statuen bekommen ihr Licht nicht aus der Lichtkarte, sondern einmal
 // ausgerechnet für jede Ecke: Leuchten in der Nähe plus Umgebungslicht.
 function lightStatue(object, lights, ambient) {
-    const down = new Map(lights.map((light) => [light, lampNormal(light)]));
-    const color = new THREE.Color();
-    const p = new THREE.Vector3(), n = new THREE.Vector3(), l = new THREE.Vector3();
+    const p = new THREE.Vector3(), n = new THREE.Vector3();
+    const rgb = [0, 0, 0];
     object.traverse((mesh) => {
         if (!mesh.isMesh) return;
         const geometry = mesh.geometry;
@@ -258,22 +282,7 @@ function lightStatue(object, lights, ambient) {
         for (let i = 0; i < position.count; i++) {
             p.fromBufferAttribute(position, i).applyMatrix4(mesh.matrixWorld);
             n.fromBufferAttribute(normal, i).applyMatrix3(normalMatrix).normalize();
-            let r = ambient, g = ambient, b = ambient;
-            for (const light of lights) {
-                if (light.model === object) continue;   // eine Lampe beleuchtet sich nicht selbst
-                l.copy(light.position).sub(p);
-                const d2 = l.lengthSq();
-                const range = lightRange(light), distance = Math.sqrt(d2);
-                if (distance > range) continue;
-                const fade = 1 - THREE.MathUtils.smoothstep(distance, 0.7 * range, range);
-                l.normalize();
-                const facing = light.kind === 'bulb' ? bulbFacing(light, l) : Math.max(-l.dot(down.get(light)), 0);
-                const amount = Math.max(n.dot(l), 0) * facing * 30 * light.power
-                    * light.size[0] * light.size[1] / (Math.PI * d2 + 0.05) * fade;
-                color.set(light.color);
-                r += color.r * amount; g += color.g * amount; b += color.b * amount;
-            }
-            colors.set([r, g, b], i * 3);
+            colors.set(lightAt(p, n, lights, ambient, rgb, object), i * 3);
         }
         geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
         mesh.userData.direct = colors.slice();   // ohne Bounce-Licht, das kommt nach dem Backen dazu
@@ -638,6 +647,15 @@ async function start() {
         }
     }
 
+    // Geländer um Becken: wie Statuen aus Metall
+    for (const pool of level.pools.filter((p) => p.railing)) {
+        const object = railing(level, pool);
+        if (!object) continue;
+        statues.push(object);
+        statueThings.push({ type: 'railing', room: pool.room });
+        scene.add(object);
+    }
+
     // Lampen aus Modellen (light = Farbe beim Modell): Ihr Licht sitzt in der
     // Mitte ihrer leuchtenden Teile, sonst in ihrer Mitte, und strahlt nach
     // allen Seiten. Das Modell selbst hält sein Licht nicht auf.
@@ -671,7 +689,7 @@ async function start() {
     // Gespeichertes Licht, wenn es zu genau diesem Level passt: Der
     // Fingerabdruck nimmt alles, was gelesen wurde, dazu bounces und die
     // Teile des Programms, die das Licht ausrechnen.
-    const engineFiles = ['level.js', 'geometry.js', 'bake.js'];
+    const engineFiles = ['level.js', 'geometry.js', 'bake.js', 'railing.js'];
     const engine = await Promise.all(engineFiles.map((file) => fetchText(new URL(`./${file}`, import.meta.url)).catch(() => file)));
     const print = fingerprint([...sources, `bounces ${bounces}`, ...engine]);
     const found = params.has('rebake') ? null : await findLight(levelFile, print);
@@ -788,6 +806,22 @@ async function start() {
         aboveRooms.push(glow);
         return { light, material, glow };
     });
+
+    // Wasser in den Becken; im Wasser streut so viel Licht, wie über ihm
+    // ankommt, in der Mitte seiner Fläche
+    const water = new Water(level, renderer);
+    water.addTo(scene);
+    water.hide = panels.map(({ glow }) => glow);
+    for (const pool of level.pools.filter((p) => p.surface !== null)) {
+        const cells = pool.cells.length;
+        const center = new THREE.Vector3(
+            (pool.cells.reduce((sum, c) => sum + c.x, 0) / cells + 0.5) * settings.cell, pool.surface + 0.05,
+            (pool.cells.reduce((sum, c) => sum + c.z, 0) / cells + 0.5) * settings.cell);
+        const room = level.rooms[pool.room].settings;
+        const rgb = lightAt(center, new THREE.Vector3(0, 1, 0), lights, room.ambient ?? settings.ambient, [0, 0, 0]);
+        // nur ein Teil davon: Ohne Bounce-Licht, aber von einem Punkt aus über die ganze Fläche
+        water.setLight(pool, new THREE.Color(...rgb).multiplyScalar(0.35));
+    }
 
     const statueMeshes = [];
     statues.forEach((statue, i) => {
@@ -1163,6 +1197,8 @@ async function start() {
             captureReflections(renderer, scene, statues, panels.map(({ glow }) => glow));
         }
 
+        // das Wasser: Wellen, Licht; in VR und in der Automap nur einfach
+        water.update(now, shown, renderer.xr.isPresenting || automap.active);
         walker.update(dt);
         rememberPlace();
         if (automap.active) {
