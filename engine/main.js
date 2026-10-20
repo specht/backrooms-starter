@@ -20,7 +20,7 @@ import { fingerprint, encodeLight, findLight, writeCache, download, lightFileNam
 import { VHSPass } from './vhs.js';
 import { LensPass } from './lens.js';
 import { Water } from './water.js';
-import { railing } from './railing.js';
+import { railing, liftRailing } from './railing.js';
 import { Portals } from './portals.js';
 
 const params = new URLSearchParams(location.search);
@@ -818,6 +818,14 @@ async function start() {
         if (!object) continue;
         statues.push(object);
         statueThings.push({ type: 'railing', room: pool.room });
+        scene.add(object);
+    }
+    // und an Treppen und Podesten
+    for (const group of level.lifts.filter((g) => g.railing)) {
+        const object = liftRailing(level, group);
+        if (!object) continue;
+        statues.push(object);
+        statueThings.push({ type: 'railing', room: group.room });
         scene.add(object);
     }
 

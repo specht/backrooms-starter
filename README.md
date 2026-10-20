@@ -218,6 +218,7 @@ just as a door places its neighbour. Whoever steps onto the hole falls.
 <tr><td><code>floor</code></td><td><code>carpet</code>, <code>marble</code>, <code>wood</code> (floorboards), <code>tiles</code> or <code>plain</code>, in the colour of <code>carpet</code></td></tr>
 <tr><td><code>wallpaper</code>, <code>carpet</code>, <code>ceiling</code></td><td>colours, such as <code>#c9b458</code></td></tr>
 <tr><td><code>baseboard</code></td><td>the skirting board: height and colour, such as <code>0.08, #86763c</code>; without it, 8 cm and half as bright as the wallpaper; <code>none</code>: no skirting board</td></tr>
+<tr><td><code>dado</code></td><td>the lower part of the walls different: height and colour, such as <code>dado = 1.2, #1a1a1a</code>; <code>dado_material</code> says what it is made of (without: like the walls)</td></tr>
 <tr><td><code>look</code></td><td>where you look at the <code>@</code>: <code>north</code>, <code>east</code>, <code>south</code>, <code>west</code> or degrees, clockwise from north (<code>look = 30</code>: a little east of north)</td></tr>
 <tr><td><code>ambient</code></td><td>light from everywhere in this room (0 to 1), usually not needed</td></tr>
 </table>
@@ -257,6 +258,23 @@ oval one when width and depth differ).
 <tr><td><code>tilt</code></td><td>in degrees, around the x axis, for a model that still lies down</td></tr>
 </table>
 
+### Stairs and platforms
+
+```
+[S]
+stairs = east, 3   # these fields (a rectangle) climb 3 m eastwards, in steps of about 18 cm
+railing = on       # a railing where it drops down at the side
+
+[P]
+raise = 3          # these fields lie 3 m higher: a platform you can stand on
+railing = on
+```
+
+Under stairs and platforms there is no room: they are solid. A platform can
+have any shape, all neighbouring fields with its letter are one. `material`
+and `color` make them of tiles, wood and so on; without, the treads have the
+room's floor and the sides its walls.
+
 ### A pool
 
 Every field with the letter is part of the pool; fields next to each other
@@ -282,6 +300,7 @@ railing = on
 <tr><td><code>color</code></td><td>the tiles of the pool (<code>#bcd8da</code>)</td></tr>
 <tr><td><code>railing</code></td><td><code>on</code>: a metal railing wherever you can stand at the edge</td></tr>
 <tr><td><code>waves</code></td><td>how big the waves are: 1 calm (the default), 2 bigger, steeper and faster, 0 smooth</td></tr>
+<tr><td><code>rim</code></td><td>a tiled edge round the pool, as high and as wide as given, such as <code>rim = 0.15, 0.3</code>; you can step onto it, and the railing stands on it</td></tr>
 </table>
 
 The water reflects the room and shows the floor of the pool, bluer the more

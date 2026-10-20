@@ -18,7 +18,7 @@ export function railing(level, pool) {
     const inPool = (x, z) => level.poolAt(x, z, k) === pool;
     // am Rand stehen kann man auf Boden, der nicht zu einem Becken gehört
     const standing = (x, z) => level.kindAt(x, z, k) === 'floor' && !level.poolAt(x, z, k);
-    const floor = level.rooms[pool.room].elevation;
+    const floor = level.rooms[pool.room].elevation + (pool.rim?.[0] ?? 0);   // mit einem Rand: auf ihm
     // die Kanten des Beckens, an denen man steht: Stücke einer Linie in Metern
     const runs = [];
     for (const { x, z } of pool.cells) {
@@ -147,4 +147,81 @@ export function railing(level, pool) {
     }
     group.updateMatrixWorld(true);
     return group.children.length ? group : null;
+}
+
+// Ein Geländer an einer Treppe oder um ein Podest (railing = on bei
+// stairs oder raise): wo es an der Seite mehr als einen halben Meter
+// hinuntergeht. An einer Treppe läuft es schräg mit den Stufen hinauf, um
+// ein Podest gerade entlang seiner Kanten, 6 cm innerhalb.
+export function liftRailing(level, group) {
+    const cell = level.settings.cell, k = group.layer;
+    const metal = new THREE.MeshStandardMaterial({ color: '#c4c9cd', metalness: 1, roughness: 0.12 });
+    const out = new THREE.Group();
+    const up = new THREE.Vector3(0, 1, 0);
+    const pipe = (a, b, radius) => {
+        const length = a.distanceTo(b);
+        if (length < 1e-3) return;
+        const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, length, 14, 1, true), metal);
+        mesh.position.copy(a).add(b).multiplyScalar(0.5);
+        mesh.quaternion.setFromUnitVectors(up, b.clone().sub(a).normalize());
+        out.add(mesh);
+    };
+    const post = (x, y, z, top) => {
+        pipe(new THREE.Vector3(x, y, z), new THREE.Vector3(x, top, z), 0.022);
+        const ball = new THREE.Mesh(new THREE.SphereGeometry(0.026, 14, 10), metal);
+        ball.position.set(x, top, z);
+        out.add(ball);
+        const foot = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.046, 0.014, 18), metal);
+        foot.position.set(x, y + 0.007, z);
+        out.add(foot);
+    };
+    // wie tief es neben einer Stelle (px, pz in Feldern) hinuntergeht, auf der Seite des Felds nx, nz
+    const drop = (here, nx, nz, px, pz) => {
+        if (level.kindAt(nx, nz, k) !== 'floor') return 0;
+        return here - (level.floorAt(px, pz, level.roomAt(nx, nz, k)) - level.sunk(nx, nz, k) + level.lift(nx, nz, k, px, pz));
+    };
+    const inside = 0.06;
+    if (group.stairs) {
+        const { direction } = group.stairs;
+        const alongX = direction === 'east' || direction === 'west';
+        const sign = direction === 'east' || direction === 'south' ? 1 : -1;
+        const start = sign > 0 ? (alongX ? group.x0 : group.z0) * cell : ((alongX ? group.x1 : group.z1) + 1) * cell;
+        const w0 = (alongX ? group.z0 : group.x0) * cell, w1 = ((alongX ? group.z1 : group.x1) + 1) * cell;
+        const at = (u, w) => (alongX ? [start + sign * u, w] : [w, start + sign * u]);
+        const stepTop = (u) => group.floor + Math.min(group.stairs.rise, (Math.floor(Math.max(0, u) / group.tread + 1e-6) + 1) * group.stepHeight);
+        for (const [w, outward] of [[w0 + inside, -1], [w1 - inside, 1]]) {
+            // offen, wenn es neben der Mitte der Treppe tief genug hinuntergeht
+            const [mx, mz] = at(group.length / 2, w + outward * (inside + 0.01));
+            if (drop(stepTop(group.length / 2), Math.floor(mx / cell), Math.floor(mz / cell), mx / cell, mz / cell) < 0.5) continue;
+            const u0 = group.tread / 2, u1 = group.length - group.tread / 2;
+            const count = Math.max(1, Math.ceil((u1 - u0) / 1.2));
+            const height = (u) => group.floor + group.stepHeight + (u - u0) / (u1 - u0) * (group.stairs.rise - group.stepHeight);
+            for (const [lift, radius] of [[0.95, 0.024], [0.5, 0.014]]) {
+                const [ax, az] = at(u0, w), [bx, bz] = at(u1, w);
+                pipe(new THREE.Vector3(ax, height(u0) + lift, az), new THREE.Vector3(bx, height(u1) + lift, bz), radius);
+            }
+            for (let i = 0; i <= count; i++) {
+                const u = u0 + (u1 - u0) * i / count, [px, pz] = at(u, w);
+                post(px, stepTop(u), pz, height(u) + 0.95);
+            }
+        }
+    } else {
+        const top = group.floor + group.raise;
+        for (const { x, z } of group.cells) {
+            for (const [dx, dz] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
+                if (level.liftAt(x + dx, z + dz, k) === group) continue;
+                const mx = x + 0.5 + dx * 0.51, mz = z + 0.5 + dz * 0.51;
+                if (drop(top, x + dx, z + dz, mx, mz) < 0.5) continue;
+                // die Kante, 6 cm nach innen
+                const t = [Math.abs(dz), Math.abs(dx)];
+                const cx = (x + 0.5 + dx * 0.5) * cell - dx * inside, cz = (z + 0.5 + dz * 0.5) * cell - dz * inside;
+                const a = new THREE.Vector3(cx - t[0] * cell / 2, 0, cz - t[1] * cell / 2), b = new THREE.Vector3(cx + t[0] * cell / 2, 0, cz + t[1] * cell / 2);
+                for (const [lift, radius] of [[1, 0.024], [0.5, 0.014]]) pipe(a.clone().setY(top + lift), b.clone().setY(top + lift), radius);
+                post(a.x, top, a.z, top + 1);
+                post(b.x, top, b.z, top + 1);
+            }
+        }
+    }
+    out.updateMatrixWorld(true);
+    return out.children.length ? out : null;
 }

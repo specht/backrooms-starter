@@ -34,6 +34,8 @@ const ROOM_DEFAULTS = {
     walls: 'wallpaper',   // Wände: wallpaper, marble, wood (Holz), tiles (Fliesen), velvet (Samt) oder plain (einfarbig), in der Farbe von wallpaper
     floor: 'carpet',      // Boden: carpet, marble, wood, tiles oder plain, in der Farbe von carpet
     baseboard: 'auto',    // Sockelleiste: höhe, farbe, zum Beispiel 0.08, #5a4626; ohne: 8 cm, dunkler als die Wand; none: keine
+    dado: null,           // die Wand unten anders: höhe, farbe, zum Beispiel 1.2, #1a1a1a (dado_material: woraus, ohne: wie die Wände)
+    dado_material: null,
     ambient: null,        // Umgebungslicht nur in diesem Raum, sonst das aus level.ini
     look: null,           // wohin du am @ schaust: north, east, south, west oder Grad (0 = Norden, 90 = Osten)
 };
@@ -79,11 +81,13 @@ const POOL_DEFAULTS = {
     color: '#bcd8da',     // die Fliesen des Beckens
     tint: '#bff0f3',      // die Farbe des Wassers: So sieht Weiß hinter 2 m Wasser aus
     waves: 1,             // wie groß die Wellen sind: 1 ruhig, 2 größer und schneller, 0 glatt
+    rim: null,            // ein Rand aus Fliesen um das Becken: höhe, breite, zum Beispiel 0.2, 0.3
 };
 
 const SLOPES = ['flat', 'north', 'east', 'south', 'west', 'gable'];
 const MAX_LAYERS = 8;     // so viele Räume dürfen übereinander liegen
 const STEP = 0.45;        // so hoch reicht ein Schritt: ein Boden bis hier über den Füßen trägt noch
+const STAIR_STEP = 0.18;  // so hoch ist eine Stufe einer Treppe, ungefähr
 const RAMPS = ['north', 'east', 'south', 'west'];
 
 export class LevelError extends Error {
@@ -151,6 +155,15 @@ function parseRoom(id, source) {
         const h = Number(height);
         if (!(h > 0.01 && h < 1)) throw new LevelError(file, null, `baseboard = ${settings.baseboard}: expected a height in metres (0.01 to 1) and a colour, for example baseboard = 0.08, #b29a52.`);
         settings.baseboard = { height: h, color };
+    }
+    if (settings.dado !== null && settings.dado !== undefined) {
+        const [height, color] = String(settings.dado).split(',').map((part) => part.trim());
+        if (!(Number(height) > 0.1 && Number(height) < 20) || !/^#[0-9a-f]{6}$/i.test(color ?? '')) {
+            throw new LevelError(file, null, `dado = ${settings.dado}: expected how high the lower part of the walls reaches and its colour, for example dado = 1.2, #1a1a1a.`);
+        }
+        const material = settings.dado_material ?? settings.walls;
+        if (!BLOCK_MATERIALS.includes(material)) throw new LevelError(file, null, `dado_material = ${settings.dado_material} does not exist. Possible: ${BLOCK_MATERIALS.join(', ')}.`);
+        settings.dado = { height: Number(height), color, material };
     }
     if (!SLOPES.includes(settings.slope)) throw new LevelError(file, null, `slope = ${settings.slope} does not exist. Possible: ${SLOPES.join(', ')}.`);
     if (settings.slope !== 'flat' && heights.length !== 2) throw new LevelError(file, null, 'a sloped ceiling needs two heights: height = low, high');
@@ -322,7 +335,22 @@ function makeThing(file, char, section, x, z) {
         return block;
     }
     if (entries.pool !== undefined) return makePool(file, char, section, entries, x, z);
-    throw new LevelError(file, section.line, `[${char}] needs light = ... (a lamp), block = ... (a block), model = ... (a statue) or pool = ... (a pool).`);
+    if (entries.stairs !== undefined || entries.raise !== undefined) {
+        // stairs = richtung, höhe: eine Treppe über diese Felder; raise = höhe: ein Podest
+        const lift = { type: 'lift', char, x, z, railing: String(entries.railing ?? 'off') === 'on', material: entries.material ?? null, color: entries.color ?? null, stairs: null, raise: null };
+        if (entries.stairs !== undefined) {
+            const [direction, rise] = String(entries.stairs).split(',').map((part) => part.trim());
+            if (!RAMPS.includes(direction) || !(Number(rise) > 0.1 && Number(rise) <= 20)) throw new LevelError(file, section.line, `stairs = ${entries.stairs}: expected a direction (${RAMPS.join(', ')}) and how many metres the stairs climb that way, for example stairs = east, 3.`);
+            lift.stairs = { direction, rise: Number(rise) };
+        } else {
+            if (!(typeof entries.raise === 'number' && entries.raise > 0.02 && entries.raise <= 20)) throw new LevelError(file, section.line, `raise = ${entries.raise}: expected how high the platform is, in metres, for example raise = 1.5.`);
+            lift.raise = entries.raise;
+        }
+        if (!['on', 'off'].includes(String(entries.railing ?? 'off'))) throw new LevelError(file, section.line, `railing = ${entries.railing}: expected on or off.`);
+        if (lift.material !== null && !BLOCK_MATERIALS.includes(lift.material)) throw new LevelError(file, section.line, `material = ${lift.material} does not exist. Possible: ${BLOCK_MATERIALS.join(', ')}.`);
+        return lift;
+    }
+    throw new LevelError(file, section.line, `[${char}] needs light = ... (a lamp), block = ... (a block), model = ... (a statue), pool = ... (a pool), stairs = ... or raise = ... (stairs, a platform).`);
 }
 
 // pool = tiefe: ein Becken, so tief unter dem Boden (in Metern); water = so
@@ -340,6 +368,11 @@ function makePool(file, char, section, entries, x, z) {
     if (!['on', 'off'].includes(String(pool.railing))) throw new LevelError(file, section.line, `railing = ${pool.railing}: expected on or off.`);
     if (!/^#[0-9a-f]{6}$/i.test(String(pool.color))) throw new LevelError(file, section.line, `color = ${pool.color}: expected a colour for the tiles of the pool, such as #bcd8da.`);
     if (!/^#[0-9a-f]{6}$/i.test(String(pool.tint))) throw new LevelError(file, section.line, `tint = ${pool.tint}: expected the colour of the water, such as #bff0f3 (clear) or #6f8f5a (murky).`);
+    if (pool.rim !== null) {
+        const [h, w] = [pool.rim].flat();
+        if (!(h > 0.02 && h <= 1.2 && w >= 0.1 && w <= 1)) throw new LevelError(file, section.line, `rim = ${pool.rim}: expected how high and how wide the tiled edge around the pool is, for example rim = 0.2, 0.3 (up to 1.2 m high, 0.1 to 1 m wide).`);
+        pool.rim = [h, w];
+    }
     if (!(typeof pool.waves === 'number' && pool.waves >= 0 && pool.waves <= 4)) throw new LevelError(file, section.line, `waves = ${pool.waves}: expected how big the waves are, from 0 (smooth) over 1 (calm) to 4.`);
     pool.railing = String(pool.railing) === 'on';
     return pool;
@@ -647,7 +680,7 @@ export async function loadLevel(levelFile, fetchText) {
             if (water.has(first)) continue;
             const pool = { room: room.index, layer: room.layer, char: thing.char, depth: thing.depth,
                 surface: thing.water === null ? null : room.elevation - thing.water, bottom: room.elevation - thing.depth,
-                railing: thing.railing, color: thing.color, tint: thing.tint, waves: thing.waves, cells: [] };
+                railing: thing.railing, color: thing.color, tint: thing.tint, waves: thing.waves, rim: thing.rim, cells: [] };
             const todo = [first];
             water.set(first, pool);
             while (todo.length) {
@@ -671,6 +704,75 @@ export async function loadLevel(levelFile, fetchText) {
     const sunk = (x, z, k) => {
         const pool = water.get(index(x, z, k));
         return pool ? roomList[pool.room].elevation - pool.bottom : 0;
+    };
+
+    // Treppen und Podeste (stairs, raise): Felder, deren Boden höher liegt
+    // als der ihres Raums. Felder nebeneinander mit demselben Buchstaben sind
+    // eine Treppe (ein Rechteck) oder ein Podest. Eine Treppe steigt über ihre
+    // ganze Länge, in Stufen von etwa STAIR_STEP.
+    const lifted = new Map();   // Feld (mit Schicht) -> Gruppe
+    const lifts = [];
+    for (const room of roomList) {
+        const cellsOf = new Map();
+        for (const thing of room.things.filter((t) => t.type === 'lift')) {
+            const at = index(room.ox + thing.x, room.oz + thing.z, room.layer);
+            if (cells[at] === 'floor' && owner[at] === room.index) cellsOf.set(at, thing);
+        }
+        for (const [first, thing] of cellsOf) {
+            if (lifted.has(first)) continue;
+            const group = { room: room.index, layer: room.layer, char: thing.char, stairs: thing.stairs, raise: thing.raise, railing: thing.railing, material: thing.material, color: thing.color, cells: [] };
+            const todo = [first];
+            lifted.set(first, group);
+            while (todo.length) {
+                const at = todo.pop();
+                const x = at % width, z = Math.floor((at % size) / width);
+                group.cells.push({ x, z });
+                for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+                    const next = index(x + dx, z + dz, room.layer);
+                    if (x + dx < 0 || z + dz < 0 || x + dx >= width || z + dz >= depth || lifted.has(next) || cellsOf.get(next)?.char !== thing.char) continue;
+                    lifted.set(next, group);
+                    todo.push(next);
+                }
+            }
+            const xs = group.cells.map((c) => c.x), zs = group.cells.map((c) => c.z);
+            Object.assign(group, { x0: Math.min(...xs), x1: Math.max(...xs), z0: Math.min(...zs), z1: Math.max(...zs) });
+            group.floor = room.elevation;
+            if (group.stairs) {
+                if (room.settings.ramp) throw new LevelError(room.file, null, `stairs need a level floor: room ${room.id} has a ramp.`);
+                if (group.cells.length !== (group.x1 - group.x0 + 1) * (group.z1 - group.z0 + 1)) throw new LevelError(room.file, null, `the stairs ${thing.char} need a rectangle of fields.`);
+                const alongX = ['east', 'west'].includes(group.stairs.direction);
+                group.length = ((alongX ? group.x1 - group.x0 : group.z1 - group.z0) + 1) * settings.cell;
+                group.steps = Math.max(1, Math.round(group.stairs.rise / STAIR_STEP));
+                group.stepHeight = group.stairs.rise / group.steps;
+                group.tread = group.length / group.steps;
+            }
+            lifts.push(group);
+        }
+    }
+    // Wie weit eine Stelle (px, pz in Feldern) über dem Boden ihres Raums liegt:
+    // auf einem Podest, einer Stufe oder dem Rand eines Beckens (rim)
+    const stairAt = (group, px, pz) => {
+        const { direction } = group.stairs, cell = settings.cell;
+        const u = direction === 'east' ? (px - group.x0) * cell : direction === 'west' ? (group.x1 + 1 - px) * cell
+            : direction === 'south' ? (pz - group.z0) * cell : (group.z1 + 1 - pz) * cell;
+        return Math.min(group.stairs.rise, (Math.floor(Math.max(0, u) / group.tread + 1e-6) + 1) * group.stepHeight);
+    };
+    const lift = (x, z, k, px = x + 0.5, pz = z + 0.5) => {
+        const group = lifted.get(index(x, z, k));
+        if (group) return group.raise ?? stairAt(group, px, pz);
+        // der Rand eines Beckens daneben: so weit, wie er breit ist
+        let best = 0;
+        if (kindAt(x, z, k) !== 'floor' || water.has(index(x, z, k))) return 0;
+        const fx = px - x, fz = pz - z, cell = settings.cell;
+        for (const [dx, dz, d] of [[-1, 0, fx], [1, 0, 1 - fx], [0, -1, fz], [0, 1, 1 - fz]]) {
+            const pool = x + dx >= 0 && z + dz >= 0 && x + dx < width && z + dz < depth ? water.get(index(x + dx, z + dz, k)) : null;
+            if (pool?.rim && d * cell <= pool.rim[1]) best = Math.max(best, pool.rim[0]);
+        }
+        for (const [dx, dz, ex, ez] of [[-1, -1, fx, fz], [1, -1, 1 - fx, fz], [-1, 1, fx, 1 - fz], [1, 1, 1 - fx, 1 - fz]]) {
+            const pool = x + dx >= 0 && z + dz >= 0 && x + dx < width && z + dz < depth ? water.get(index(x + dx, z + dz, k)) : null;
+            if (pool?.rim && ex * cell <= pool.rim[1] && ez * cell <= pool.rim[1]) best = Math.max(best, pool.rim[0]);
+        }
+        return best;
     };
 
     // Runde Türen (arch = höhe bei einer der beiden Seiten): Über die ganze
@@ -748,7 +850,8 @@ export async function loadLevel(levelFile, fetchText) {
             const [dx, , dz] = thing.offset ?? [0, 0, 0];
             // in einem Becken: auf dessen Boden
             things.push({ ...thing, x: thing.x + room.ox, z: thing.z + room.oz, room: room.index,
-                floor: room.floorAt(thing.x + 0.5 + dx / settings.cell, thing.z + 0.5 + dz / settings.cell) - sunk(thing.x + room.ox, thing.z + room.oz, room.layer) });
+                floor: room.floorAt(thing.x + 0.5 + dx / settings.cell, thing.z + 0.5 + dz / settings.cell) - sunk(thing.x + room.ox, thing.z + room.oz, room.layer)
+                    + (thing.type === 'lift' ? 0 : lift(thing.x + room.ox, thing.z + room.oz, room.layer)) });
         }
         if (room.start) {
             if (start) throw new LevelError(room.file, room.start.line, 'there is more than one @ in the level: you can only start in one place.');
@@ -844,7 +947,7 @@ export async function loadLevel(levelFile, fetchText) {
             const cx = Math.floor(x / settings.cell), cz = Math.floor(z / settings.cell);
             let best = -1, bestFloor = -Infinity, lowest = -1, lowestFloor = Infinity;
             for (const slab of slabs(cx, cz)) {
-                const floor = level.floorAt(x / settings.cell, z / settings.cell, slab.room) - sunk(cx, cz, slab.layer);
+                const floor = level.floorAt(x / settings.cell, z / settings.cell, slab.room) - sunk(cx, cz, slab.layer) + lift(cx, cz, slab.layer, x / settings.cell, z / settings.cell);
                 if (floor < lowestFloor) { lowest = slab.room; lowestFloor = floor; }
                 if (y !== null && floor <= y + STEP && floor > bestFloor) { best = slab.room; bestFloor = floor; }
             }
@@ -854,16 +957,23 @@ export async function loadLevel(levelFile, fetchText) {
         floorAtPoint(x, z, y = null) {
             const room = level.roomAtPoint(x, z, y);
             if (room < 0) return 0;
-            return level.floorAt(x / settings.cell, z / settings.cell, room) - sunk(Math.floor(x / settings.cell), Math.floor(z / settings.cell), roomList[room].layer);
+            const cx = Math.floor(x / settings.cell), cz = Math.floor(z / settings.cell), k = roomList[room].layer;
+            return level.floorAt(x / settings.cell, z / settings.cell, room) - sunk(cx, cz, k) + lift(cx, cz, k, x / settings.cell, z / settings.cell);
         },
         // wie tief der Boden eines Felds in Schicht k unter dem seines Raums liegt: in einem Becken dessen Tiefe, sonst 0
         sunk,
+        // wie hoch eine Stelle (px, pz in Feldern) eines Felds über dem Boden seines Raums liegt: Treppe, Podest, Rand eines Beckens
+        lift,
+        lifts,
+        // die Treppe oder das Podest an einem Feld in Schicht k, oder null
+        liftAt: (x, z, k = 0) => (x < 0 || z < 0 || x >= width || z >= depth ? null : lifted.get(index(x, z, k)) ?? null),
+        stairAt,
         // Ist an einem Punkt der Welt (in Metern) Luft, in irgendeinem Raum?
         // margin < 0: nur wirklich zwischen Boden und Decke
         openAt(x, y, z, margin = 0.01) {
             const cx = Math.floor(x / settings.cell), cz = Math.floor(z / settings.cell);
             return slabs(cx, cz).some(({ room, layer }) =>
-                y >= level.floorAt(x / settings.cell, z / settings.cell, room) - sunk(cx, cz, layer) - margin &&
+                y >= level.floorAt(x / settings.cell, z / settings.cell, room) - sunk(cx, cz, layer) + lift(cx, cz, layer, x / settings.cell, z / settings.cell) - margin &&
                 y <= ceilingOfCell(cx, cz, layer)(x / settings.cell, z / settings.cell) + margin);
         },
     };

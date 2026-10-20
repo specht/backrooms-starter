@@ -164,7 +164,7 @@ export function buildGeometry(level, statueBoxes = []) {
         const door = (x, z) => level.twistedDoors.has(level.index(x, z, k));
         // ein Becken hat seinen eigenen Boden, tief unten (pools unten); die Decke darüber gehört dem Raum
         const mine = (x, z) => kinds.includes(at(x, z, k)) && roomOf(x, z, k) === room && !(forCeiling && level.ceilingOpen(x, z, k))
-            && (forCeiling || !level.poolAt(x, z, k)) && !(forCeiling && level.archAt(x, z, k));   // eine runde Tür hat ihren Bogen
+            && (forCeiling || (!level.poolAt(x, z, k) && !level.liftAt(x, z, k))) && !(forCeiling && level.archAt(x, z, k));   // Becken, Treppen und Podeste haben ihren eigenen Boden, eine runde Tür ihren Bogen
         const inRoom = (x, z) => mine(x, z) && !used.has(z * width + x) && !door(x, z);
         const result = [];
         for (let z = 0; z < depth; z++) {
@@ -457,6 +457,74 @@ export function buildGeometry(level, statueBoxes = []) {
         }
     }
 
+    // Treppen und Podeste (level.js, lifts): oben ihre Fläche (bei einer
+    // Treppe jede Stufe mit Tritt und Stirn), und ringsum, wo daneben kein
+    // so hoher Boden ist, eine Seite bis zu ihm hinunter
+    for (const group of level.lifts) {
+        const { room, layer: k, floor } = group;
+        const look = (top) => (group.material ? { kind: 'block', material: group.material, color: group.color }
+            : top ? { kind: 'floor' } : { kind: 'block', material: null, color: null });
+        const put = (corners, sw, sh, top) => {
+            const { kind, material, color } = look(top);
+            const normal = faceNormal(corners);
+            if (normal.some((v) => v !== 0)) faces.push({ kind, room, corners, normal, w: texels(sw), h: texels(sh), material, color });
+        };
+        const inGroup = (x, z) => level.liftAt(x, z, k) === group;
+        // wie hoch der Boden auf der anderen Seite einer Kante liegt (oder null: Wand)
+        const across = (x, z, px, pz) => {
+            if (level.kindAt(x, z, k) !== 'floor') return null;
+            return level.floorAt(px, pz, level.roomAt(x, z, k)) - level.sunk(x, z, k) + level.lift(x, z, k, px, pz);
+        };
+        if (group.raise !== null) {
+            const top = floor + group.raise;
+            for (const { x, z } of group.cells) {
+                const x0 = x * cell, x1 = (x + 1) * cell, z0 = z * cell, z1 = (z + 1) * cell;
+                put([[x0, top, z1], [x1, top, z1], [x1, top, z0], [x0, top, z0]], cell, cell, true);
+                for (const [nx, nz, direction, line, along] of [[x, z - 1, 'north', z, x], [x, z + 1, 'south', z + 1, x], [x - 1, z, 'west', x, z], [x + 1, z, 'east', x + 1, z]]) {
+                    if (inGroup(nx, nz)) continue;
+                    const [a, b] = wallEnds(direction, line, along, along + 1);
+                    const mid = [(a[0] + b[0]) / 2 + (nx - x) * 0.01, (a[1] + b[1]) / 2 + (nz - z) * 0.01];
+                    const low = across(nx, nz, mid[0], mid[1]);
+                    if (low === null || low >= top - 0.01) continue;
+                    // die Seite zeigt nach außen: wallEnds von der anderen Seite her
+                    const [p, q] = wallEnds({ north: 'south', south: 'north', west: 'east', east: 'west' }[direction], line, along, along + 1);
+                    put([[p[0] * cell, low, p[1] * cell], [q[0] * cell, low, q[1] * cell], [q[0] * cell, top, q[1] * cell], [p[0] * cell, top, p[1] * cell]], cell, top - low, false);
+                }
+            }
+            continue;
+        }
+        // eine Treppe: u läuft in ihre Richtung, w quer dazu
+        const { direction } = group.stairs;
+        const alongX = direction === 'east' || direction === 'west';
+        const sign = direction === 'east' || direction === 'south' ? 1 : -1;
+        const start = sign > 0 ? (alongX ? group.x0 : group.z0) * cell : ((alongX ? group.x1 : group.z1) + 1) * cell;
+        const w0 = (alongX ? group.z0 : group.x0) * cell, w1 = ((alongX ? group.z1 : group.x1) + 1) * cell;
+        const at = (u, y, w) => (alongX ? [start + sign * u, y, w] : [w, y, start + sign * u]);
+        const facing = (corners, want) => (faceNormal(corners).reduce((sum, v, i) => sum + v * want[i], 0) < 0 ? [corners[0], corners[3], corners[2], corners[1]] : corners);
+        const forward = alongX ? [sign, 0, 0] : [0, 0, sign];
+        for (let i = 0; i < group.steps; i++) {
+            const u0 = i * group.tread, u1 = (i + 1) * group.tread, y0 = floor + i * group.stepHeight, y1 = floor + (i + 1) * group.stepHeight;
+            // Tritt (oben) und Stirn (vorn, zur unteren Seite hin)
+            put(facing([at(u0, y1, w0), at(u1, y1, w0), at(u1, y1, w1), at(u0, y1, w1)], [0, 1, 0]), group.tread, w1 - w0, true);
+            put(facing([at(u0, y0, w0), at(u0, y0, w1), at(u0, y1, w1), at(u0, y1, w0)], forward.map((v) => -v)), w1 - w0, group.stepHeight, true);
+            // die Seiten: wo daneben nichts so hoch ist, die Stufe bis zum Boden dort
+            for (const [w, out] of [[w0, -1], [w1, 1]]) {
+                const cx = Math.floor((alongX ? start + sign * (u0 + u1) / 2 : w + out * 0.01 * cell) / cell);
+                const cz = Math.floor((alongX ? w + out * 0.01 * cell : start + sign * (u0 + u1) / 2) / cell);
+                const px = (alongX ? start + sign * (u0 + u1) / 2 : w + out * 0.01) / cell, pz = (alongX ? w + out * 0.01 : start + sign * (u0 + u1) / 2) / cell;
+                const low = across(cx, cz, px, pz);
+                if (low === null || low >= y1 - 0.01) continue;
+                const side = alongX ? [0, 0, out] : [out, 0, 0];
+                put(facing([at(u0, low, w), at(u1, low, w), at(u1, y1, w), at(u0, y1, w)], side), group.tread, y1 - low, false);
+            }
+        }
+        // oben am Ende: hinunter, wo dahinter nichts so hoch ist
+        const end = group.length, topY = floor + group.stairs.rise;
+        const ex = (alongX ? start + sign * (end + 0.01) : (w0 + w1) / 2) / cell, ez = (alongX ? (w0 + w1) / 2 : start + sign * (end + 0.01)) / cell;
+        const behind = across(Math.floor(ex), Math.floor(ez), ex, ez);
+        if (behind !== null && behind < topY - 0.01) put(facing([at(end, behind, w0), at(end, behind, w1), at(end, topY, w1), at(end, topY, w0)], forward), w1 - w0, topY - behind, false);
+    }
+
     // Becken: ihr Boden tief unten und ringsum Wände aus Fliesen, vom Boden
     // des Beckens bis zum Rand (dem Boden des Raums) oder bis zum Boden
     // eines flacheren Beckens daneben. Darüber gilt, was ohnehin dort ist.
@@ -507,6 +575,42 @@ export function buildGeometry(level, statueBoxes = []) {
                 start = end + 1;
             }
         }
+        // der Rand (rim = höhe, breite): eine Stufe aus Fliesen um das Becken,
+        // überall, wo man am Rand steht. Innen geht die Wand des Beckens weiter,
+        // oben ein Streifen, außen eine Seite. An einer Ecke nach außen läuft der
+        // Streifen entlang x um die Ecke, an einer Ecke nach innen hört er früher auf.
+        if (pool.rim) {
+            const [rh, rw] = pool.rim, y0 = level.rooms[room].elevation, y1 = y0 + rh;
+            const standing = (x, z) => level.kindAt(x, z, k) === 'floor' && !level.poolAt(x, z, k);
+            for (const { x, z } of pool.cells) {
+                for (const [dx, dz] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
+                    if (!standing(x + dx, z + dz)) continue;
+                    const alongX = dx === 0;
+                    const t = alongX ? [1, 0] : [0, 1];
+                    const edge = alongX ? (dz < 0 ? z : z + 1) : (dx < 0 ? x : x + 1);   // die Linie der Kante, in Feldern
+                    const span = alongX ? [x, x + 1] : [z, z + 1];
+                    // an jedem Ende: um die Ecke (außen), früher aufhören (innen) oder gerade
+                    const reach = (sign) => {
+                        const nx = x + t[0] * sign, nz = z + t[1] * sign;
+                        if (level.poolAt(nx, nz, k) === pool) return level.poolAt(nx + dx, nz + dz, k) === pool ? -rw : 0;
+                        return standing(nx, nz) ? rw : 0;
+                    };
+                    const r0 = reach(-1), r1 = reach(1);
+                    const point = (s, o, y) => (alongX ? [s * cell, y, edge * cell + (dz < 0 ? -o : o)] : [edge * cell + (dx < 0 ? -o : o), y, s * cell]);
+                    const outward = [dx, 0, dz];
+                    const facing = (corners, want) => (faceNormal(corners).reduce((sum, v, i) => sum + v * want[i], 0) < 0 ? [corners[0], corners[3], corners[2], corners[1]] : corners);
+                    const s0 = span[0], s1 = span[1];
+                    // innen: die Wand des Beckens weiter hinauf
+                    tiles(facing([point(s0, 0, y0), point(s1, 0, y0), point(s1, 0, y1), point(s0, 0, y1)], outward.map((v) => -v)), texels(cell), texels(rh));
+                    // oben: der Streifen (nur Kanten entlang x laufen um Ecken nach außen herum)
+                    const top0 = alongX ? s0 - r0 / cell : s0, top1 = alongX ? s1 + r1 / cell : s1;
+                    tiles(facing([point(top0, 0, y1), point(top1, 0, y1), point(top1, rw, y1), point(top0, rw, y1)], [0, 1, 0]), texels((top1 - top0) * cell), texels(rw));
+                    // außen: die Seite, an Ecken nach außen bis zur Ecke, nach innen kürzer
+                    const out0 = s0 - r0 / cell, out1 = s1 + r1 / cell;
+                    tiles(facing([point(out0, rw, y0), point(out1, rw, y0), point(out1, rw, y1), point(out0, rw, y1)], outward), texels((out1 - out0) * cell), texels(rh));
+                }
+            }
+        }
     }
 
     // Blöcke: mitten auf ihrem Feld, oben und vier Seiten, unten nur, wenn sie schweben
@@ -552,6 +656,21 @@ export function buildGeometry(level, statueBoxes = []) {
         put([[x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1]], d, h);                 // nach +x
     }
 
+    // Zweifarbige Wände (dado = höhe, farbe): jede Wand, die auf dem Boden
+    // steht, wird in dieser Höhe geteilt, unten in der Farbe und dem
+    // Material von dado
+    faces = faces.flatMap((face) => {
+        const dado = level.rooms[face.room]?.settings.dado;
+        if (!dado || face.kind !== 'wall' || face.shape || Math.abs(face.normal[1]) > 0.1) return [face];
+        const [c0, c1, c2, c3] = face.corners;
+        const onFloor = (c) => Math.abs(c[1] - level.floorAt(c[0] / cell, c[2] / cell, face.room)) < 0.01;
+        if (!onFloor(c0) || !onFloor(c1) || Math.min(c3[1] - c0[1], c2[1] - c1[1]) <= dado.height + 0.02) return [face];
+        const lift = (c) => [c[0], c[1] + dado.height, c[2]];
+        const length = Math.hypot(c1[0] - c0[0], c1[2] - c0[2]);
+        const lower = { ...face, kind: 'block', color: dado.color, material: dado.material, corners: [c0, c1, lift(c1), lift(c0)], w: texels(length), h: texels(dado.height) };
+        const upper = { ...face, corners: [lift(c0), lift(c1), c2, c3], h: texels(Math.max(c3[1] - c0[1], c2[1] - c1[1]) - dado.height) };
+        return [lower, upper];
+    });
     faces = addDetail(faces, statueBoxes);
     const atlasSize = packRectangles(faces);
 

@@ -47,6 +47,8 @@ export function buildGrid(level, statues, maxHeight, maxTextureSize = 2048) {
     const blockMax = new Float32Array(count * 4);
     // runde Türen: welche Achse (1: x, 2: z), Mitte des Bogens (Meter), Radius, Höhe, wo er ansetzt
     const archInfo = new Float32Array(count * 4);
+    // Treppen: Richtung (1 Osten, -1 Westen, 2 Süden, -2 Norden), wo sie beginnt (Meter), Tiefe und Höhe einer Stufe
+    const stairInfo = new Float32Array(count * 4);
     for (let k = 0; k < layers; k++) {
         for (let z = 0; z < depth; z++) {
             for (let x = 0; x < width; x++) {
@@ -59,9 +61,19 @@ export function buildGrid(level, statues, maxHeight, maxTextureSize = 2048) {
                 ceilings.set([top(x, z), top(x + 1, z), top(x, z + 1), top(x + 1, z + 1)], i);
                 const arch = level.archAt(x, z, k);
                 if (arch) archInfo.set([arch.alongX ? 1 : 2, arch.start + arch.center, arch.radius, arch.spring], i);
+                // ein Podest: der Boden höher, im ganzen Feld gleich; eine Treppe: ihre Stufen prüft trace
+                const lift = level.liftAt(x, z, k);
+                if (lift?.stairs) {
+                    const { direction } = lift.stairs, cell = level.settings.cell;
+                    const axis = { east: 1, west: -1, south: 2, north: -2 }[direction];
+                    const start = direction === 'east' ? lift.x0 * cell : direction === 'west' ? (lift.x1 + 1) * cell
+                        : direction === 'south' ? lift.z0 * cell : (lift.z1 + 1) * cell;
+                    stairInfo.set([axis, start, lift.tread, lift.stepHeight], i);
+                }
                 // ein Becken: der Boden tief unten, im ganzen Feld gleich
                 const pool = level.poolAt(x, z, k);
                 if (pool) floors.set([pool.bottom, pool.bottom, pool.bottom, pool.bottom], i);
+                else if (lift?.raise) floors.set([0, 1, 2, 3].map(() => lift.floor + lift.raise), i);
                 else floors.set([level.floorAt(x, z, room), level.floorAt(x + 1, z, room),
                     level.floorAt(x, z + 1, room), level.floorAt(x + 1, z + 1, room)], i);
             }
@@ -165,7 +177,7 @@ export function buildGrid(level, statues, maxHeight, maxTextureSize = 2048) {
         return t;
     };
     return {
-        info: texture(info), ceilings: texture(ceilings), floors: texture(floors), blockMin: texture(blockMin), blockMax: texture(blockMax), arches: texture(archInfo),
+        info: texture(info), ceilings: texture(ceilings), floors: texture(floors), blockMin: texture(blockMin), blockMax: texture(blockMax), arches: texture(archInfo), stairs: texture(stairInfo),
         voxels, statueGrids, statueCount: grids.length, cells: new THREE.Vector2(width, depth), layers, cell,
     };
 }
@@ -272,6 +284,7 @@ uniform float bottom;          // der tiefste Boden
 uniform sampler2D blockMin;
 uniform sampler2D blockMax;
 uniform sampler2D cellArch;    // runde Türen (buildGrid)
+uniform sampler2D cellStairs;  // Treppen (buildGrid)
 uniform vec2 cellCount;
 uniform int layerCount;        // Räume übereinander: so viele Grundrisse untereinander in den Texturen
 uniform float cellMeters;
@@ -490,6 +503,19 @@ float trace(vec3 a, vec3 dir, float maxLength) {
                 vec3 q = a + dir * t;
                 float u = (arch.x < 1.5 ? q.x : q.z) - arch.y;
                 if (abs(u) > arch.z || q.y > arch.w + sqrt(max(arch.z * arch.z - u * u, 0.0))) { hit = min(hit, t); break; }
+            }
+        }
+        // eine Treppe: unter ihren Stufen ist kein Platz, am Stück entlang nachgesehen
+        vec4 stairs = texelFetch(cellStairs, at, 0);
+        if (stairs.x != 0.0) {
+            float end = min(tExit, hit);
+            float base = texelFetch(cellFloor, at, 0).x;
+            for (int s = 0; s <= 8; s++) {
+                float t = tEnter + (end - tEnter) * float(s) / 8.0;
+                vec3 q = a + dir * t;
+                float u = (abs(stairs.x) < 1.5 ? q.x : q.z) - stairs.y;
+                if (stairs.x < 0.0) u = -u;
+                if (q.y < base + (floor(max(u, 0.0) / stairs.z + 1e-4) + 1.0) * stairs.w) { hit = min(hit, t); break; }
             }
         }
         // ein Block
@@ -967,6 +993,7 @@ export class LightBaker {
             blockMin: { value: voxels.blockMin },
             blockMax: { value: voxels.blockMax },
             cellArch: { value: voxels.arches },
+            cellStairs: { value: voxels.stairs },
             cellCount: { value: voxels.cells },
             cellMeters: { value: voxels.cell },
             top: { value: geometry.maxHeight + 0.01 },
