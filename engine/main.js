@@ -1740,7 +1740,7 @@ async function start() {
     };
 
     let tilesPerFrame = 4, lastFrame = performance.now(), lastFrameTime = 0;
-    let bakeMark = null;   // bis wohin die Grafikkarte das Backen schon gezeichnet hat (bake.js, gpuMark)
+    let bakeMarks = [];    // die Stücke, die die Grafikkarte noch zeichnet, höchstens zwei (bake.js, gpuMark)
     let drawnRooms = null;   // welche Räume das letzte Bild gezeichnet hat
     // Gibt die Grafikkarte auf (zu wenig Speicher, ein Bild dauert ihr zu
     // lange), ist das Bild weiß oder schwarz: Dann steht hier, was gerade lief
@@ -1831,12 +1831,14 @@ async function start() {
             // Solange Leuchten angehen, nur direktes Licht: Abprallen lohnt erst, wenn alle an sind
             // Stücke je Bild: so viele, dass ein Bild etwa 30 bis 50 ms dauert;
             // schon eins zu lange, werden die Stücke kleiner (bake.js, TILE)
-            // Neue Stücke erst, wenn die Grafikkarte die letzten gezeichnet
-            // hat: So sammelt sich keine Arbeit an, und der Bildschirm kommt
-            // dazwischen dran. So viele, dass ein Bild etwa 30 bis 50 ms
-            // dauert; schon eins zu lange, werden die Stücke kleiner
-            // (bake.js, TILE).
-            if (!bakeMark || bakeMark.done) {
+            // Neue Stücke nur, solange die Grafikkarte höchstens noch eine
+            // Portion vom Bild davor zeichnet: So sammelt sich keine Arbeit an,
+            // und der Bildschirm kommt dazwischen dran. (Nur eine erlaubt, ließe
+            // ein schweres Bild, etwa mit Wasser, das Backen jedes zweite Bild
+            // aussetzen.) So viele, dass ein Bild etwa 30 bis 50 ms dauert;
+            // schon eins zu lange, werden die Stücke kleiner (bake.js, TILE).
+            bakeMarks = bakeMarks.filter((mark) => !mark.done);
+            if (bakeMarks.length < 2) {
                 if (!baker.prepared) tilesPerFrame = 2;   // noch keine Arbeit: nicht schon hochzählen
                 else if (frameTime > 50) tilesPerFrame = Math.max(1, Math.floor(tilesPerFrame / 2));
                 else if (frameTime < 30) tilesPerFrame = Math.min(256, tilesPerFrame + Math.ceil(tilesPerFrame / 4));
@@ -1845,7 +1847,7 @@ async function start() {
                     if (!allOn && baker.bouncing) break;
                     baker.step();
                 }
-                bakeMark = baker.prepared ? gpuMark(renderer) : null;
+                if (baker.prepared) bakeMarks.push(gpuMark(renderer));
             }
             bar.style.width = `${baker.progress * 100}%`;
             report(!allOn

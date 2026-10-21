@@ -1039,13 +1039,6 @@ export function gpuMark(renderer) {
     };
 }
 
-// wartet, ohne den Browser anzuhalten, bis die Grafikkarte fertig ist; die Zeit in ms
-export async function gpuIdle(renderer) {
-    const mark = gpuMark(renderer);
-    while (!mark.done) await new Promise((resolve) => setTimeout(resolve, 2));
-    return mark.took;
-}
-
 export class LightBaker {
     // voxels: das Raster aus buildGrid, oder eine Funktion, die es baut.
     // Vorbereitet (Raster, Render-Targets, Shader) wird erst, wenn wirklich
@@ -1455,9 +1448,14 @@ export class LightBaker {
         let done = 0, batch = 4;
         while (done < units) {
             const to = Math.min(units, done + batch);
+            // die Zeit der Grafikkarte für dieses Stück allein: vom Zeichen davor
+            // (bis dahin zeichnet sie noch das Bild davor) bis zum Zeichen danach
+            const before = gpuMark(renderer);
             run(done, to, done === 0);
             done = to;
-            const took = await gpuIdle(renderer);
+            const after = gpuMark(renderer);
+            while (!after.done) await new Promise((resolve) => setTimeout(resolve, 2));
+            const took = after.at - (before.done ? before.at : after.at - after.took);
             batch = took > 40 ? Math.max(1, batch >> 1) : took < 15 ? Math.min(4096, batch * 2) : batch;
             progress?.(done / units);
             await new Promise((resolve) => setTimeout(resolve, 8));
