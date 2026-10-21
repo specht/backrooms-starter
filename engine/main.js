@@ -282,8 +282,11 @@ const reflectingMeshes = (model) => {
     model.traverse((mesh) => { if (mesh.isMesh && mesh.userData.reflect) meshes.push(mesh); });
     return meshes;
 };
-function reflectionShots(models) {
+// Dazu je Becken eines über der Mitte des Wassers, für seine Spiegelung in VR
+// (water.js: dort gibt es die Bilder der Spiegelung nicht).
+function reflectionShots(models, water) {
     const shots = [], byRoom = new Map();
+    for (const mesh of water.meshes) shots.push({ models: [], water: mesh, hide: water.all, sharp: false });
     for (const model of models) {
         const meshes = reflectingMeshes(model);
         if (meshes.length === 0) continue;
@@ -304,15 +307,21 @@ function captureReflection(renderer, scene, shot, hide, cull) {
     const camera = new THREE.CubeCamera(0.05, 80, shot.target);
     const box = new THREE.Box3();
     for (const model of shot.models) box.expandByObject(model);
-    box.getCenter(camera.position);
+    if (shot.water) {
+        // über der Mitte des Wassers, etwa in Augenhöhe
+        box.setFromObject(shot.water);
+        box.getCenter(camera.position);
+        camera.position.y += 1.5;
+    } else box.getCenter(camera.position);
     // die sechs Richtungen schon jetzt (sonst erst in update), damit cull sie kennt
     camera.coordinateSystem = renderer.coordinateSystem;
     camera.updateCoordinateSystem();
     cull(camera);
-    const hidden = [...shot.models, ...hide].filter((object) => object.visible);
+    const hidden = [...shot.models, ...hide, ...(shot.hide ?? [])].filter((object) => object.visible);
     for (const object of hidden) object.visible = false;
     camera.update(renderer, scene);
     for (const object of hidden) object.visible = true;
+    if (shot.water) shot.onWater(shot.water, shot.target.texture);
     for (const model of shot.models) {
         for (const mesh of reflectingMeshes(model)) {
             const { strength, map } = mesh.userData.reflect;
@@ -1995,7 +2004,7 @@ async function start() {
         // Spiegelungen, wenn alles fertig ist und alle Leuchten an sind (ohne den Schein der Leuchten)
         if (!reflectionsTaken && baker.done && modelsBounced && allOn && shown >= 1) {
             reflectionsTaken = true;
-            reflectionShotList ??= reflectionShots(models);
+            reflectionShotList ??= reflectionShots(models, water).map((shot) => ({ ...shot, onWater: (mesh, texture) => water.setEnvironment(mesh, texture) }));
             reflectionQueue = [...reflectionShotList];
         }
         if (reflectionQueue.length) {
@@ -2011,7 +2020,8 @@ async function start() {
         }
 
         // das Wasser: Wellen, Licht; in VR und in der Automap nur einfach
-        water.update(now, shown, renderer.xr.isPresenting || automap.active);
+        // (?vrwater: am Rechner so wie in VR, zum Ausprobieren)
+        water.update(now, shown, renderer.xr.isPresenting || automap.active || params.has('vrwater'));
         if (lightSource || baker.done) tour(now, dt);
         walker.update(dt);
         rememberPlace();

@@ -340,7 +340,12 @@ The water reflects the room and shows the floor of the pool, bluer the more
 water lies in between, with small slow waves and light dancing on the floor
 (`engine/water.js`). For that the room is drawn twice more for every picture
 in which water is seen: once mirrored, once only what lies under the water.
-In VR the water is a simple, half transparent surface.
+In VR the two extra pictures per eye would be too slow. There the water is
+drawn twice instead: first what lies below it turns blue-green with the way
+through the water down to the floor of the pool (from its depth and the
+angle you look at it), then the reflection goes on top, from a picture all
+round taken once above the pool when the light is ready, bent by the waves.
+`?vrwater` shows this water on the computer.
 
 ### `level.ini`
 
@@ -365,6 +370,7 @@ In VR the water is a simple, half transparent surface.
 <tr><td><code>?rebake</code></td><td>bake the light even if saved light fits</td></tr>
 <tr><td><code>?stats</code></td><td>start with the stats (I)</td></tr>
 <tr><td><code>?wristmap</code></td><td>the wrist map of VR on the computer, at the bottom right in front of you, to try it out</td></tr>
+<tr><td><code>?vrwater</code></td><td>the water as in VR (drawn twice, the reflection from a picture all round), to try it out</td></tr>
 <tr><td><code>?resolution=0.8</code></td><td>draw with this share of the screen's pixels in each direction (otherwise the program lowers it by itself, down to 0.6, when it gets slower than 25 frames per second, and raises it again)</td></tr>
 <tr><td><code>?sharp</code></td><td>render at the full resolution of the screen, for pictures (otherwise at most twice the page's pixels)</td></tr>
 </table>

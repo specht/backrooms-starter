@@ -17,8 +17,12 @@
 // Wellen, aus Rauschen gerechnet, verbiegen beides ein wenig, und auf dem
 // Boden darunter tanzen helle Linien: Licht, das die Wellen bündeln (Kaustik).
 //
-// In VR gibt es nur eine einfache, halb durchsichtige Fläche: Zwei Bilder
-// mehr für jedes Auge wären dort zu langsam.
+// In VR wären zwei Bilder mehr für jedes Auge zu langsam. Dort zeichnet das
+// Programm dieselbe Fläche zweimal (simpleMaterials): erst macht es, was
+// darunter liegt, blaugrün, so viel wie der Weg durch das Wasser bis zum
+// Boden des Beckens (aus seiner Tiefe und dem Blickwinkel), dann legt es die
+// Spiegelung darüber, aus einem Rundumbild über dem Becken (setEnvironment,
+// einmal aufgenommen, wenn das Licht fertig ist), von den Wellen verbogen.
 import * as THREE from 'three';
 
 const WAVES = 0.16;          // wie stark die Wellen die Fläche neigen: ruhig
@@ -179,35 +183,74 @@ function waterMaterial() {
     });
 }
 
-// Für VR: halb durchsichtig, die Farbe des Wassers, flach darüber heller
-function simpleMaterial() {
-    return new THREE.ShaderMaterial({
-        transparent: true,
-        depthWrite: false,
-        uniforms: { time: { value: 0 }, light: { value: new THREE.Color() }, scatter: { value: new THREE.Vector3() }, waveSize: { value: 1 }, waveStrength: { value: WAVES } },
-        vertexShader: /* glsl */ `
-            varying vec3 vWorld;
-            void main() {
-                vec4 world = modelMatrix * vec4(position, 1.0);
-                vWorld = world.xyz;
-                gl_Position = projectionMatrix * viewMatrix * world;
-            }`,
+// Für VR, ohne Bilder mehr: zwei Durchgänge über dieselbe Fläche. multiply:
+// was unter dem Wasser liegt, um den Weg durch das Wasser blaugrün (gebrochen
+// an der Fläche, bis zum Boden des Beckens), flach darüber vom Spiegelbild
+// verdeckt (Fresnel); add: das Spiegelbild aus dem Rundumbild über dem
+// Becken (ohne eines: die Farbe des Raums) und das Licht, das im Wasser streut.
+function simpleMaterials() {
+    const uniforms = {
+        time: { value: 0 }, light: { value: new THREE.Color() }, scatter: { value: new THREE.Vector3() },
+        absorption: { value: new THREE.Vector3() }, depth: { value: 1 },
+        waveSize: { value: 1 }, waveStrength: { value: WAVES }, environment: { value: null }, hasEnvironment: { value: 0 },
+    };
+    const vertexShader = /* glsl */ `
+        varying vec3 vWorld;
+        void main() {
+            vec4 world = modelMatrix * vec4(position, 1.0);
+            vWorld = world.xyz;
+            gl_Position = projectionMatrix * viewMatrix * world;
+        }`;
+    const common = /* glsl */ `
+        uniform float time;
+        uniform vec3 light;
+        uniform vec3 scatter;
+        uniform vec3 absorption;
+        uniform float depth;
+        uniform samplerCube environment;
+        uniform float hasEnvironment;
+        varying vec3 vWorld;
+        ${noise}
+        // wie viel durch das Wasser bis zum Boden und zurück an die Fläche
+        // kommt: der Strahl gebrochen (Wasser 1,33), sein Weg bis zum Boden
+        vec3 through(vec3 n, vec3 view) {
+            float facing = max(dot(n, view), 0.0);
+            float down = sqrt(max(1.0 - (1.0 - facing * facing) / 1.77, 0.0));
+            return exp(-absorption * depth / max(down, 0.2));
+        }
+        float fresnelOf(vec3 n, vec3 view) {
+            return 0.02 + 0.98 * pow(1.0 - max(dot(n, view), 0.0), 5.0);
+        }`;
+    const multiply = new THREE.ShaderMaterial({
+        // MultiplyBlending verlangt in three.js premultipliedAlpha (sonst
+        // lässt es das Mischen weg, und das Wasser wird milchig weiß)
+        transparent: true, depthWrite: false, blending: THREE.MultiplyBlending, premultipliedAlpha: true, uniforms, vertexShader,
         fragmentShader: /* glsl */ `
-            uniform float time;
-            uniform vec3 light;
-            uniform vec3 scatter;
-            varying vec3 vWorld;
-            ${noise}
+            ${common}
             void main() {
                 vec3 n = waveNormal(vWorld.xz, time);
-                float facing = max(dot(n, normalize(cameraPosition - vWorld)), 0.0);
-                float fresnel = 0.02 + 0.98 * pow(1.0 - facing, 5.0);
-                vec3 color = scatter * light * 2.0 + vec3(0.5, 0.6, 0.62) * light * fresnel;
-                gl_FragColor = vec4(color, mix(0.45, 0.95, fresnel));
+                vec3 view = normalize(cameraPosition - vWorld);
+                // das Bild ist schon in sRGB: der Faktor dafür ungefähr hoch 1/2,2
+                vec3 kept = through(n, view) * (1.0 - fresnelOf(n, view));
+                gl_FragColor = vec4(pow(kept, vec3(1.0 / 2.2)), 1.0);
+            }`,
+    });
+    const add = new THREE.ShaderMaterial({
+        transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, uniforms, vertexShader,
+        fragmentShader: /* glsl */ `
+            ${common}
+            void main() {
+                vec3 n = waveNormal(vWorld.xz, time);
+                vec3 view = normalize(cameraPosition - vWorld);
+                float fresnel = fresnelOf(n, view);
+                vec3 mirrored = hasEnvironment > 0.5 ? textureCube(environment, reflect(-view, n)).rgb : vec3(0.5, 0.6, 0.62) * light;
+                vec3 color = mirrored * fresnel + scatter * light * 2.0 * (1.0 - fresnel);
+                gl_FragColor = vec4(color, 1.0);
                 #include <tonemapping_fragment>
                 #include <colorspace_fragment>
             }`,
     });
+    return { multiply, add };
 }
 
 // Die Wasserfläche eines Beckens: seine Felder als Rechtecke, auf Höhe des Wassers
@@ -253,19 +296,26 @@ export class Water {
         const cell = level.settings.cell;
         for (const pool of level.pools.filter((p) => p.surface !== null)) {
             const fancy = waterMaterial();
-            const plain = simpleMaterial();
-            const mesh = new THREE.Mesh(surfaceGeometry(pool, cell), fancy);
+            const { multiply, add: plain } = simpleMaterials();
+            const geometry = surfaceGeometry(pool, cell);
+            const mesh = new THREE.Mesh(geometry, fancy);
             fancy.uniforms.surface.value = pool.surface;
             const { absorption, scatter } = waterColor(pool.tint);
             fancy.uniforms.absorption.value.copy(absorption);
             fancy.uniforms.scatter.value.copy(scatter);
-            plain.uniforms.scatter.value.copy(scatter);
+            plain.uniforms.scatter.value.copy(scatter);   // multiply teilt die Werte mit plain
+            plain.uniforms.absorption.value.copy(absorption);
+            plain.uniforms.depth.value = pool.surface - pool.bottom;
             // waves = 2: doppelt so steil und anderthalbmal so groß; 0: glatt
             for (const material of [fancy, plain]) {
                 material.uniforms.waveSize.value = Math.max(0.3, Math.sqrt(Math.max(pool.waves, 0.1)) * (pool.waves > 1 ? 1.06 : 1));
                 material.uniforms.waveStrength.value = WAVES * pool.waves;
             }
-            mesh.userData = { pool, fancy, plain };
+            // der erste Durchgang in VR, vor der Fläche selbst
+            const under = new THREE.Mesh(geometry, multiply);
+            under.visible = false;
+            under.renderOrder = 5;
+            mesh.userData = { pool, fancy, plain, under };
             mesh.onBeforeRender = (renderer, scene, camera) => this.prepare(mesh, scene, camera);
             this.meshes.push(mesh);
         }
@@ -281,15 +331,28 @@ export class Water {
     }
 
     addTo(scene) {
-        for (const mesh of this.meshes) scene.add(mesh);
+        for (const mesh of this.meshes) scene.add(mesh, mesh.userData.under);
+    }
+
+    // alle Flächen, auch die für den ersten Durchgang in VR (zum Ausblenden)
+    get all() {
+        return this.meshes.flatMap((mesh) => [mesh, mesh.userData.under]);
+    }
+
+    // das Rundumbild über einem Becken, für die Spiegelung in VR (main.js)
+    setEnvironment(mesh, texture) {
+        mesh.userData.plain.uniforms.environment.value = texture;
+        mesh.userData.plain.uniforms.hasEnvironment.value = 1;
     }
 
     // jedes Bild: die Zeit für die Wellen, das Licht, einfach oder nicht
     update(time, brightness, simple) {
         this.simple = simple;
         for (const mesh of this.meshes) {
-            const { fancy, plain, light } = mesh.userData;
+            const { fancy, plain, light, under } = mesh.userData;
             mesh.material = simple ? plain : fancy;
+            under.visible = simple;
+            mesh.renderOrder = simple ? 6 : 0;
             for (const material of [fancy, plain]) {
                 material.uniforms.time.value = time;
                 if (light) material.uniforms.light.value.copy(light).multiplyScalar(brightness);
