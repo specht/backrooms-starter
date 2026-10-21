@@ -89,8 +89,8 @@ Effects), and can be clicked; − in the panel hides it, ☰ in its place brings
 it back. On a phone or tablet the panel starts hidden and shows only the Walk
 group, »More« shows the rest. »Fullscreen« in the panel, and ⛶ at the top
 right on a phone or tablet, fills the whole screen. In VR the left thumbstick walks
-(with the left grip button held or the stick pressed in you run), the right
-one turns. The right grip button shows the wrist map instead of the automap:
+(with the left trigger held or the stick pressed in you run), the right one
+turns. The right trigger shows the wrist map instead of the automap:
 a small hologram above your right wrist, the building around you (10 m in
 full, fading out up to 15 m) as cyan lines, those behind walls thinner and
 paler, turned like the building itself, so a corridor that leads left on it

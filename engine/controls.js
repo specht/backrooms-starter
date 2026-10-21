@@ -306,9 +306,9 @@ export class Walker {
     }
 
     // Der Stick der Hand, die geht (walkHand, links): gehen in Blickrichtung,
-    // mit ihrer Grifftaste oder dem eingedrückten Stick laufen (doppelt so
-    // schnell, wie mit Shift); der Stick der anderen Hand dreht. Die
-    // Grifftaste der anderen Hand schaltet die Karte an ihrem Handgelenk
+    // mit ihrem Abzug (Zeigefinger) oder dem eingedrückten Stick laufen
+    // (doppelt so schnell, wie mit Shift); der Stick der anderen Hand dreht.
+    // Der Abzug der anderen Hand schaltet die Karte an ihrem Handgelenk
     // (wristmap.js).
     updateVR(dt) {
         const session = this.renderer.xr.getSession();
@@ -322,9 +322,9 @@ export class Walker {
             if (source.handedness !== this.walkHand) turn = stick;
             else {
                 move = stick;
-                // xr-standard: 1 die Grifftaste, 3 der Stick eingedrückt
+                // xr-standard: 0 der Abzug, 3 der Stick eingedrückt
                 const buttons = source.gamepad.buttons;
-                running = Boolean(buttons[1]?.pressed || buttons[3]?.pressed);
+                running = Boolean(buttons[0]?.pressed || buttons[3]?.pressed);
             }
         }
         if (turn && turn.x) {

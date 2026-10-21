@@ -1,4 +1,4 @@
-// Die Karte am Handgelenk (in VR, die Grifftaste der Hand, die nicht geht,
+// Die Karte am Handgelenk (in VR, der Abzug der Hand, die nicht geht,
 // meist der rechten): ein kleines Hologramm über diesem Handgelenk, das Bauwerk um dich herum (bis 10 m
 // ganz, bis 15 m auslaufend) als
 // cyanfarbene Linien, Linien hinter Wänden dünner und blasser, wie in der
@@ -22,7 +22,8 @@ const REBUILD = 0.5;          // nach so vielen Metern Weg werden die Linien neu
 const LIFT = 0.07;            // so hoch über dem Handgelenk schwebt sie
 const WIDTH = 0.0011;         // Linien, in Metern der Welt (die Karte ist klein)
 const HIDDEN_WIDTH = 0.0005;  // Linien hinter Wänden
-const HIDDEN = 0.22;          // so hell wie die davor
+const OPACITY = 0.9;          // die Linien davor
+const HIDDEN = 0.3;           // die dahinter, so viel davon
 
 export class WristMap {
     // hand(): an welcher Hand sie hängt ('right' oder 'left')
@@ -61,12 +62,24 @@ export class WristMap {
         this.group.add(this.model);
         scene.add(this.group);
 
-        const color = new THREE.Color(LINE_COLOR);
-        const material = (extra) => new LineMaterial({
-            color: 0xffffff, vertexColors: true, worldUnits: true, linewidth: WIDTH, toneMapped: false,
-            transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, ...extra,
-        });
-        this.color = color;
+        // Cyan über allem, durchsichtig statt leuchtend: Linien, die sich
+        // addieren, würden über einer hellen Wand und übereinander weiß. Die
+        // Farbe der Ecken (vertexColors) trägt nur, wie sichtbar die Linie
+        // dort ist (zum Rand hin weniger); daraus wird ihre Deckkraft.
+        const holo = new THREE.Color(LINE_COLOR);
+        const material = (opacity, extra) => {
+            const line = new LineMaterial({
+                color: 0xffffff, vertexColors: true, worldUnits: true, linewidth: WIDTH, toneMapped: false,
+                transparent: true, depthWrite: false, opacity, ...extra,
+            });
+            line.onBeforeCompile = (shader) => {
+                shader.uniforms.holoColor = { value: holo };
+                shader.fragmentShader = 'uniform vec3 holoColor;\n' + shader.fragmentShader.replace(
+                    'gl_FragColor = vec4( diffuseColor.rgb, alpha );',
+                    'gl_FragColor = vec4( holoColor, alpha * diffuseColor.r );');
+            };
+            return line;
+        };
         // erst die Flächen, nur in den Tiefenpuffer (etwas nach hinten, damit
         // ihre eigenen Kanten davor liegen), dann die Linien davor kräftig und
         // die dahinter schwach und dünn
@@ -74,9 +87,9 @@ export class WristMap {
             colorWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2,
         }));
         this.occluder.renderOrder = 30;
-        this.front = new LineSegments2(new LineSegmentsGeometry(), material({}));
+        this.front = new LineSegments2(new LineSegmentsGeometry(), material(OPACITY, {}));
         this.front.renderOrder = 31;
-        this.behind = new LineSegments2(new LineSegmentsGeometry(), material({ linewidth: HIDDEN_WIDTH, depthFunc: THREE.GreaterDepth, opacity: HIDDEN }));
+        this.behind = new LineSegments2(new LineSegmentsGeometry(), material(OPACITY * HIDDEN, { linewidth: HIDDEN_WIDTH, depthFunc: THREE.GreaterDepth }));
         this.behind.renderOrder = 32;
         for (const part of [this.occluder, this.front, this.behind]) {
             part.frustumCulled = false;
@@ -85,7 +98,7 @@ export class WristMap {
 
         // du: ein Ring auf dem Boden der Karte mit einer Lücke, damit man sieht,
         // dass er sich dreht (in Metern der Karte)
-        const red = new THREE.MeshBasicMaterial({ color: '#ff4060', side: THREE.DoubleSide, toneMapped: false, transparent: true, depthTest: false });
+        const red = new THREE.MeshBasicMaterial({ color: '#ff4060', side: THREE.DoubleSide, toneMapped: false, transparent: true, opacity: 0.95, depthTest: false });
         this.ring = new THREE.Mesh(new THREE.RingGeometry(0.0055, 0.0075, 40, 1, 0.5, Math.PI * 2 - 1.0), red);
         this.ring.rotation.x = -Math.PI / 2;
         this.ring.renderOrder = 33;
@@ -112,11 +125,10 @@ export class WristMap {
     }
 
     // Die Linien und Flächen um feet: innerhalb des Radius und der Höhen, die
-    // Linien zum Rand hin dunkler (mit dem Leuchten, das sich addiert, heißt
-    // dunkler auch durchsichtiger)
+    // Linien zum Rand hin durchsichtiger (als Grau in ihrer Farbe, siehe oben)
     rebuild(feet) {
         this.built = feet.clone();
-        const { edges, tints, triangles, color } = this;
+        const { edges, tints, triangles } = this;
         const positions = [], colors = [];
         const fade = (x, z) => {
             const d = Math.hypot(x - feet.x, z - feet.z);
@@ -129,7 +141,7 @@ export class WristMap {
             if ((fa <= 0 && fb <= 0) || (!near(ay) && !near(by))) continue;
             positions.push(ax, ay, az, bx, by, bz);
             const t = tints[k];
-            colors.push(color.r * t * fa, color.g * t * fa, color.b * t * fa, color.r * t * fb, color.g * t * fb, color.b * t * fb);
+            colors.push(t * fa, t * fa, t * fa, t * fb, t * fb, t * fb);
         }
         for (const lines of [this.front, this.behind]) {
             lines.geometry.dispose();
@@ -152,14 +164,14 @@ export class WristMap {
         this.occluder.geometry.setAttribute('position', new THREE.Float32BufferAttribute(kept, 3));
     }
 
-    // jedes Bild: die Grifftaste ihrer Hand schaltet, die Karte folgt dem Handgelenk
+    // jedes Bild: der Abzug ihrer Hand schaltet, die Karte folgt dem Handgelenk
     update(time) {
         const xr = this.renderer.xr;
         const grip = this.grips.get(this.hand());
         if (xr.isPresenting) {
             for (const source of xr.getSession()?.inputSources ?? []) {
                 if (source.handedness !== this.hand() || !source.gamepad) continue;
-                const pressed = Boolean(source.gamepad.buttons[1]?.pressed);   // xr-standard: 1 die Grifftaste
+                const pressed = Boolean(source.gamepad.buttons[0]?.pressed);   // xr-standard: 0 der Abzug (Zeigefinger)
                 if (pressed && !this.squeezed) this.toggle();
                 this.squeezed = pressed;
             }

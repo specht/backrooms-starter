@@ -1534,7 +1534,7 @@ async function start() {
     walker.mayLook = (event) => !(automap.active && (event.shiftKey || automap.dragging));
     // In VR keine große Automap (die Grifftaste öffnete sie als Modell vor
     // dir), dafür die Karte am Handgelenk der Hand, die nicht geht
-    // (wristmap.js), und ihre Grifftaste schaltet sie;
+    // (wristmap.js), und ihr Abzug schaltet sie;
     // ?wristmap zeigt sie am Rechner unten rechts vor dir, zum Ausprobieren
     const wristMap = new WristMap(geometry, renderer, player, camera, scene, () => (walker.walkHand === 'left' ? 'right' : 'left'));
     renderer.xr.addEventListener('sessionstart', () => { if (automap.active) automap.toggle(); });
