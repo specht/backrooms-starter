@@ -191,8 +191,8 @@ export class Automap {
 
         // Die Karte folgt dir und dreht sich mit deinem Blick. Ziehen dreht
         // sie selbst, auch nach oben und unten (dann nicht mehr mit dir).
-        // Mit Shift greift Ziehen das Level und verschiebt es so, wie es gerade
-        // zu sehen ist: seitlich und nach oben und unten. Ist die Maus
+        // Mit Shift greift Ziehen das Level und verschiebt es über den Boden
+        // (pan): seitlich und vor und zurück. Ist die Maus
         // gefangen, dreht Bewegen mit gedrückter Taste, Shift und Bewegen schiebt.
         this.follow = true;
         this.offset = new THREE.Vector3();
@@ -254,14 +254,22 @@ export class Automap {
 
     // Beim Öffnen fliegt die Kamera von deinen Augen aus nach oben und
     // zurück: du siehst, wo du bist. Die Automap kreist dann um dich.
-    // Das Level unter der Maus mitnehmen, in der Bildebene: wie weit ein
-    // Pixel reicht, ergibt sich aus Entfernung und Blickwinkel der Kamera.
+    // Das Level unter der Maus mitnehmen, über den Boden: seitlich und vor
+    // und zurück, in der Höhe deiner Füße. Wie weit ein Pixel reicht, ergibt
+    // sich aus Entfernung und Blickwinkel der Kamera; vor und zurück so viel
+    // weiter, wie der Boden schräg zu sehen ist, damit die Stelle unter der
+    // Maus mitgeht (bei flachem Blick begrenzt). In der Bildebene verschoben,
+    // stieg die Mitte bei schrägem Blick mit jedem Zug, das Level fiel unter
+    // ihr zurück und kam der Maus immer langsamer nach.
     pan(dx, dy) {
         const c = this.camera;
         const perPixel = 2 * this.distance * Math.tan(THREE.MathUtils.degToRad(c.fov / 2)) / window.innerHeight;
         const right = new THREE.Vector3().setFromMatrixColumn(c.matrixWorld, 0);
-        const up = new THREE.Vector3().setFromMatrixColumn(c.matrixWorld, 1);
-        this.offset.addScaledVector(right, -dx * perPixel).addScaledVector(up, dy * perPixel);
+        right.y = 0;
+        right.normalize();
+        const forward = new THREE.Vector3(-Math.sin(this.azimuth), 0, -Math.cos(this.azimuth));
+        const slant = Math.max(Math.sin(Math.abs(this.elevation)), 0.35);
+        this.offset.addScaledVector(right, -dx * perPixel).addScaledVector(forward, dy * perPixel / slant);
     }
 
     // Wie die Karte gerade liegt, für die Adresse (?automap=...): Drehung und
