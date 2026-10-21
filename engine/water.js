@@ -211,12 +211,10 @@ function simpleMaterials() {
         uniform float hasEnvironment;
         varying vec3 vWorld;
         ${noise}
-        // wie viel durch das Wasser bis zum Boden und zurück an die Fläche
-        // kommt: der Strahl gebrochen (Wasser 1,33), sein Weg bis zum Boden
-        vec3 through(vec3 n, vec3 view) {
-            float facing = max(dot(n, view), 0.0);
-            float down = sqrt(max(1.0 - (1.0 - facing * facing) / 1.77, 0.0));
-            return exp(-absorption * depth / max(down, 0.2));
+        // wie viel vom Boden durch das Wasser kommt: der Weg entlang des
+        // Blicks bis zum Boden, wie am Rechner (dort aus dem Tiefenbild)
+        vec3 through(vec3 view) {
+            return exp(-absorption * depth / max(view.y, 0.15));
         }
         float fresnelOf(vec3 n, vec3 view) {
             return 0.02 + 0.98 * pow(1.0 - max(dot(n, view), 0.0), 5.0);
@@ -230,9 +228,10 @@ function simpleMaterials() {
             void main() {
                 vec3 n = waveNormal(vWorld.xz, time);
                 vec3 view = normalize(cameraPosition - vWorld);
-                // das Bild ist schon in sRGB: der Faktor dafür ungefähr hoch 1/2,2
-                vec3 kept = through(n, view) * (1.0 - fresnelOf(n, view));
-                gl_FragColor = vec4(pow(kept, vec3(1.0 / 2.2)), 1.0);
+                // gleich auf das fertige Bild (sRGB): dunkler, als das Licht es
+                // wäre, und so dunkel wie das Wasser am Rechner
+                vec3 kept = through(view) * (1.0 - fresnelOf(n, view));
+                gl_FragColor = vec4(kept, 1.0);
             }`,
     });
     const add = new THREE.ShaderMaterial({
@@ -244,7 +243,8 @@ function simpleMaterials() {
                 vec3 view = normalize(cameraPosition - vWorld);
                 float fresnel = fresnelOf(n, view);
                 vec3 mirrored = hasEnvironment > 0.5 ? textureCube(environment, reflect(-view, n)).rgb : vec3(0.5, 0.6, 0.62) * light;
-                vec3 color = mirrored * fresnel + scatter * light * 2.0 * (1.0 - fresnel);
+                // wie am Rechner: das Licht, das im Wasser streut, wo es tief ist
+                vec3 color = mirrored * fresnel + scatter * light * (1.0 - through(view)) * (1.0 - fresnel);
                 gl_FragColor = vec4(color, 1.0);
                 #include <tonemapping_fragment>
                 #include <colorspace_fragment>

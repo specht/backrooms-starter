@@ -1044,9 +1044,21 @@ async function start() {
     renderer.xr.enabled = true;
     renderer.xr.setReferenceSpaceType('local-floor');
     document.body.appendChild(renderer.domElement);
-    // »ENTER VR« nur, wenn der Browser VR kann; sonst stünde dort »VR NOT SUPPORTED«
+    // »ENTER VR« nur, wenn der Browser VR kann (sonst stünde dort »VR NOT
+    // SUPPORTED«), und erst, wenn etwas von der Welt zu sehen ist, ihre Linien
+    // (das erste Bild, showVR): vorher stünde man in VR im Schwarzen
+    let vrButton = null, worldShown = false;
+    const showVR = () => {
+        worldShown = true;
+        if (vrButton) vrButton.style.visibility = '';
+    };
     navigator.xr?.isSessionSupported('immersive-vr')
-        .then((supported) => { if (supported) document.body.appendChild(VRButton.createButton(renderer)); })
+        .then((supported) => {
+            if (!supported) return;
+            vrButton = VRButton.createButton(renderer);
+            if (!worldShown) vrButton.style.visibility = 'hidden';
+            document.body.appendChild(vrButton);
+        })
         .catch(() => {});
 
     const scene = new THREE.Scene();
@@ -1843,6 +1855,7 @@ async function start() {
         report('The graphics card gave up (WebGL context lost)', true);
     });
     renderer.setAnimationLoop(() => {
+        if (!worldShown) showVR();
         stats.beginFrame();
         const frameTime = lastFrameTime = performance.now() - lastFrame;   // wie lange das letzte Bild gedauert hat, in ms
         lastFrame = performance.now();
