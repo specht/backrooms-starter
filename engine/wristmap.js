@@ -1,11 +1,10 @@
-// Die Karte am Handgelenk (in VR, Y am linken Controller): ein kleines
-// Hologramm über dem linken Handgelenk, das Bauwerk um dich herum (bis 10 m
+// Die Karte am Handgelenk (in VR, die Grifftaste der Hand, die nicht geht,
+// meist der rechten): ein kleines Hologramm über diesem Handgelenk, das Bauwerk um dich herum (bis 10 m
 // ganz, bis 15 m auslaufend) als
 // cyanfarbene Linien, Linien hinter Wänden dünner und blasser, wie in der
 // Automap. Sie liegt waagerecht und gleich ausgerichtet wie das Bauwerk: Ein
 // Gang, der auf ihr nach links führt, führt auch wirklich nach links, egal wie
-// du die Hand hältst. Du bist ein Ring auf ihrem Boden, der sich langsam
-// dreht, mit einem Strich in deine Blickrichtung.
+// du die Hand hältst. Du bist ein Ring auf ihrem Boden, der sich langsam dreht.
 // Am Rechner zum Ausprobieren: ?wristmap zeigt sie unten rechts vor dir.
 import * as THREE from 'three';
 import { EDGE_ANGLE } from './geometry.js';
@@ -26,8 +25,10 @@ const HIDDEN_WIDTH = 0.0005;  // Linien hinter Wänden
 const HIDDEN = 0.22;          // so hell wie die davor
 
 export class WristMap {
-    constructor(geometry, renderer, player, camera, scene) {
+    // hand(): an welcher Hand sie hängt ('right' oder 'left')
+    constructor(geometry, renderer, player, camera, scene, hand = () => 'right') {
         this.renderer = renderer;
+        this.hand = hand;
         this.player = player;
         this.camera = camera;
         this.visible = false;
@@ -83,28 +84,27 @@ export class WristMap {
         }
 
         // du: ein Ring auf dem Boden der Karte mit einer Lücke, damit man sieht,
-        // dass er sich dreht, und ein Strich in deine Blickrichtung (in Metern der Karte)
+        // dass er sich dreht (in Metern der Karte)
         const red = new THREE.MeshBasicMaterial({ color: '#ff4060', side: THREE.DoubleSide, toneMapped: false, transparent: true, depthTest: false });
         this.ring = new THREE.Mesh(new THREE.RingGeometry(0.0055, 0.0075, 40, 1, 0.5, Math.PI * 2 - 1.0), red);
         this.ring.rotation.x = -Math.PI / 2;
         this.ring.renderOrder = 33;
-        this.heading = new THREE.Mesh(new THREE.PlaneGeometry(0.0015, 0.012).translate(0, 0.0105, 0), red);
-        this.heading.rotation.order = 'YXZ';
-        this.heading.renderOrder = 33;
         this.you = new THREE.Group();
-        this.you.add(this.ring, this.heading);
+        this.you.add(this.ring);
         this.group.add(this.you);
 
-        // die linke Hand: ihr Griff hängt am Spieler wie die Kamera
-        this.grip = null;
+        // die Griffe beider Hände hängen am Spieler wie die Kamera
+        this.grips = new Map();   // Hand -> Griff
         for (let i = 0; i < 2; i++) {
             const grip = renderer.xr.getControllerGrip(i);
             player.add(grip);
-            grip.addEventListener('connected', (event) => { if (event.data.handedness === 'left') this.grip = grip; });
-            grip.addEventListener('disconnected', () => { if (this.grip === grip) this.grip = null; });
+            grip.addEventListener('connected', (event) => this.grips.set(event.data.handedness, grip));
+            grip.addEventListener('disconnected', () => {
+                for (const [hand, other] of this.grips) if (other === grip) this.grips.delete(hand);
+            });
         }
         this.built = null;   // wo die Linien zuletzt ausgesucht wurden
-        this.yPressed = false;
+        this.squeezed = false;
     }
 
     toggle() {
@@ -152,20 +152,21 @@ export class WristMap {
         this.occluder.geometry.setAttribute('position', new THREE.Float32BufferAttribute(kept, 3));
     }
 
-    // jedes Bild: Y am linken Controller schaltet, die Karte folgt dem Handgelenk
+    // jedes Bild: die Grifftaste ihrer Hand schaltet, die Karte folgt dem Handgelenk
     update(time) {
         const xr = this.renderer.xr;
+        const grip = this.grips.get(this.hand());
         if (xr.isPresenting) {
             for (const source of xr.getSession()?.inputSources ?? []) {
-                if (source.handedness !== 'left' || !source.gamepad) continue;
-                const pressed = Boolean(source.gamepad.buttons[5]?.pressed);   // Y (xr-standard: 4 X, 5 Y)
-                if (pressed && !this.yPressed) this.toggle();
-                this.yPressed = pressed;
+                if (source.handedness !== this.hand() || !source.gamepad) continue;
+                const pressed = Boolean(source.gamepad.buttons[1]?.pressed);   // xr-standard: 1 die Grifftaste
+                if (pressed && !this.squeezed) this.toggle();
+                this.squeezed = pressed;
             }
         }
         const anchor = new THREE.Vector3();
-        if (xr.isPresenting && this.grip) {
-            this.grip.getWorldPosition(anchor);
+        if (xr.isPresenting && grip) {
+            grip.getWorldPosition(anchor);
             anchor.y += LIFT;
         } else if (this.preview && !xr.isPresenting) {
             // am Rechner: unten rechts vor dir, als hieltest du sie hoch
@@ -183,12 +184,9 @@ export class WristMap {
         // verschoben, dass deine Füße über dem Handgelenk liegen
         this.group.position.copy(anchor);
         this.model.position.set(-feet.x * SCALE, -feet.y * SCALE, -feet.z * SCALE);
-        // du auf ihrem Boden, und wohin du schaust
+        // du auf ihrem Boden
         this.you.position.set(0, 0.0005, 0);
         this.ring.rotation.z = time * 0.8;
-        const look = new THREE.Vector3();
-        (xr.isPresenting ? xr.getCamera() : this.camera).getWorldDirection(look);
-        this.heading.rotation.set(-Math.PI / 2, Math.atan2(-look.x, -look.z), 0);
         // die Linien brauchen die Größe des Bildes für ihre Breite
         const size = this.renderer.getSize(new THREE.Vector2());
         this.front.material.resolution.copy(size);

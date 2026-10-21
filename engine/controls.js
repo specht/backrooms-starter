@@ -16,6 +16,7 @@ export class Walker {
         this.player = player;
         this.camera = camera;
         this.renderer = renderer;
+        this.walkHand = 'left';   // in VR: der Stick dieser Hand geht, der der anderen dreht
         this.yaw = 0;
         this.pitch = 0;
         this.keys = new Set();
@@ -304,17 +305,27 @@ export class Walker {
         this.move(dx, dz);
     }
 
-    // Linker Stick: laufen in Blickrichtung, rechter Stick: drehen.
+    // Der Stick der Hand, die geht (walkHand, links): gehen in Blickrichtung,
+    // mit ihrer Grifftaste oder dem eingedrückten Stick laufen (doppelt so
+    // schnell, wie mit Shift); der Stick der anderen Hand dreht. Die
+    // Grifftaste der anderen Hand schaltet die Karte an ihrem Handgelenk
+    // (wristmap.js).
     updateVR(dt) {
         const session = this.renderer.xr.getSession();
         if (!session) return;
-        let move = null, turn = null;
+        let move = null, turn = null, running = false;
         for (const source of session.inputSources) {
             const axes = source.gamepad?.axes;
             if (!axes || axes.length < 2) continue;
             const x = axes[axes.length - 2] ?? 0, y = axes[axes.length - 1] ?? 0;
             const stick = { x: Math.abs(x) > 0.15 ? x : 0, y: Math.abs(y) > 0.15 ? y : 0 };
-            if (source.handedness === 'right') turn = stick; else move = stick;
+            if (source.handedness !== this.walkHand) turn = stick;
+            else {
+                move = stick;
+                // xr-standard: 1 die Grifftaste, 3 der Stick eingedrückt
+                const buttons = source.gamepad.buttons;
+                running = Boolean(buttons[1]?.pressed || buttons[3]?.pressed);
+            }
         }
         if (turn && turn.x) {
             // um den Kopf drehen, nicht um die Mitte des Spielfelds
@@ -332,7 +343,7 @@ export class Walker {
             forward.y = 0;
             forward.normalize();
             const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0));
-            const step = forward.multiplyScalar(-move.y).add(right.multiplyScalar(move.x)).multiplyScalar(1.25 * dt);
+            const step = forward.multiplyScalar(-move.y).add(right.multiplyScalar(move.x)).multiplyScalar((running ? 2.5 : 1.25) * dt);
             this.move(step.x, step.z);
         }
     }

@@ -72,8 +72,8 @@ export class Automap {
         this.active = false;
         this.scene = new THREE.Scene();
         this.scene.background = new THREE.Color('#07070a');
-        // Alles kommt in eine Gruppe: am Rechner in voller Größe, in VR als
-        // kleines Modell vor dir, wie ein Puppenhaus.
+        // Alles kommt in eine Gruppe (in VR gibt es diese Karte nicht, dort
+        // ist sie am Handgelenk, wristmap.js)
         this.model = new THREE.Group();
         this.scene.add(this.model);
         // Namen, Punkte und der Pfeil: über dem Drahtgitter und, in der
@@ -400,35 +400,14 @@ export class Automap {
         this.camera.updateProjectionMatrix();
     }
 
-    // anaglyph: am Rechner mit Rot-Cyan-Brille. vrCamera: in VR die Kamera
-    // des Spielers, das Modell steht dann klein vor ihm. rooms: die richtige
-    // Szene und was darin für die Ansicht von oben verschwinden muss (Decken,
+    // anaglyph: am Rechner mit Rot-Cyan-Brille. rooms: die richtige Szene
+    // und was darin für die Ansicht von oben verschwinden muss (Decken,
     // Leuchten); mit roomsView zeichnet die Karte dann sie statt des
-    // Drahtgitters, in VR bleibt es beim Drahtgitter.
-    render({ anaglyph = null, vrCamera = null, rooms = null } = {}) {
+    // Drahtgitters. In VR gibt es sie nicht, dort ist die Karte am
+    // Handgelenk (wristmap.js).
+    render({ anaglyph = null, rooms = null } = {}) {
         this.youPivot.position.set(this.player.position.x, this.player.position.y + 0.05, this.player.position.z);
         this.youPivot.rotation.y = this.player.rotation.y;
-        if (vrCamera) {
-            // als kleines Modell: die Namen in ihrer Größe in der Welt
-            for (const sprite of this.labels) sprite.scale.set(LABEL_HEIGHT * sprite.userData.aspect, LABEL_HEIGHT, 1);
-            // Der Spieler steht nicht in dieser Szene: seine Lage selbst aktualisieren
-            vrCamera.parent?.updateMatrixWorld(true);
-            // anderthalb Meter groß, 70 cm vor dir, auf Tischhöhe
-            const scale = 1.5 / this.size;
-            const head = new THREE.Vector3();
-            vrCamera.getWorldPosition(head);
-            const forward = new THREE.Vector3();
-            vrCamera.getWorldDirection(forward);
-            forward.y = 0;
-            forward.normalize();
-            this.model.scale.setScalar(scale);
-            this.model.position.set(head.x + forward.x * 0.7 - this.center.x * scale, 0.85, head.z + forward.z * 0.7 - this.center.z * scale);
-            this.model.updateMatrixWorld(true);
-            this.renderer.render(this.scene, vrCamera);
-            return;
-        }
-        this.model.scale.setScalar(1);
-        this.model.position.set(0, 0, 0);
         this.center.set(this.player.position.x, this.player.position.y, this.player.position.z).add(this.offset);
         if (this.follow) {
             // mit dir drehen und neigen: schaust du nach unten, sieht die Karte von oben

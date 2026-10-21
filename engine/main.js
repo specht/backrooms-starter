@@ -1532,10 +1532,12 @@ async function start() {
     walker.mayCapture = () => !automap.active;
     walker.mayTouch = () => !automap.active;
     walker.mayLook = (event) => !(automap.active && (event.shiftKey || automap.dragging));
-    for (let i = 0; i < 2; i++) renderer.xr.getController(i).addEventListener('squeezestart', () => automap.toggle());
-    // die Karte am linken Handgelenk (wristmap.js): Y schaltet sie in VR;
+    // In VR keine große Automap (die Grifftaste öffnete sie als Modell vor
+    // dir), dafür die Karte am Handgelenk der Hand, die nicht geht
+    // (wristmap.js), und ihre Grifftaste schaltet sie;
     // ?wristmap zeigt sie am Rechner unten rechts vor dir, zum Ausprobieren
-    const wristMap = new WristMap(geometry, renderer, player, camera, scene);
+    const wristMap = new WristMap(geometry, renderer, player, camera, scene, () => (walker.walkHand === 'left' ? 'right' : 'left'));
+    renderer.xr.addEventListener('sessionstart', () => { if (automap.active) automap.toggle(); });
     if (params.has('wristmap')) {
         wristMap.preview = true;
         wristMap.visible = true;
@@ -1709,7 +1711,6 @@ async function start() {
         refreshControls();
     });
     // die Grifftaste in VR schaltet die Automap auch um
-    for (let i = 0; i < 2; i++) renderer.xr.getController(i).addEventListener('squeezestart', refreshControls);
     controls.addEventListener('click', refreshControls);
     for (const event of ['fullscreenchange', 'webkitfullscreenchange']) document.addEventListener(event, refreshControls);
 
@@ -2028,11 +2029,10 @@ async function start() {
         wristMap.update(now);
         automap.showSight(automap.active ? sight : null);
         if (atlas.active) atlas.render();
-        else if (automap.active) {
+        else if (automap.active && !renderer.xr.isPresenting) {
             automap.render({
                 rooms: { scene, hide: aboveRooms },
-                anaglyph: useAnaglyph && !renderer.xr.isPresenting ? anaglyph : null,
-                vrCamera: renderer.xr.isPresenting ? camera : null,
+                anaglyph: useAnaglyph ? anaglyph : null,
             });
         }
         else if (useAnaglyph && !renderer.xr.isPresenting) {

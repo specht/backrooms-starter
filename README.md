@@ -88,13 +88,13 @@ Every switch is also shown at the top left, in groups (Walk, Light,
 Effects), and can be clicked; − in the panel hides it, ☰ in its place brings
 it back. On a phone or tablet the panel starts hidden and shows only the Walk
 group, »More« shows the rest. »Fullscreen« in the panel, and ⛶ at the top
-right on a phone or tablet, fills the whole screen. In VR the left thumbstick walks, the
-right one turns, the grip button opens the automap. Y on the left controller
-shows the wrist map: a small hologram above your left wrist, the building
-around you (10 m in full, fading out up to 15 m) as cyan lines, those behind
-walls thinner and paler, turned like the building itself, so a corridor that
-leads left on it really leads left; you are the turning ring with a line
-where you look. Y again hides it.
+right on a phone or tablet, fills the whole screen. In VR the left thumbstick walks
+(with the left grip button held or the stick pressed in you run), the right
+one turns. The right grip button shows the wrist map instead of the automap:
+a small hologram above your right wrist, the building around you (10 m in
+full, fading out up to 15 m) as cyan lines, those behind walls thinner and
+paler, turned like the building itself, so a corridor that leads left on it
+really leads left; you are the turning ring. Pressed again, it hides it.
 
 On a phone or tablet the left thumb walks: where it touches the picture, a
 ring appears, and pushing away from its middle walks that way (all the way:
