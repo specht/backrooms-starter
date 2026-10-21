@@ -70,19 +70,41 @@ const help = document.getElementById('help');
 const WALK_HELP = 'Click into the picture to look around with the mouse · WASD to walk, Shift to run';
 const AUTOMAP_HELP = 'Automap: drag to turn it, Shift+drag to move it, mouse wheel to zoom · V: rooms or wireframe · U: what is drawn from where you stand · WASD still walks · M or Esc closes it';
 // auf dem Handy und Tablet (body.touch, sobald ein Finger das Bild berührt)
-const TOUCH_HELP = 'Left thumb: walk (push it all the way to run) · right thumb: look around · ☰ hides this panel';
+const TOUCH_HELP = 'Left thumb: walk (push it all the way to run) · right thumb: look around';
 const TOUCH_AUTOMAP_HELP = 'Automap: one finger turns it, two fingers zoom and move it · Automap closes it';
 // Handy oder Tablet schon beim Laden: Kein Finger muss erst das Bild berühren
 if (window.matchMedia('(pointer: coarse)').matches) document.body.classList.add('touch');
+// gleich, nicht erst nach dem Laden: index.html bringt den Text für die Maus mit
+if (document.body.classList.contains('touch')) help.textContent = TOUCH_HELP;
 
 // Ein Schalter mit Lämpchen (grün, wenn an) und seiner Taste. Ohne state
 // ist es ein Knopf, der etwas tut. Er nimmt keinen Fokus, damit die Tasten
 // weiter beim Spiel ankommen.
-function addControl(label, key, onClick, state = null) {
+// Die Schalter stehen in Gruppen mit einer kleinen Überschrift (Walk, Light,
+// Effects). Auf dem Handy ist zuerst nur die erste offen, »More« zeigt den Rest.
+const groups = new Map();
+function controlGroup(name) {
+    if (!groups.has(name)) {
+        const group = document.createElement('div');
+        group.className = 'group';
+        const heading = document.createElement('span');
+        heading.className = 'group-name';
+        heading.textContent = name;
+        const flags = document.createElement('div');
+        flags.className = 'flags';
+        group.append(heading, flags);
+        controls.appendChild(group);
+        groups.set(name, flags);
+    }
+    return groups.get(name);
+}
+
+function addControl(label, key, onClick, state = null, group = 'Walk', id = null) {
     const button = document.createElement('button');
     button.type = 'button';
     button.tabIndex = -1;
     button.className = state ? 'flag' : 'flag action';
+    if (id) button.dataset.control = id;
     const dot = document.createElement('span');
     dot.className = 'dot';
     const text = document.createElement('span');
@@ -95,7 +117,7 @@ function addControl(label, key, onClick, state = null) {
         button.append(kbd);
     }
     button.addEventListener('click', onClick);
-    controls.appendChild(button);
+    controlGroup(group).appendChild(button);
     return () => { if (state) button.classList.toggle('on', state()); };
 }
 
@@ -1560,10 +1582,30 @@ async function start() {
     const togglePart = (part) => { parts[part.name] = !parts[part.name]; showParts(); };
     const toggleAnaglyph = () => { useAnaglyph = !useAnaglyph; };
     const toggleAutomap = () => automap.toggle(camera);
-    // P: der Kasten oben links weg und wieder da
+    // P, − im Kasten oder ☰ an seiner Stelle: der Kasten oben links weg und
+    // wieder da. Auf dem Handy ist er zuerst zu, das Bild soll frei sein.
     const togglePanel = () => document.body.classList.toggle('panel-hidden');
-    // ☰ oben rechts bringt den Kasten wieder (auf dem Handy gibt es kein P)
-    document.getElementById('panel-button').addEventListener('click', togglePanel);
+    const panelButton = document.getElementById('panel-button');
+    panelButton.addEventListener('click', togglePanel);
+    const head = document.createElement('div');
+    head.className = 'head';
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.id = 'panel-close';
+    closeButton.title = 'Hide the panel (P)';
+    closeButton.setAttribute('aria-label', 'Hide the panel');
+    closeButton.textContent = '−';
+    closeButton.addEventListener('click', togglePanel);
+    title.replaceWith(head);
+    head.append(title, closeButton);
+    if (document.body.classList.contains('touch')) document.body.classList.add('panel-hidden');
+    // solange gebacken wird, zeigt ☰ den Fortschritt mit einer dünnen Linie
+    new MutationObserver(() => {
+        panelButton.style.setProperty('--progress', bar.style.width || '0%');
+        panelButton.classList.toggle('busy', !bar.parentElement.classList.contains('done'));
+    }).observe(bar, { attributes: true });
+    new MutationObserver(() => panelButton.classList.toggle('busy', !bar.parentElement.classList.contains('done')))
+        .observe(bar.parentElement, { attributes: true });
     // ⛶ oder »Fullscreen«: der ganze Bildschirm, ohne Adressleiste (vor allem auf Handy und Tablet)
     const canFullscreen = Boolean(document.fullscreenEnabled || document.webkitFullscreenEnabled);
     const inFullscreen = () => Boolean(document.fullscreenElement || document.webkitFullscreenElement);
@@ -1597,25 +1639,41 @@ async function start() {
     // I oder ?stats: Zahlen zur Leistung (stats.js)
     const stats = createStats(renderer, { models, geometry, baker, level });
     if (params.has('stats')) stats.toggle();
+    const partControl = (name, group) => {
+        const part = PARTS.find((p) => p.name === name);
+        return addControl(part.label, part.key.slice(3), () => togglePart(part), () => parts[part.name], group);
+    };
     const refreshers = [
-        ...PARTS.map((part) => addControl(part.label, part.key.slice(3), () => togglePart(part), () => parts[part.name])),
-        addControl('Anaglyph', '3', toggleAnaglyph, () => useAnaglyph),
         addControl('Automap', 'M', toggleAutomap, () => automap.active),
-        addControl('Light map', 'Shift+G', () => atlas.toggle(), () => atlas.active),
-        addControl('Stats', 'I', () => stats.toggle(), () => stats.active),
-        addControl('Rebake light', 'Shift+L', rebake),
-        addControl('Save light', '', saveLight),
-        ...(canFullscreen ? [addControl('Fullscreen', '', toggleFullscreen, inFullscreen)] : []),
-        addControl('Hide panel', 'P', () => togglePanel()),
         addControl('Rewind', 'R', () => walker.rewind()),
         addControl('Back to start', 'Shift+R', () => walker.toStart()),
+        // auf Handy und Tablet ist ⛶ oben rechts schon da
+        ...(canFullscreen ? [addControl('Fullscreen', '', toggleFullscreen, inFullscreen, 'Walk', 'fullscreen')] : []),
+        ...['textures', 'direct', 'bounce', 'occlusion', 'flicker', 'points'].map((name) => partControl(name, 'Light')),
+        addControl('Light map', 'Shift+G', () => atlas.toggle(), () => atlas.active, 'Light'),
+        addControl('Rebake light', 'Shift+L', rebake, null, 'Light'),
+        addControl('Save light', '', saveLight, null, 'Light'),
+        ...['bloom', 'vhs', 'aberration'].map((name) => partControl(name, 'Effects')),
+        addControl('Anaglyph', '3', toggleAnaglyph, () => useAnaglyph, 'Effects'),
+        ...['wireframe', 'collision'].map((name) => partControl(name, 'Effects')),
+        addControl('Stats', 'I', () => stats.toggle(), () => stats.active, 'Effects'),
     ];
+    // auf dem Handy: »More« klappt Light und Effects auf und wieder zu
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'more';
+    const showMore = () => { more.textContent = document.body.classList.contains('panel-more') ? 'Less ▴' : 'More ▾'; };
+    more.addEventListener('click', () => { document.body.classList.toggle('panel-more'); showMore(); });
+    showMore();
+    controls.appendChild(more);
     const refreshControls = () => {
         for (const refresh of refreshers) refresh();
         const touch = document.body.classList.contains('touch');
         help.textContent = automap.active ? (touch ? TOUCH_AUTOMAP_HELP : AUTOMAP_HELP) : (touch ? TOUCH_HELP : WALK_HELP);
     };
     refreshControls();
+    // ein Tablet, das sich als Rechner mit Maus meldet: beim ersten Finger
+    window.addEventListener('touchstart', () => setTimeout(refreshControls), { once: true, passive: true });
 
     document.addEventListener('keydown', (event) => {
         if (event.ctrlKey || event.metaKey || event.altKey || event.repeat) return;

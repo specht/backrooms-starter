@@ -84,9 +84,11 @@ Shift+L, or `?rebake` in the address, bakes the light again in any case.
 <tr><td>I</td><td>stats: frames per second, how long a frame takes, draw calls, triangles, how many rooms are drawn, how big the light map is and roughly how much memory textures take; for trying the level on a phone, a tablet or a VR headset (<code>?stats</code> starts with it)</td></tr>
 </table>
 
-Every switch is also shown at the top left and can be clicked; ☰ at the top
-right hides the panel and brings it back. »Fullscreen« in the panel, and ⛶
-next to ☰ on a phone or tablet, fills the whole screen. In VR the left thumbstick walks, the
+Every switch is also shown at the top left, in groups (Walk, Light,
+Effects), and can be clicked; − in the panel hides it, ☰ in its place brings
+it back. On a phone or tablet the panel starts hidden and shows only the Walk
+group, »More« shows the rest. »Fullscreen« in the panel, and ⛶ at the top
+right on a phone or tablet, fills the whole screen. In VR the left thumbstick walks, the
 right one turns, the grip button opens the automap.
 
 On a phone or tablet the left thumb walks: where it touches the picture, a

@@ -24,6 +24,33 @@ canvas {
     pointer-events: none;
 }
 
+/* oben der Name des Levels und − zum Ausblenden */
+#info .head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.8rem;
+}
+
+#panel-close {
+    flex: none;
+    width: 1.9rem;
+    height: 1.9rem;
+    margin: -0.3rem -0.4rem -0.3rem 0;
+    border: 1px solid rgb(255 255 255 / 18%);
+    border-radius: 0.4rem;
+    color: #f4ecc8;
+    background: rgb(255 255 255 / 6%);
+    font: 600 1.2rem/1 system-ui, sans-serif;
+    cursor: pointer;
+    pointer-events: auto;
+}
+
+#panel-close:hover {
+    border-color: rgb(255 255 255 / 40%);
+    background: rgb(255 255 255 / 14%);
+}
+
 #info .help {
     font-size: 0.85rem;
     opacity: 0.8;
@@ -58,11 +85,53 @@ canvas {
 /* Schalter: ein Lämpchen, das grün leuchtet, wenn der Teil an ist, und die
    Taste dazu. Knöpfe, die etwas tun (action), haben kein Lämpchen. */
 #controls {
+    display: grid;
+    gap: 0.45rem;
+    margin-top: 0.3rem;
+    pointer-events: auto;
+}
+
+/* je eine Gruppe mit kleiner Überschrift: Walk, Light, Effects */
+#controls .group-name {
+    display: block;
+    margin-bottom: 0.2rem;
+    color: rgb(244 236 200 / 50%);
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+#controls .flags {
     display: flex;
     flex-wrap: wrap;
     gap: 0.35rem;
-    margin-top: 0.3rem;
-    pointer-events: auto;
+}
+
+/* »More«: nur auf dem Handy, dort sind Light und Effects zuerst zu */
+#controls .more {
+    display: none;
+    justify-self: start;
+    padding: 0.2rem 0.55rem;
+    border: none;
+    border-radius: 0.4rem;
+    color: rgb(244 236 200 / 75%);
+    background: transparent;
+    font: inherit;
+    font-size: 0.85rem;
+    cursor: pointer;
+}
+
+body.touch #controls .more {
+    display: block;
+}
+
+body.touch #controls [data-control='fullscreen'] {
+    display: none;
+}
+
+body.touch:not(.panel-more) #controls .group:not(:first-child) {
+    display: none;
 }
 
 .flag {
@@ -135,8 +204,7 @@ body.panel-hidden #info {
     display: none;
 }
 
-/* ☰ oben rechts: blendet den Kasten aus und wieder ein. Auf dem Handy immer
-   da (dort gibt es kein P), am Rechner nur, wenn der Kasten weg ist. */
+/* ☰ an der Stelle des Kastens, wenn er weg ist, und ⛶ oben rechts */
 #panel-button,
 #fullscreen-button {
     position: fixed;
@@ -153,15 +221,33 @@ body.panel-hidden #info {
     cursor: pointer;
 }
 
-body.panel-hidden #panel-button,
-body.touch #panel-button {
+#panel-button {
+    right: auto;
+    left: 1rem;
+    overflow: hidden;
+}
+
+body.panel-hidden #panel-button {
     display: block;
 }
 
-/* ⛶ links daneben: der ganze Bildschirm, auf Handy und Tablet, wenn der Browser es kann */
-#fullscreen-button {
-    right: 4.1rem;
+/* solange gebacken wird, eine dünne Linie unten im ☰ (main.js) */
+#panel-button.busy::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    width: var(--progress, 0%);
+    height: 3px;
+    background: #f4dc78;
 }
+
+body.touch #panel-button {
+    top: 0.6rem;
+    left: 0.6rem;
+}
+
+/* ⛶ oben rechts: der ganze Bildschirm, auf Handy und Tablet, wenn der Browser es kann */
 
 body.touch.can-fullscreen #fullscreen-button {
     display: block;
