@@ -141,6 +141,39 @@ export class Walker {
         // Himmelsrichtung im Uhrzeigersinn, Drehung (yaw) gegen den Uhrzeigersinn
         this.yaw = -THREE.MathUtils.degToRad(start.heading ?? 0);
         this.pitch = 0;
+        this.trail = [];
+        this.beforeFall = null;
+    }
+
+    // Wo du in den letzten zehn Sekunden gestanden hast, für rewind(): alle
+    // 0,25 s eine Stelle, nur auf festem Boden. Fängst du an zu fallen, merkt
+    // es sich die Stelle von gut einer Sekunde davor, ein Stück vor der Kante.
+    remember(dt) {
+        this.trail ??= [];
+        const falling = this.falling > 0;
+        if (falling && !this.wasFalling && this.trail.length) this.beforeFall = this.trail[Math.max(0, this.trail.length - 5)];
+        this.wasFalling = falling;
+        if (falling) return;
+        this.trailTime = (this.trailTime ?? 0) + dt;
+        if (this.trailTime < 0.25) return;
+        this.trailTime = 0;
+        const p = this.player.position;
+        this.trail.push({ x: p.x, y: p.y, z: p.z, yaw: this.yaw, pitch: this.pitch });
+        if (this.trail.length > 40) this.trail.shift();
+    }
+
+    // R: zurück an die Stelle vor dem letzten Sturz (in ein Loch, einen
+    // Schacht), sonst zehn Sekunden zurück. Shift+R führt ganz zum Anfang.
+    rewind() {
+        const back = this.beforeFall ?? this.trail?.[0];
+        if (!back) return;
+        this.player.position.set(back.x, back.y, back.z);
+        this.yaw = back.yaw;
+        this.pitch = back.pitch;
+        this.falling = 0;
+        this.eyeFloor = undefined;
+        this.trail = [back];
+        this.beforeFall = null;
     }
 
     // auf den Boden an der Stelle, wo du stehst: Auf einer Rampe geht es
@@ -234,6 +267,7 @@ export class Walker {
     update(dt) {
         if (!this.enabled()) return;
         this.fall(dt);
+        this.remember(dt);
         if (this.renderer.xr.isPresenting) {
             this.updateVR(dt);
             return;

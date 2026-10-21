@@ -1592,7 +1592,7 @@ async function start() {
         report(`Saved ${lightFileName(levelFile)}: put it next to ${levelFile}, then the level loads it instead of baking.`);
     };
     // Shift+G oder ?show=atlas: die Lightmap selbst (atlasview.js)
-    const atlas = atlasView(renderer, baker, shared, geometry, level, params.get('face'));
+    const atlas = atlasView(renderer, baker, shared, geometry, level, params.get('face'), params.get('rect'));
     if (params.get('show') === 'atlas') atlas.toggle();
     // I oder ?stats: Zahlen zur Leistung (stats.js)
     const stats = createStats(renderer, { models, geometry, baker, level });
@@ -1607,6 +1607,7 @@ async function start() {
         addControl('Save light', '', saveLight),
         ...(canFullscreen ? [addControl('Fullscreen', '', toggleFullscreen, inFullscreen)] : []),
         addControl('Hide panel', 'P', () => togglePanel()),
+        addControl('Rewind', 'R', () => walker.rewind()),
         addControl('Back to start', 'Shift+R', () => walker.toStart()),
     ];
     const refreshControls = () => {
@@ -1629,6 +1630,7 @@ async function start() {
         if (event.code === 'KeyI') stats.toggle();
         // mit Shift, damit man nicht aus Versehen den Weg verliert
         if (event.code === 'KeyR' && event.shiftKey) walker.toStart();
+        else if (event.code === 'KeyR' && !event.ctrlKey && !event.metaKey) walker.rewind();
         // V: in der Automap die Räume statt des Drahtgitters, und zurück
         if (event.code === 'KeyV' && automap.active) automap.roomsView = !automap.roomsView;
         // U: in der Automap, welche Räume von deinem Platz aus gezeichnet werden

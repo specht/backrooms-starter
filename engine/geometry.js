@@ -413,8 +413,22 @@ export function buildGeometry(level, modelBoxes = []) {
         if (!cornice) return;
         const n = INWARD[direction], hgt = cornice.height;
         const length = Math.hypot(q[0] - p[0], q[1] - p[1]) * cell;
+        // An einer Außenecke (die Wand biegt vom Raum weg, etwa an der Kante
+        // einer Türöffnung bis unter die Decke) reicht die Leiste oben um ihre
+        // Höhe weiter: Die Leisten beider Wände treffen sich dort auf Gehrung,
+        // sonst bliebe ein dreieckiges Loch. Außenecke: hinter dem Ende ist auf
+        // beiden Seiten der Wand Boden.
+        const d = [(q[0] - p[0]) / (length / cell), (q[1] - p[1]) / (length / cell)];
+        const k = level.rooms[room].layer;
+        const open = (x, z) => at(Math.floor(x), Math.floor(z), k) === 'floor';
+        const outside = (e, sign) => {
+            const x = e[0] + sign * d[0] * 0.5, z = e[1] + sign * d[1] * 0.5;
+            return open(x + n[0] * 0.5, z + n[2] * 0.5) && open(x - n[0] * 0.5, z - n[2] * 0.5);
+        };
+        const ep = outside(p, -1) ? hgt : 0, eq = outside(q, 1) ? hgt : 0;
         let c = [[p[0] * cell, topP - hgt, p[1] * cell], [q[0] * cell, topQ - hgt, q[1] * cell],
-            [q[0] * cell + n[0] * hgt, topQ, q[1] * cell + n[2] * hgt], [p[0] * cell + n[0] * hgt, topP, p[1] * cell + n[2] * hgt]];
+            [q[0] * cell + n[0] * hgt + d[0] * eq, topQ, q[1] * cell + n[2] * hgt + d[1] * eq],
+            [p[0] * cell + n[0] * hgt - d[0] * ep, topP, p[1] * cell + n[2] * hgt - d[1] * ep]];
         // zeigt schräg nach unten in den Raum
         const want = [n[0], -1, n[2]];
         if (faceNormal(c).reduce((sum, v, k) => sum + v * want[k], 0) < 0) c = [c[0], c[3], c[2], c[1]];
@@ -466,6 +480,7 @@ export function buildGeometry(level, modelBoxes = []) {
                 if (at(x, z, k) !== 'floor') continue;
                 const room = roomOf(x, z, k);
                 const h = level.ceilingOfCell(x, z, k);   // unter einem Loch: bis an die Decke darüber
+                const above = level.roomAbove(x, z, k);    // der Raum über dem Loch, falls eins da ist
                 const f = (cx, cz) => floorAt(cx, cz, room);
                 // [Nachbar, Richtung, Linie, Stelle entlang der Linie]
                 const edges = [
@@ -486,7 +501,14 @@ export function buildGeometry(level, modelBoxes = []) {
                     if (at(nx, nz, k) === 'floor' && roomOf(nx, nz, k) === room &&
                         level.ceilingOpen(x, z, k) === level.ceilingOpen(nx, nz, k)) continue;
                     const [a, b] = wallEnds(direction, line, along, along + 1);
-                    const bottom = [f(a[0], a[1]), f(b[0], b[1])], top = [h(a[0], a[1]), h(b[0], b[1])];
+                    const bottom = [f(a[0], a[1]), f(b[0], b[1])];
+                    // Am Rand des Schachts unter einem Loch: nur bis an den Boden darüber.
+                    // Weiter oben ist dort eine Wand des Raums darüber oder seine Luft,
+                    // sonst stünde die Wand von unten wie ein Brett im Raum darüber.
+                    const capped = above !== undefined && level.roomAbove(nx, nz, k) !== above;
+                    const top = capped
+                        ? [floorAt(a[0], a[1], above), floorAt(b[0], b[1], above)]
+                        : [h(a[0], a[1]), h(b[0], b[1])];
                     // Luft dahinter, die mit der eigenen überlappt
                     const open = level.slabs(nx, nz).map((slab) => {
                         const top = level.ceilingOfCell(nx, nz, slab.layer);
@@ -520,7 +542,10 @@ export function buildGeometry(level, modelBoxes = []) {
                     // Durchgang zu einem Raum mit anderem Boden oder anderer Decke:
                     // eine Stufe darunter, ein Stück Wand darüber, und dazwischen
                     // eine Decke zwischen zwei Räumen übereinander
-                    for (const [low, high, slab] of gaps(bottom, top, open)) {
+                    for (const [low, high, between] of gaps(bottom, top, open)) {
+                        // am Rand eines Lochs: über der Decke des Nachbarn bis an den Boden
+                        // darüber ist es die Decke zwischen den beiden Räumen
+                        const slab = between || (capped && (low[0] > bottom[0] + 0.01 || low[1] > bottom[1] + 0.01));
                         const corners = [[a[0] * cell, low[0], a[1] * cell], [b[0] * cell, low[1], b[1] * cell],
                             [b[0] * cell, high[1], b[1] * cell], [a[0] * cell, high[0], a[1] * cell]];
                         const w = texels(cell), h = texels(Math.max(high[0] - low[0], high[1] - low[1], 0.2));

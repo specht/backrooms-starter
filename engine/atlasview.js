@@ -27,6 +27,7 @@ uniform vec3 bakeTiles;
 uniform float atlasSize;
 uniform vec4 rect;      // was gezeigt wird: Ecke und Größe, in Punkten
 uniform bool nearest;   // jeden Punkt als Quadrat statt gemischt
+uniform bool turned;    // ein hohes Rechteck quer, damit es ein breites Bild füllt
 varying vec2 vUv;
 // wie in den Flächen (main.js): beim Backen zählt jedes Stück seine Durchgänge selbst
 float passScale(vec2 uv) {
@@ -37,7 +38,7 @@ float passScale(vec2 uv) {
     return count > 0.0 ? 1.0 / count : 0.0;
 }
 void main() {
-    vec2 texel = rect.xy + vUv * rect.zw;
+    vec2 texel = rect.xy + (turned ? vec2(1.0 - vUv.y, vUv.x) : vUv) * rect.zw;
     vec2 uv = (nearest ? floor(texel) + 0.5 : texel) / atlasSize;
     float scale = passScale(uv);
     vec4 steady = texture2D(steadyMap, uv) * scale;
@@ -54,11 +55,17 @@ void main() {
 }`;
 
 // shared: die Werte, mit denen auch die Flächen das Licht zeigen (main.js);
-// face: 'raum,art[,nummer][,fine]' oder null für die ganze Lightmap
-export function atlasView(renderer, baker, shared, geometry, level, face = null) {
+// face: 'raum,art[,nummer][,fine]' oder null für die ganze Lightmap; part:
+// 'x,y,b,h', ein Ausschnitt in Punkten der Lightmap (?show=atlas&rect=…),
+// etwa ein Schatten, der von einer harten Kante aus weicher wird
+export function atlasView(renderer, baker, shared, geometry, level, face = null, part = null) {
     const size = geometry.atlasSize;
     let shown = [0, 0, size, size];
-    if (face) {
+    if (part) {
+        const numbers = part.split(',').map(Number);
+        if (numbers.length === 4 && numbers.every(Number.isFinite)) shown = numbers;
+        else console.warn(`?rect=${part}: expected x,y,width,height in points of the light map`);
+    } else if (face) {
         const parts = face.split(',').map((part) => part.trim());
         const [roomId, kind] = parts;
         const number = Number(parts.find((part) => /^\d+$/.test(part)) ?? 0);
@@ -81,8 +88,9 @@ export function atlasView(renderer, baker, shared, geometry, level, face = null)
             bakeTiles: shared.bakeTiles,
             atlasSize: { value: size },
             rect: { value: new THREE.Vector4(...shown) },
-            nearest: { value: Boolean(face) },
-            flip: { value: !face },
+            nearest: { value: Boolean(face || part) },
+            turned: { value: Boolean(face || part) && shown[3] > shown[2] },
+            flip: { value: !(face || part) },
             fit: { value: new THREE.Vector2(1, 1) },
         },
         depthTest: false,
@@ -105,7 +113,8 @@ export function atlasView(renderer, baker, shared, geometry, level, face = null)
             u.flickerMap.value = baker.flicker;
             u.indirectMap.value = baker.indirect;
             // so groß es passt, mit etwas Rand, Punkte quadratisch
-            const screen = window.innerWidth / window.innerHeight, shape = shown[2] / shown[3];
+            const screen = window.innerWidth / window.innerHeight;
+            const shape = u.turned.value ? shown[3] / shown[2] : shown[2] / shown[3];
             if (shape > screen) u.fit.value.set(0.96, 0.96 * screen / shape);
             else u.fit.value.set(0.96 * shape / screen, 0.96);
             renderer.setRenderTarget(null);

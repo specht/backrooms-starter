@@ -78,6 +78,7 @@ Shift+L, or `?rebake` in the address, bakes the light again in any case.
 <tr><td>M or Tab</td><td>automap: the whole building as a wireframe; drag to turn it, Shift+drag to move it, mouse wheel to zoom, V shows the rooms themselves from above instead, U shows which rooms are drawn from where you stand (the others pale, the portals you look through orange), Esc to close</td></tr>
 <tr><td>Shift+L</td><td>bake the light again</td></tr>
 <tr><td>»Save light«</td><td>download the baked light as <code>level.light</code> (see below)</td></tr>
+<tr><td>R</td><td>rewind: back to where you stood a moment before your last fall (into a hole, off an edge), otherwise ten seconds back</td></tr>
 <tr><td>Shift+R</td><td>back to the start</td></tr>
 <tr><td>P</td><td>hide the panel at the top left, and show it again</td></tr>
 <tr><td>I</td><td>stats: frames per second, how long a frame takes, draw calls, triangles, how many rooms are drawn, how big the light map is and roughly how much memory textures take; for trying the level on a phone, a tablet or a VR headset (<code>?stats</code> starts with it)</td></tr>
@@ -306,7 +307,7 @@ Every field with the letter is part of the pool; fields next to each other
 with the same depth, water and tint are one pool. Its floor lies `pool`
 below the floor of the room, lined with tiles, and the water stands `water`
 below the edge. You can't walk into water; into an empty pool you fall
-(Shift+R takes you back). A room with a pool has no ramp. A lamp, a block or
+(R takes you back to the edge, Shift+R to the start). A room with a pool has no ramp. A lamp, a block or
 a model can stand in a pool: its section says `in = W`, with the pool's
 letter, and its field is part of that pool and still has its thing, a column
 standing in the water (on the floor of the pool) or a lamp above it.

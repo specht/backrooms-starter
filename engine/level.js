@@ -1001,6 +1001,8 @@ export async function loadLevel(levelFile, fetchText) {
         poolAt: (x, z, k = 0) => (x < 0 || z < 0 || x >= width || z >= depth ? null : water.get(index(x, z, k)) ?? null),
         // Hat dieses Feld (Schicht k) keine Decke, weil darüber ein Loch ist?
         ceilingOpen: (x, z, k) => openCeiling.has(index(x, z, k)),
+        // der Raum über einem Loch in der Decke dieses Felds, sonst undefined
+        roomAbove: (x, z, k) => openCeiling.get(index(x, z, k)),
         // welcher Raum an einem Feld in Schicht k ist (-1: keiner)
         roomAt(x, z, k = 0) {
             return x < 0 || z < 0 || x >= width || z >= depth ? -1 : owner[index(x, z, k)];
