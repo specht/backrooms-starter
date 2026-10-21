@@ -28,6 +28,7 @@ import { Water } from './water.js';
 import { railing, liftRailing } from './railing.js';
 import { Portals } from './portals.js';
 import { collisionView } from './collision.js';
+import { WristMap } from './wristmap.js';
 
 const params = new URLSearchParams(location.search);
 const DARK_SECONDS = 1.2;      // erst nur die Linien im Dunkeln
@@ -1532,6 +1533,13 @@ async function start() {
     walker.mayTouch = () => !automap.active;
     walker.mayLook = (event) => !(automap.active && (event.shiftKey || automap.dragging));
     for (let i = 0; i < 2; i++) renderer.xr.getController(i).addEventListener('squeezestart', () => automap.toggle());
+    // die Karte am linken Handgelenk (wristmap.js): Y schaltet sie in VR;
+    // ?wristmap zeigt sie am Rechner unten rechts vor dir, zum Ausprobieren
+    const wristMap = new WristMap(geometry, renderer, player, camera, scene);
+    if (params.has('wristmap')) {
+        wristMap.preview = true;
+        wristMap.visible = true;
+    }
 
     // AnaglyphEffect rechnet mit camera.position, nicht mit der Lage in der
     // Welt. Unsere Kamera hängt am Spieler: Eine freie Kamera übernimmt jedes
@@ -2017,6 +2025,7 @@ async function start() {
         sight.camera = camera;
         showRooms(automap.active ? null : sight.rooms);
         drawnRooms = automap.active ? null : sight.rooms;
+        wristMap.update(now);
         automap.showSight(automap.active ? sight : null);
         if (atlas.active) atlas.render();
         else if (automap.active) {

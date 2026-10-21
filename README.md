@@ -89,7 +89,12 @@ Effects), and can be clicked; − in the panel hides it, ☰ in its place brings
 it back. On a phone or tablet the panel starts hidden and shows only the Walk
 group, »More« shows the rest. »Fullscreen« in the panel, and ⛶ at the top
 right on a phone or tablet, fills the whole screen. In VR the left thumbstick walks, the
-right one turns, the grip button opens the automap.
+right one turns, the grip button opens the automap. Y on the left controller
+shows the wrist map: a small hologram above your left wrist, the building
+around you (10 m in full, fading out up to 15 m) as cyan lines, those behind
+walls thinner and paler, turned like the building itself, so a corridor that
+leads left on it really leads left; you are the turning ring with a line
+where you look. Y again hides it.
 
 On a phone or tablet the left thumb walks: where it touches the picture, a
 ring appears, and pushing away from its middle walks that way (all the way:
@@ -359,6 +364,7 @@ In VR the water is a simple, half transparent surface.
 <tr><td><code>?automap=-40,35,12.0,0.0,0.0,0.0,rooms</code></td><td>the automap as it was: turned and tilted (degrees), distance and shift (metres), <code>follow</code> (turns with you) and <code>rooms</code> (rooms instead of wireframe); written by the program itself</td></tr>
 <tr><td><code>?rebake</code></td><td>bake the light even if saved light fits</td></tr>
 <tr><td><code>?stats</code></td><td>start with the stats (I)</td></tr>
+<tr><td><code>?wristmap</code></td><td>the wrist map of VR on the computer, at the bottom right in front of you, to try it out</td></tr>
 <tr><td><code>?resolution=0.8</code></td><td>draw with this share of the screen's pixels in each direction (otherwise the program lowers it by itself, down to 0.6, when it gets slower than 25 frames per second, and raises it again)</td></tr>
 <tr><td><code>?sharp</code></td><td>render at the full resolution of the screen, for pictures (otherwise at most twice the page's pixels)</td></tr>
 </table>
