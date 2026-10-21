@@ -24,6 +24,8 @@ const WIDTH = 0.0011;         // Linien, in Metern der Welt (die Karte ist klein
 const HIDDEN_WIDTH = 0.0005;  // Linien hinter Wänden
 const OPACITY = 0.9;          // die Linien davor
 const HIDDEN = 0.3;           // die dahinter, so viel davon
+const GLOW_WIDTH = 0.005;     // der weiße Schein um die Linien davor
+const GLOW = 0.5;             // so hell ist er an der Linie, nach außen weniger
 
 export class WristMap {
     // hand(): an welcher Hand sie hängt ('right' oder 'left')
@@ -67,17 +69,22 @@ export class WristMap {
         // Farbe der Ecken (vertexColors) trägt nur, wie sichtbar die Linie
         // dort ist (zum Rand hin weniger); daraus wird ihre Deckkraft.
         const holo = new THREE.Color(LINE_COLOR);
-        const material = (opacity, extra) => {
+        // glow: der Schein, weiß, breiter, von der Mitte nach außen schwächer
+        // (norm: 0 in der Mitte der Linie, 0,5 an ihrem Rand) und addiert, so
+        // dass er leuchtet; die cyanfarbene Linie liegt darüber
+        const material = (opacity, extra, glow = false) => {
             const line = new LineMaterial({
                 color: 0xffffff, vertexColors: true, worldUnits: true, linewidth: WIDTH, toneMapped: false,
                 transparent: true, depthWrite: false, opacity, ...extra,
             });
             line.onBeforeCompile = (shader) => {
-                shader.uniforms.holoColor = { value: holo };
+                shader.uniforms.holoColor = { value: glow ? new THREE.Color('#ffffff') : holo };
+                const fade = glow ? ' * pow( 1.0 - 2.0 * norm, 2.0 )' : '';
                 shader.fragmentShader = 'uniform vec3 holoColor;\n' + shader.fragmentShader.replace(
                     'gl_FragColor = vec4( diffuseColor.rgb, alpha );',
-                    'gl_FragColor = vec4( holoColor, alpha * diffuseColor.r );');
+                    `gl_FragColor = vec4( holoColor, alpha * diffuseColor.r${fade} );`);
             };
+            line.customProgramCacheKey = () => (glow ? 'wristmap-glow' : 'wristmap-line');
             return line;
         };
         // erst die Flächen, nur in den Tiefenpuffer (etwas nach hinten, damit
@@ -87,11 +94,13 @@ export class WristMap {
             colorWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2,
         }));
         this.occluder.renderOrder = 30;
+        this.glow = new LineSegments2(new LineSegmentsGeometry(), material(GLOW, { linewidth: GLOW_WIDTH, blending: THREE.AdditiveBlending }, true));
+        this.glow.renderOrder = 31;
         this.front = new LineSegments2(new LineSegmentsGeometry(), material(OPACITY, {}));
-        this.front.renderOrder = 31;
+        this.front.renderOrder = 31.5;
         this.behind = new LineSegments2(new LineSegmentsGeometry(), material(OPACITY * HIDDEN, { linewidth: HIDDEN_WIDTH, depthFunc: THREE.GreaterDepth }));
         this.behind.renderOrder = 32;
-        for (const part of [this.occluder, this.front, this.behind]) {
+        for (const part of [this.occluder, this.glow, this.front, this.behind]) {
             part.frustumCulled = false;
             this.model.add(part);
         }
@@ -143,7 +152,7 @@ export class WristMap {
             const t = tints[k];
             colors.push(t * fa, t * fa, t * fa, t * fb, t * fb, t * fb);
         }
-        for (const lines of [this.front, this.behind]) {
+        for (const lines of [this.glow, this.front, this.behind]) {
             lines.geometry.dispose();
             lines.geometry = new LineSegmentsGeometry();
             if (positions.length) {
@@ -202,6 +211,7 @@ export class WristMap {
         // die Linien brauchen die Größe des Bildes für ihre Breite
         const size = this.renderer.getSize(new THREE.Vector2());
         this.front.material.resolution.copy(size);
+        this.glow.material.resolution.copy(size);
         this.behind.material.resolution.copy(size);
     }
 }
