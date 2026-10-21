@@ -542,7 +542,14 @@ export function buildGeometry(level, modelBoxes = []) {
                     // Durchgang zu einem Raum mit anderem Boden oder anderer Decke:
                     // eine Stufe darunter, ein Stück Wand darüber, und dazwischen
                     // eine Decke zwischen zwei Räumen übereinander
-                    for (const [low, high, between] of gaps(bottom, top, open)) {
+                    // am Rand eines Lochs: über der eigenen Decke ist es die Decke
+                    // zwischen den beiden Räumen, auch wo dahinter Wand ist (an den Seiten)
+                    const own = [ceiling(a[0], a[1], room), ceiling(b[0], b[1], room)];
+                    const bands = gaps(bottom, top, open).flatMap(([low, high, between]) => {
+                        const inside = capped && !between && (own[0] > low[0] + 0.01 || own[1] > low[1] + 0.01) && (own[0] < high[0] - 0.01 || own[1] < high[1] - 0.01);
+                        return inside ? [[low, own, false], [own, high, true]] : [[low, high, between]];
+                    });
+                    for (const [low, high, between] of bands) {
                         // am Rand eines Lochs: über der Decke des Nachbarn bis an den Boden
                         // darüber ist es die Decke zwischen den beiden Räumen
                         const slab = between || (capped && (low[0] > bottom[0] + 0.01 || low[1] > bottom[1] + 0.01));
@@ -559,6 +566,19 @@ export function buildGeometry(level, modelBoxes = []) {
                             // die Wand unter einer hohen Tür steht auf dem Boden: mit Sockelleiste
                             const flat = Math.abs(bottom[0] - bottom[1]) < 1e-3 && Math.abs(low[0] - bottom[0]) < 1e-3 && Math.abs(low[1] - bottom[1]) < 1e-3;
                             if (flat && high[0] - low[0] > 1 && !level.poolAt(x, z, k)) skirting(room, direction, a, b, bottom[0]);
+                        }
+                    }
+                    // stößt das Loch an eine Wand des Raums darüber: dort steht seine
+                    // Wand, vom Boden bis an die Decke (die Wand von unten endet am
+                    // Boden), ohne Sockelleiste, denn darunter ist kein Boden
+                    const upper = capped && level.rooms[above].layer;
+                    if (capped && at(nx, nz, upper) !== 'floor') {
+                        const low = top, high = [h(a[0], a[1]), h(b[0], b[1])];
+                        if (high[0] > low[0] + 0.01 || high[1] > low[1] + 0.01) {
+                            const corners = [[a[0] * cell, low[0], a[1] * cell], [b[0] * cell, low[1], b[1] * cell],
+                                [b[0] * cell, high[1], b[1] * cell], [a[0] * cell, high[0], a[1] * cell]];
+                            add('wall', above, corners, texels(cell), texels(Math.max(high[0] - low[0], high[1] - low[1])));
+                            crown(above, direction, a, b, high[0], high[1]);
                         }
                     }
                 }
