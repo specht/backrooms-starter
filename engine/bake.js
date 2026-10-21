@@ -325,13 +325,22 @@ uint pcg() {
 }
 float random() { return float(pcg()) / 4294967296.0; }
 
+// Wo auf einer Leuchte ein Strahl des direkten Lichts endet (lampSample,
+// < 0: zufällig): Die Leuchte ist in 8 × 8 Felder geteilt, und jeder Punkt
+// der Lichtkarte kommt in den 64 Durchgängen in jedes Feld genau einmal,
+// darin an eine zufällige Stelle (directShader). So wird der Halbschatten mit
+// derselben Zahl an Strahlen glatter als mit Zufall allein.
+vec2 lampSample = vec2(-1.0);
+vec2 lampRandom() { return lampSample.x >= 0.0 ? lampSample : vec2(random(), random()); }
+
 // Eine Leuchte liegt in der Ebene der Decke über ihr. Der dritte Texel der
 // Leuchte (e) trägt in .b und .a, wie steil diese Decke in x und in z
 // ansteigt (0 und 0: waagerecht). lampPoint ist ein zufälliger Punkt auf der
 // Leuchte, lampNormal zeigt von ihr in den Raum.
 vec3 lampPoint(vec4 a, vec4 b, vec4 e) {
     vec3 u = normalize(vec3(1.0, e.b, 0.0)), v = normalize(vec3(0.0, e.a, 1.0));
-    return a.xyz + u * ((random() - 0.5) * a.w) + v * ((random() - 0.5) * b.w);
+    vec2 r = lampRandom();
+    return a.xyz + u * ((r.x - 0.5) * a.w) + v * ((r.y - 0.5) * b.w);
 }
 vec3 lampNormal(vec4 e) { return normalize(vec3(e.b, -1.0, e.a)); }
 
@@ -346,7 +355,8 @@ float beamFacing(float along, float edge) {
 // wie viel Fläche einer Leuchte unter der Decke sie gleichkommt.
 vec3 lightPoint(vec4 a, vec4 b, vec4 e) {
     if (a.w >= 0.0) return lampPoint(a, b, e);
-    float z = 2.0 * random() - 1.0, phi = 6.2831853 * random(), r = sqrt(1.0 - z * z);
+    vec2 q = lampRandom();
+    float z = 2.0 * q.x - 1.0, phi = 6.2831853 * q.y, r = sqrt(1.0 - z * z);
     return a.xyz + vec3(r * cos(phi), z, r * sin(phi)) * (-a.w);
 }
 // wie viel die Leuchte zur Fläche hin abgibt (l zeigt von der Fläche zur Leuchte)
@@ -657,9 +667,12 @@ void main() {
     vec3 start = surfacePoint(n);
     vec3 light = vec3(0.0);
     vec4 flickering = vec4(0.0);
-    // Wo die Lichtkarte feiner ist (bei Modellen), hat jeder Punkt weniger
-    // Nachbarn, mit denen sein Rauschen verschwimmt: dort mehr Proben je Durchgang
-    int samples = int(clamp(vDensity, 1.0, 8.0) + 0.5);
+    // Ein Strahl je Leuchte und Durchgang, auch wo die Lichtkarte feiner ist
+    // (bei Modellen): Mehr Proben dort kosteten die meiste Zeit beim Backen,
+    // und mit den Feldern auf der Leuchte braucht es sie nicht. Die Schleife
+    // bleibt so gebaut (k bis 8, i bis 1024): Anders gebaut, wurde der
+    // Shader auf der Grafikkarte so langsam, dass sie aufgab.
+    int samples = 1;
 
     for (int k = 0; k < 8; k++) {
     if (k >= samples) break;
@@ -674,7 +687,13 @@ void main() {
         float distance = length(toCenter);
         if (distance > range) continue;
         float fade = 1.0 - smoothstep(0.7 * range, range, distance);
-        // ein zufälliger Punkt auf der Leuchte
+        // ein Punkt auf der Leuchte: im Feld cell, das dieser Punkt der
+        // Lichtkarte in diesem Durchgang dran hat (pass · 37 trifft in 64
+        // Durchgängen jedes Feld einmal; der Versatz je Punkt und Leuchte, damit
+        // Nachbarn nicht gleichzeitig dasselbe Feld nehmen). Nur mit float:
+        // Mit uint und Bit-Operationen hier wurde der Shader viel zu langsam.
+        float cell = mod(float(pass) * 37.0 + mod(floor(gl_FragCoord.x) * 13.0 + floor(gl_FragCoord.y) * 29.0 + float(i) * 7.0, 64.0), 64.0);
+        lampSample = (vec2(mod(cell, 8.0), floor(cell / 8.0)) + vec2(random(), random())) / 8.0;
         vec3 s = lightPoint(a, b, c);
         vec3 l = s - start;
         float d2 = dot(l, l);
@@ -1348,6 +1367,9 @@ export class LightBaker {
 
     startBounce() {
         this.bounce += 1;
+        // die Stücke wieder groß: wurden sie beim direkten Licht kleiner (ein
+        // Bild dauerte zu lange), müssten sonst alle Reflexionen mit ihnen auskommen
+        this.wantedTile = Math.min(TILE, this.atlasSize);
         this.gatherPasses = 0;
         if (this.done) return;
         // abgeben: direktes Licht plus die letzte fertige Reflexion
