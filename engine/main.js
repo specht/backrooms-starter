@@ -11,7 +11,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { loadLevel } from './level.js';
-import { buildGeometry, EDGE_ANGLE } from './geometry.js';
+import { buildGeometry, outlineEdges } from './geometry.js';
 import { buildGrid, LightBaker, lightRange, channelColors, gpuMark } from './bake.js';
 import { createStats } from './stats.js';
 import { atlasView } from './atlasview.js';
@@ -1319,7 +1319,7 @@ async function start() {
     const blueprint = new LineMaterial({ color: LINE_COLOR, linewidth: 1.25 * renderer.getPixelRatio(), transparent: true, opacity: 0.85, toneMapped: false,
         polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -8 });
     for (const { kind, room, geometry: mesh } of geometry.meshes) {
-        const lines = new LineSegments2(new LineSegmentsGeometry().fromEdgesGeometry(new THREE.EdgesGeometry(mesh, EDGE_ANGLE)), blueprint);
+        const lines = new LineSegments2(new LineSegmentsGeometry().fromEdgesGeometry(outlineEdges(mesh)), blueprint);
         lines.userData.room = room;
         scene.add(lines);
         if (kind === 'ceiling') aboveRooms.push(lines);

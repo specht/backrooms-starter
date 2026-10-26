@@ -3,7 +3,7 @@
 // Modelle weiße, der Pfeil bist du. Ziehen mit der Maus dreht, das Mausrad
 // zoomt.
 import * as THREE from 'three';
-import { EDGE_ANGLE } from './geometry.js';
+import { outlineEdges } from './geometry.js';
 import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
@@ -104,7 +104,7 @@ export class Automap {
         for (const { kind, room, geometry: mesh } of geometry.meshes) {
             const color = roomColor(room).multiplyScalar(kind === 'floor' ? 0.55 : 1);
             const opacity = kind === 'ceiling' ? 0.35 : 0.9;
-            const edges = new LineSegmentsGeometry().fromEdgesGeometry(new THREE.EdgesGeometry(mesh, EDGE_ANGLE));
+            const edges = new LineSegmentsGeometry().fromEdgesGeometry(outlineEdges(mesh));
             const line = (extra) => new LineMaterial({ color, linewidth: LINE_WIDTH, toneMapped: false, transparent: true, opacity, depthWrite: false, ...extra });
             for (const [group, extra] of [[this.linesBehind, { opacity: opacity * HIDDEN, depthFunc: THREE.GreaterDepth }],
                 [this.linesThin, { opacity: opacity * UNDER_CEILING, linewidth: UNDER_CEILING_WIDTH }], [this.linesFront, {}]]) {

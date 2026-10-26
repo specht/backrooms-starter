@@ -208,6 +208,8 @@ function parseRoom(id, source) {
     // Löcher: _ im Boden (darunter liegt ein anderer Raum), ^ in der Decke
     // (darüber einer). Beide dürfen viele Felder groß sein.
     const holes = { down: [], up: [] };
+    // Wandfelder mit runden Ecken (round = radius): ein Buchstabe statt #
+    const rounds = [];
     let start = null;
     rows.forEach((row, z) => {
         for (let x = 0; x < width; x++) {
@@ -233,6 +235,16 @@ function parseRoom(id, source) {
             } else if (/[A-Za-z]/.test(char)) {
                 const entry = legend[char];
                 if (!entry) throw new LevelError(file, row.line, `${char} is in the floor plan, but there is no section [${char}] saying what it is.`);
+                const round = values(entry).round;
+                if (round !== undefined) {
+                    // eine Wand wie #, ihre Ecken zum Raum hin rund (level: corners)
+                    if (!(typeof round === 'number' && round >= 0.05 && round <= 20)) {
+                        throw new LevelError(file, entry.line, `round = ${round}: expected the radius of the round corners in metres (0.05 to 20), for example round = 1.5.`);
+                    }
+                    rounds.push({ char, x, z, radius: round, line: entry.line });
+                    cells.push('wall');
+                    continue;
+                }
                 const thing = makeThing(file, char, entry, x, z);
                 things.push(thing);
                 // in = W bei einer Leuchte, einem Block oder einem Modell: Das Feld
@@ -312,7 +324,7 @@ function parseRoom(id, source) {
     }
     const pool = things.find((thing) => thing.type === 'pool');
     if (pool && settings.ramp) throw new LevelError(file, legend[pool.char].line, 'a pool needs a level floor: a room with a pool can\'t have a ramp.');
-    return { id, file, settings, heights, width, depth, cells, things, doors, links, start, holes, below };
+    return { id, file, settings, heights, width, depth, cells, things, doors, links, start, holes, below, rounds };
 }
 
 // offset = x, y, z: ein Ding um so viele Meter aus der Mitte seines Felds
@@ -897,6 +909,102 @@ export async function loadLevel(levelFile, fetchText) {
         }
     }
 
+    // Runde Ecken (round = r an einem Wandfeld): An jeder Ecke des Wandfelds,
+    // an der zwei Wände des Raums sich treffen (innen: die Nachbarn an der
+    // Ecke Wand, schräg gegenüber Boden), oder an der die Wand in den Raum
+    // ragt (außen: die Nachbarn und schräg gegenüber Boden), wird die Wand ein
+    // Viertelkreis mit Radius r. Er liegt im Quadrat zwischen der Ecke und der
+    // Mitte des Kreises: innen ganz im Boden des Raums (was zwischen Kreis und
+    // Ecke liegt, ist Wand), außen ganz in der Wand (was zwischen Kreis und
+    // Ecke liegt, ist Boden). Dieses Stück zwischen Kreis und Ecke ist der
+    // Zwickel. Alles in Feldern des Bauwerks.
+    const corners = [];
+    for (const room of roomList) {
+        const k = room.layer;
+        const mine = (x, z) => kindAt(x, z, k) === 'floor' && owner[index(x, z, k)] === room.index;
+        const solid = (x, z) => kindAt(x, z, k) !== 'floor';
+        for (const mark of room.rounds) {
+            const gx = room.ox + mark.x, gz = room.oz + mark.z, r = mark.radius / settings.cell;
+            const found = [];
+            for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+                // die Ecke des Felds in Richtung sx, sz: a und b die Nachbarn an ihr, d schräg gegenüber
+                const a = [gx + sx, gz], b = [gx, gz + sz], d = [gx + sx, gz + sz];
+                let concave;
+                if (mine(...d) && solid(...a) && solid(...b)) concave = true;
+                else if (mine(...d) && mine(...a) && mine(...b)) concave = false;
+                else continue;
+                const vertex = [gx + (sx > 0 ? 1 : 0), gz + (sz > 0 ? 1 : 0)];
+                // von der Ecke ins Quadrat: innen in den Raum, außen in die Wand
+                const q = concave ? [sx, sz] : [-sx, -sz];
+                const centre = [vertex[0] + q[0] * r, vertex[1] + q[1] * r];
+                found.push({ room: room.index, layer: k, concave, vertex, centre, q, r, char: mark.char, line: mark.line, column: mark.x + 1, row: mark.z + 1,
+                    box: [Math.min(vertex[0], centre[0]), Math.max(vertex[0], centre[0]), Math.min(vertex[1], centre[1]), Math.max(vertex[1], centre[1])] });
+            }
+            if (!found.length) {
+                throw new LevelError(room.file, mark.line, `round = ${mark.radius}: the wall field ${mark.char} (column ${mark.x + 1}, row ${mark.z + 1}) has no corner to round. Put the letter instead of the # where two walls of the room meet, or at the end or the corner of a wall that juts into the room.`);
+            }
+            corners.push(...found);
+        }
+    }
+    for (const c of corners) {
+        const room = roomList[c.room], k = c.layer;
+        const [x0, x1, z0, z1] = c.box;
+        const fail = (text) => { throw new LevelError(room.file, c.line, `round = ${c.r * settings.cell}: the corner at the wall field ${c.char} (column ${c.column}, row ${c.row}) ${text}`); };
+        const plain = (x, z) => {
+            const at = index(x, z, k);
+            return kindAt(x, z, k) === 'floor' && owner[at] === room.index && !doorCells.has(at) && !water.has(at) && !lifted.has(at) && !openCeiling.has(at) && !arches.has(at);
+        };
+        // die Felder, die das Quadrat berührt
+        const xs = [], zs = [];
+        for (let x = Math.floor(x0 + 1e-9); x < Math.ceil(x1 - 1e-9); x++) xs.push(x);
+        for (let z = Math.floor(z0 + 1e-9); z < Math.ceil(z1 - 1e-9); z++) zs.push(z);
+        for (const x of xs) for (const z of zs) {
+            if (c.concave && !plain(x, z)) fail(`needs plain floor of the room inside its radius, without a door, a pool, stairs, a platform or a hole: make the radius smaller.`);
+            if (!c.concave && kindAt(x, z, k) !== 'wall') fail(`reaches out of the wall: make the radius smaller (at most as thick as the wall).`);
+        }
+        // die beiden Wände, die er verbindet, je so lang wie der Radius: innen
+        // dahinter Wand (keine Tür), außen davor der Boden des Raums
+        const across = [
+            ...xs.map((x) => [x, c.q[1] > 0 ? c.vertex[1] - 1 : c.vertex[1]]),
+            ...zs.map((z) => [c.q[0] > 0 ? c.vertex[0] - 1 : c.vertex[0], z]),
+        ];
+        for (const [x, z] of across) {
+            if (c.concave && kindAt(x, z, k) === 'floor') fail('needs wall on both sides for the length of its radius, without a door: make the radius smaller.');
+            if (!c.concave && !plain(x, z)) fail('needs plain floor of the room along both sides of the wall for the length of its radius: make the radius smaller.');
+        }
+        // Boden und Decke eben über dem Quadrat (oder gleichmäßig schräg, nicht über einen First)
+        for (const height of [room.floorAt, room.ceilingAt]) {
+            const h = (x, z) => height(x - room.ox, z - room.oz);
+            const corner = h(x0, z0) + h(x1, z1), other = h(x1, z0) + h(x0, z1), middle = 2 * h((x0 + x1) / 2, (z0 + z1) / 2);
+            if (Math.abs(corner - other) > 1e-3 || Math.abs(corner - middle) > 1e-3) fail('lies under a ceiling that bends there (the ridge of a gable): make the radius smaller.');
+        }
+        // nichts im Zwickel einer inneren Ecke
+        for (const thing of room.things) {
+            const [dx, , dz] = thing.offset ?? [0, 0, 0];
+            const px = room.ox + thing.x + 0.5 + dx / settings.cell, pz = room.oz + thing.z + 0.5 + dz / settings.cell;
+            if (c.concave && inSliver(c, px, pz)) fail(`has ${thing.char} behind its curve, inside the wall: make the radius smaller or move ${thing.char}.`);
+        }
+    }
+    for (let i = 0; i < corners.length; i++) {
+        for (let j = i + 1; j < corners.length; j++) {
+            const a = corners[i], b = corners[j];
+            if (a.layer !== b.layer || a.box[0] >= b.box[1] - 1e-9 || b.box[0] >= a.box[1] - 1e-9 || a.box[2] >= b.box[3] - 1e-9 || b.box[2] >= a.box[3] - 1e-9) continue;
+            throw new LevelError(roomList[a.room].file, a.line, `round = ${a.r * settings.cell}: the round corners at the wall fields ${a.char} (column ${a.column}, row ${a.row}) and ${b.char} (column ${b.column}, row ${b.row}) overlap: make the radius smaller.`);
+        }
+    }
+    // die runden Ecken, deren Quadrat ein Feld (Schicht k) berührt
+    const cornersOf = new Map();
+    for (const c of corners) {
+        for (let x = Math.floor(c.box[0] + 1e-9); x < Math.ceil(c.box[1] - 1e-9); x++) {
+            for (let z = Math.floor(c.box[2] + 1e-9); z < Math.ceil(c.box[3] - 1e-9); z++) {
+                const at = index(x, z, c.layer);
+                if (!cornersOf.has(at)) cornersOf.set(at, []);
+                cornersOf.get(at).push(c);
+            }
+        }
+    }
+    const cornersAt = (x, z, k) => (x < 0 || z < 0 || x >= width || z >= depth ? [] : cornersOf.get(index(x, z, k)) ?? []);
+
     // Übereinander heißt: Der obere Boden liegt nirgends unter der Decke des
     // unteren Raums (an allen vier Ecken eines Felds), auch nicht der Boden eines Beckens
     for (let z = 0; z < depth; z++) {
@@ -992,9 +1100,26 @@ export async function loadLevel(levelFile, fetchText) {
         return null;
     };
 
+    // Die Böden an einer Stelle (px, pz in Feldern, auch zwischen den
+    // Feldgrenzen), wie slabs, mit den runden Ecken: Im Zwickel einer inneren
+    // ist keiner, im Zwickel einer äußeren der des Raums (round: sein Feld ist Wand)
+    const slabsAt = (px, pz) => {
+        const cx = Math.floor(px), cz = Math.floor(pz);
+        const list = slabs(cx, cz).filter(({ layer }) => !cornersAt(cx, cz, layer).some((c) => c.concave && inSliver(c, px, pz)));
+        for (let k = 0; k < layers; k++) {
+            const c = cornersAt(cx, cz, k).find((corner) => !corner.concave && inSliver(corner, px, pz));
+            if (c) list.push({ layer: k, room: c.room, round: true });
+        }
+        return list;
+    };
+    // die Decke über einem Boden aus slabsAt, an einer Stelle (in Feldern)
+    const ceilingOfSlab = (slab, cx, cz) => (slab.round ? (x, z) => level.ceilingAt(x, z, slab.room) : ceilingOfCell(cx, cz, slab.layer));
+
     const level = {
         settings, width, depth, layers, cells, owner, rooms: roomList, things, start, twistedDoors,
-        index, kindAt, slabs, ceilingOfCell, pools,
+        index, kindAt, slabs, slabsAt, ceilingOfCell, ceilingOfSlab, pools,
+        // die runden Ecken (round = r), und die, deren Quadrat ein Feld in Schicht k berührt
+        corners, cornersAt,
         // der Bogen einer runden Tür an einem Feld in Schicht k, oder null
         archAt: (x, z, k = 0) => (x < 0 || z < 0 || x >= width || z >= depth ? null : arches.get(index(x, z, k)) ?? null),
         // das Becken an einem Feld in Schicht k, oder null
@@ -1027,7 +1152,7 @@ export async function loadLevel(levelFile, fetchText) {
         roomAtPoint(x, z, y = null) {
             const cx = Math.floor(x / settings.cell), cz = Math.floor(z / settings.cell);
             let best = -1, bestFloor = -Infinity, lowest = -1, lowestFloor = Infinity;
-            for (const slab of slabs(cx, cz)) {
+            for (const slab of slabsAt(x / settings.cell, z / settings.cell)) {
                 const floor = level.floorAt(x / settings.cell, z / settings.cell, slab.room) - sunk(cx, cz, slab.layer) + lift(cx, cz, slab.layer, x / settings.cell, z / settings.cell, true);
                 if (floor < lowestFloor) { lowest = slab.room; lowestFloor = floor; }
                 if (y !== null && floor <= y + STEP && floor > bestFloor) { best = slab.room; bestFloor = floor; }
@@ -1057,9 +1182,9 @@ export async function loadLevel(levelFile, fetchText) {
         // margin < 0: nur wirklich zwischen Boden und Decke
         openAt(x, y, z, margin = 0.01) {
             const cx = Math.floor(x / settings.cell), cz = Math.floor(z / settings.cell);
-            return slabs(cx, cz).some(({ room, layer }) =>
-                y >= level.floorAt(x / settings.cell, z / settings.cell, room) - sunk(cx, cz, layer) + lift(cx, cz, layer, x / settings.cell, z / settings.cell) - margin &&
-                y <= ceilingOfCell(cx, cz, layer)(x / settings.cell, z / settings.cell) + margin);
+            return slabsAt(x / settings.cell, z / settings.cell).some((slab) =>
+                y >= level.floorAt(x / settings.cell, z / settings.cell, slab.room) - sunk(cx, cz, slab.layer) + lift(cx, cz, slab.layer, x / settings.cell, z / settings.cell) - margin &&
+                y <= ceilingOfSlab(slab, cx, cz)(x / settings.cell, z / settings.cell) + margin);
         },
     };
     built = level;
@@ -1074,6 +1199,15 @@ export async function loadLevel(levelFile, fetchText) {
         }
     }
     return level;
+}
+
+// Liegt eine Stelle (px, pz in Feldern) im Zwickel einer runden Ecke: im
+// Quadrat zwischen Ecke und Mitte, weiter als der Radius von der Mitte?
+// Innen ist dort Wand, außen Boden.
+export function inSliver(corner, px, pz) {
+    const [x0, x1, z0, z1] = corner.box;
+    if (px < x0 || px > x1 || pz < z0 || pz > z1) return false;
+    return (px - corner.centre[0]) ** 2 + (pz - corner.centre[1]) ** 2 > corner.r * corner.r;
 }
 
 // Ein Feld mit Boden darf nicht an »nichts« grenzen, sonst fiele man hinaus.

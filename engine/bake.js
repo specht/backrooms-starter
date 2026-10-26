@@ -95,6 +95,27 @@ export async function buildGrid(level, models, maxHeight, maxTextureSize = 2048)
             }
         }
     }
+    // Runde Ecken (level.js): je Feld bis zu zwei, die Mitte (Meter), der
+    // Radius und die Art: innen positiv, außen negativ, der Betrag sagt, in
+    // welche Richtung von der Ecke aus das Quadrat liegt (1 + x nach Westen +
+    // 2 · z nach Norden). Ein Wandfeld mit einer äußeren hat Luft im Zwickel:
+    // Für die Strahlen ist es ein Feld mit Boden und Decke des Raums, in dem
+    // nur der Zwickel frei ist.
+    const roundInfo = [new Float32Array(count * 4), new Float32Array(count * 4)];
+    for (const c of level.corners) {
+        const code = (c.concave ? 1 : -1) * (1 + (c.q[0] > 0 ? 0 : 1) + (c.q[1] > 0 ? 0 : 2));
+        for (let x = Math.floor(c.box[0] + 1e-9); x < Math.ceil(c.box[1] - 1e-9); x++) {
+            for (let z = Math.floor(c.box[2] + 1e-9); z < Math.ceil(c.box[3] - 1e-9); z++) {
+                const i = level.index(x, z, c.layer) * 4;
+                const slot = roundInfo[0][i + 3] === 0 ? roundInfo[0] : roundInfo[1];
+                slot.set([c.centre[0] * cell, c.centre[1] * cell, c.r * cell, code], i);
+                if (c.concave) continue;
+                info[i] = 1;
+                ceilings.set([level.ceilingAt(x, z, c.room), level.ceilingAt(x + 1, z, c.room), level.ceilingAt(x, z + 1, c.room), level.ceilingAt(x + 1, z + 1, c.room)], i);
+                floors.set([level.floorAt(x, z, c.room), level.floorAt(x + 1, z, c.room), level.floorAt(x, z + 1, c.room), level.floorAt(x + 1, z + 1, c.room)], i);
+            }
+        }
+    }
     // Ein Block gilt in jedem Feld, das er bedeckt (pro Feld einer), in der Schicht seines Raums
     for (const block of level.things.filter((t) => t.type === 'block')) {
         const k = level.rooms[block.room].layer;
@@ -200,6 +221,7 @@ export async function buildGrid(level, models, maxHeight, maxTextureSize = 2048)
     };
     return {
         info: texture(info), ceilings: texture(ceilings), floors: texture(floors), blockMin: texture(blockMin), blockMax: texture(blockMax), arches: texture(archInfo), stairs: texture(stairInfo),
+        rounds: roundInfo.map(texture),
         voxels, modelGrids, modelCount: grids.length, cells: new THREE.Vector2(width, depth), layers, cell,
     };
 }
@@ -307,6 +329,8 @@ uniform sampler2D blockMin;
 uniform sampler2D blockMax;
 uniform sampler2D cellArch;    // runde Türen (buildGrid)
 uniform sampler2D cellStairs;  // Treppen (buildGrid)
+uniform sampler2D cellRound0;  // runde Ecken (buildGrid), bis zu zwei je Feld
+uniform sampler2D cellRound1;
 uniform vec2 cellCount;
 uniform int layerCount;        // Räume übereinander: so viele Grundrisse untereinander in den Texturen
 uniform float cellMeters;
@@ -465,6 +489,28 @@ float roundHit(vec3 a, vec3 dir, vec3 lo, vec3 hi) {
     return tFar < max(tNear, 0.0) ? -1.0 : max(tNear, 0.0);
 }
 
+// Wo ist ein Strahl im Zwickel einer runden Ecke c (im Quadrat zwischen Ecke
+// und Mitte, weiter als der Radius von der Mitte)? Zwei Stücke von t, (x, y)
+// und (z, w), leer, wo das erste größer ist als das zweite.
+vec4 sliverSpans(vec3 a, vec3 dir, vec4 c) {
+    float code = abs(c.w) - 1.0;
+    vec2 q = vec2(mod(code, 2.0) < 0.5 ? 1.0 : -1.0, code < 1.5 ? 1.0 : -1.0);
+    vec2 corner = c.xy - c.z * q;
+    vec2 lo = min(corner, c.xy), hi = max(corner, c.xy);
+    // im Quadrat: von b0 bis b1
+    vec2 inv = 1.0 / vec2(abs(dir.x) < 1e-9 ? 1e-9 : dir.x, abs(dir.z) < 1e-9 ? 1e-9 : dir.z);
+    vec2 s0 = (lo - a.xz) * inv, s1 = (hi - a.xz) * inv;
+    float b0 = max(min(s0.x, s1.x), min(s0.y, s1.y)), b1 = min(max(s0.x, s1.x), max(s0.y, s1.y));
+    // im Kreis: von k0 bis k1 (eine quadratische Gleichung wie bei roundHit)
+    vec2 o = a.xz - c.xy, d = dir.xz;
+    float A = dot(d, d), B = 2.0 * dot(o, d), C = dot(o, o) - c.z * c.z;
+    float disc = B * B - 4.0 * A * C;
+    if (A < 1e-12) return C < 0.0 ? vec4(1.0, 0.0, 1.0, 0.0) : vec4(b0, b1, 1.0, 0.0);   // senkrecht: ganz im Kreis oder ganz draußen
+    if (disc <= 0.0) return vec4(b0, b1, 1.0, 0.0);
+    float root = sqrt(disc);
+    return vec4(b0, min(b1, (-B - root) / (2.0 * A)), max(b0, (-B + root) / (2.0 * A)), b1);
+}
+
 // um die senkrechte Achse gedreht, wie rotation.y in three.js
 vec3 turnY(vec3 v, float angle) {
     float c = cos(angle), s = sin(angle);
@@ -531,6 +577,29 @@ float trace(vec3 a, vec3 dir, float maxLength) {
         float g1 = a.y + dir.y * tExit - mix(mix(g.x, g.y, q1.x), mix(g.z, g.w, q1.x), q1.y);
         if (g0 <= 0.0) hit = min(hit, tEnter);
         else if (g1 < 0.0) hit = min(hit, tEnter + (tExit - tEnter) * g0 / (g0 - g1));
+        // runde Ecken: innen ist der Zwickel Wand, außen ist nur er Luft
+        vec4 round0 = texelFetch(cellRound0, at, 0);
+        if (round0.w != 0.0) {
+            float end = min(tExit, hit);
+            vec4 round1 = texelFetch(cellRound1, at, 0);
+            vec4 p0 = sliverSpans(a, dir, round0), p1 = round1.w != 0.0 ? sliverSpans(a, dir, round1) : vec4(1.0, 0.0, 1.0, 0.0);
+            vec4 starts = vec4(p0.x, p0.z, p1.x, p1.z), ends = vec4(p0.y, p0.w, p1.y, p1.w);
+            if (round0.w > 0.0) {
+                // innen: der erste Zwickel auf dem Weg
+                for (int i = 0; i < 4; i++) {
+                    float s = max(starts[i], tEnter);
+                    if (s <= ends[i] && s <= end) hit = min(hit, s);
+                }
+            } else {
+                // außen: die erste Stelle, die in keinem Zwickel liegt; wer im
+                // Zwickel das Feld verlässt, trifft hier nichts
+                float t = tEnter;
+                for (int n = 0; n < 4; n++) {
+                    for (int i = 0; i < 4; i++) if (t >= starts[i] - 1e-5 && t < ends[i]) t = ends[i];
+                }
+                if (t < end - 1e-5) hit = min(hit, t);
+            }
+        }
         // eine runde Tür: Luft nur in ihrer Öffnung (gerade Seiten, oben ein
         // Halbkreis). Am Stück entlang in kleinen Schritten nachgesehen.
         vec4 arch = texelFetch(cellArch, at, 0);
@@ -642,12 +711,40 @@ vec3 outOfBox(vec3 p, vec3 n, vec3 lo, vec3 hi, bool isRound) {
     return q;
 }
 
+// Ein Punkt der Lightmap von Boden oder Decke hinter dem Kreis einer runden
+// Ecke (im Zwickel einer inneren, im Kreis einer äußeren) rückt auf den
+// Kreis, knapp davor. Solche Punkte liegen am Rand: Ein Rechteck aus Boden
+// wird ganz gebacken, auch wo es der Zwickel abschneidet, und beim Zeichnen
+// mischen sich die Punkte am Kreis mit ihnen. Schwarz färbten sie ab wie bei
+// einem Block (outOfBlocks).
+vec3 outOfCorners(vec3 p, vec3 n) {
+    if (abs(n.y) < 0.5) return p;
+    ivec2 cell = ivec2(floor(p.xz / cellMeters));
+    if (any(lessThan(cell, ivec2(0))) || any(greaterThanEqual(cell, ivec2(cellCount)))) return p;
+    int k = layerAt(cell, p.xz / cellMeters - vec2(cell), p.y);
+    if (k < 0) return p;
+    ivec2 at = ivec2(cell.x, cell.y + k * int(cellCount.y));
+    for (int i = 0; i < 2; i++) {
+        vec4 c = i == 0 ? texelFetch(cellRound0, at, 0) : texelFetch(cellRound1, at, 0);
+        if (c.w == 0.0) continue;
+        float code = abs(c.w) - 1.0;
+        vec2 q = vec2(mod(code, 2.0) < 0.5 ? 1.0 : -1.0, code < 1.5 ? 1.0 : -1.0);
+        vec2 corner = c.xy - c.z * q;
+        if (any(lessThan(p.xz, min(corner, c.xy) - 1e-4)) || any(greaterThan(p.xz, max(corner, c.xy) + 1e-4))) continue;
+        vec2 o = p.xz - c.xy;
+        float d = max(length(o), 1e-6);
+        if (c.w > 0.0 && d > c.z - 0.01) { vec2 xz = c.xy + o / d * (c.z - 0.02); return vec3(xz.x, p.y, xz.y); }
+        if (c.w < 0.0 && d < c.z + 0.01) { vec2 xz = c.xy + o / d * (c.z + 0.02); return vec3(xz.x, p.y, xz.y); }
+    }
+    return p;
+}
+
 // Die Stelle, von der die Strahlen ausgehen: auf der Fläche, etwas davor.
 // Wände, Decken und Blöcke sind genau: 2 cm genügen.
 vec3 surfacePoint(out vec3 n) {
     n = normalize(vNormal);
     vec3 inset = 0.01 * (1.0 - abs(n));
-    vec3 p = outOfBlocks(clamp(vWorld, vMin + inset, vMax - inset), n);
+    vec3 p = outOfCorners(outOfBlocks(clamp(vWorld, vMin + inset, vMax - inset), n), n);
     return p + n * 0.02;
 }
 `;
@@ -1125,6 +1222,8 @@ export class LightBaker {
             blockMax: { value: voxels.blockMax },
             cellArch: { value: voxels.arches },
             cellStairs: { value: voxels.stairs },
+            cellRound0: { value: voxels.rounds[0] },
+            cellRound1: { value: voxels.rounds[1] },
             cellCount: { value: voxels.cells },
             cellMeters: { value: voxels.cell },
             top: { value: geometry.maxHeight + 0.01 },

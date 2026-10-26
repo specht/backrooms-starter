@@ -6,6 +6,86 @@ import * as THREE from 'three';
 export const EDGE_ANGLE = 4;          // ab so vielen Grad Knick ist eine Kante eine Kante (Linien, Automap)
 const GUTTER = 1;                     // Rand um jedes Rechteck, gegen Nähte
 
+// Die Linien eines Meshs (Kanten E, Automap): wie THREE.EdgesGeometry die
+// Kanten, an denen zwei Dreiecke um mehr als angle Grad knicken, und den
+// Rand. Am Rand stoßen aber oft zwei Flächen in derselben Ebene aneinander,
+// deren Ecken nicht aufeinanderliegen (eine lange Kante neben zwei kurzen,
+// etwa am Viertelkreis einer runden Ecke): Dort knickt nichts, und dort ist
+// keine Linie. Je Gerade in einer Ebene bleibt nur, was auf einer Seite frei ist.
+export function outlineEdges(geometry, angle = EDGE_ANGLE) {
+    const position = geometry.attributes.position, index = geometry.index;
+    const count = index ? index.count : position.count;
+    const vertex = (i) => new THREE.Vector3().fromBufferAttribute(position, index ? index.getX(i) : i);
+    const round = (v, scale) => `${Math.round(v.x * scale)},${Math.round(v.y * scale)},${Math.round(v.z * scale)}`;
+    const edges = new Map();
+    for (let i = 0; i + 2 < count; i += 3) {
+        const corners = [vertex(i), vertex(i + 1), vertex(i + 2)];
+        const normal = new THREE.Triangle(...corners).getNormal(new THREE.Vector3());
+        if (normal.lengthSq() < 0.5) continue;   // ein Dreieck ohne Fläche
+        for (let j = 0; j < 3; j++) {
+            const a = corners[j], b = corners[(j + 1) % 3], ka = round(a, 1e4), kb = round(b, 1e4);
+            if (ka === kb) continue;
+            const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+            if (!edges.has(key)) edges.set(key, { a, b, sides: [] });
+            edges.get(key).sides.push({ normal, third: corners[(j + 2) % 3] });
+        }
+    }
+    const lines = [], lines2 = new Map();
+    const flat = Math.cos(angle * Math.PI / 180);
+    for (const { a, b, sides } of edges.values()) {
+        if (sides.length === 2 && sides[0].normal.dot(sides[1].normal) >= flat) continue;
+        if (sides.length !== 1) { lines.push(a, b); continue; }
+        // ein Stück Rand: auf welcher Geraden in welcher Ebene, auf welcher Seite die Fläche liegt
+        const { normal, third } = sides[0];
+        const along = b.clone().sub(a).normalize();
+        if (along.x < -1e-9 || (Math.abs(along.x) < 1e-9 && (along.y < -1e-9 || (Math.abs(along.y) < 1e-9 && along.z < 0)))) along.negate();
+        const foot = a.clone().addScaledVector(along, -a.dot(along));
+        const key = `${round(normal, 1e3)}|${round(along, 1e4)}|${round(foot, 1e4)}`;
+        const side = Math.sign(third.clone().sub(a).dot(normal.clone().cross(along)));
+        if (!lines2.has(key)) lines2.set(key, { along, foot, spans: [] });
+        const u0 = a.dot(along), u1 = b.dot(along);
+        lines2.get(key).spans.push([Math.min(u0, u1), Math.max(u0, u1), side]);
+    }
+    for (const { along, foot, spans } of lines2.values()) {
+        const cuts = [...new Set(spans.flatMap(([u0, u1]) => [u0, u1]))].sort((p, q) => p - q);
+        let from = null;
+        for (let i = 0; i + 1 <= cuts.length; i++) {
+            const middle = i + 1 < cuts.length ? (cuts[i] + cuts[i + 1]) / 2 : null;
+            const covered = (side) => middle !== null && spans.some(([u0, u1, s]) => s === side && u0 <= middle && middle <= u1);
+            const free = middle !== null && covered(1) !== covered(-1);
+            if (free && from === null) from = cuts[i];
+            if (!free && from !== null) {
+                lines.push(foot.clone().addScaledVector(along, from), foot.clone().addScaledVector(along, cuts[i]));
+                from = null;
+            }
+        }
+    }
+    const result = new THREE.BufferGeometry();
+    result.setAttribute('position', new THREE.Float32BufferAttribute(lines.flatMap((v) => [v.x, v.y, v.z]), 3));
+    return result;
+}
+
+// Ein Vieleck [[s, t], …], zugeschnitten auf das Rechteck s0..s1, t0..t1
+// (Sutherland-Hodgman: nacheinander an jeder der vier Seiten)
+function clipRectangle(polygon, s0, s1, t0, t1) {
+    let result = polygon;
+    for (const [axis, limit, keepAbove] of [[0, s0, true], [0, s1, false], [1, t0, true], [1, t1, false]]) {
+        const keep = (q) => (keepAbove ? q[axis] >= limit - 1e-9 : q[axis] <= limit + 1e-9);
+        const input = result;
+        result = [];
+        input.forEach((a, i) => {
+            const b = input[(i + 1) % input.length];
+            if (keep(a)) result.push(a);
+            if (keep(a) !== keep(b)) {
+                const t = (limit - a[axis]) / (b[axis] - a[axis]);
+                result.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+            }
+        });
+        if (result.length < 3) return [];
+    }
+    return result;
+}
+
 // Packt Rechtecke zeilenweise in ein Quadrat (»Regalbretter«).
 function packRectangles(rects) {
     const area = rects.reduce((sum, r) => sum + (r.w + 2 * GUTTER) * (r.h + 2 * GUTTER), 0);
@@ -192,7 +272,7 @@ function addDetail(faces, boxes) {
             const [p0, p1, p2, p3] = piece.corners;
             const atPiece = (s, t) => lerp(lerp(p0, p1, s), lerp(p3, p2, s), t);
             const detail = {
-                ...piece, detailOnly: true, density: factor, normals: undefined,
+                ...piece, detailOnly: true, density: factor, normals: undefined, chart: undefined, polygon: undefined,
                 corners: [atPiece(s0, t0), atPiece(s1, t0), atPiece(s1, t1), atPiece(s0, t1)],
                 w: Math.max(2, Math.round(piece.w * (s1 - s0) * factor)), h: Math.max(2, Math.round(piece.h * (t1 - t0) * factor)),
             };
@@ -242,7 +322,10 @@ export function buildGeometry(level, modelBoxes = []) {
     // eine Fläche ohne Fläche (alle Ecken auf einer Linie) gibt es nicht
     const add = (kind, room, corners, w, h, subdivide = 1) => {
         const normal = faceNormal(corners);
-        if (normal.some((v) => v !== 0)) faces.push({ kind, room, corners, normal, w, h, subdivide });
+        if (normal.every((v) => v === 0)) return null;
+        const face = { kind, room, corners, normal, w, h, subdivide };
+        faces.push(face);
+        return face;
     };
     // die Laibung einer Tür: heller Putz, für beide Räume gleich
     const lining = (room, corners, w, h) => {
@@ -308,6 +391,90 @@ export function buildGeometry(level, modelBoxes = []) {
         return result;
     };
 
+    // Runde Ecken (level.js): der Viertelkreis einer Ecke, so herum, wie die
+    // Wände laufen (wallEnds: von a nach b, der Raum auf der Seite von INWARD,
+    // also in Richtung (-d.z, d.x)). a0: der Winkel am Anfang, delta: wie weit (±90°).
+    const ROUND_STEPS = Math.ceil(90 / (EDGE_ANGLE - 0.5));   // Stücke je Viertelkreis, je unter EDGE_ANGLE Knick
+    const clamp01 = (v) => Math.min(1, Math.max(0, v));
+    const arcOf = (c) => {
+        let a0 = Math.atan2(c.vertex[1] - c.centre[1], 0);
+        let delta = Math.atan2(0, c.vertex[0] - c.centre[0]) - a0;
+        delta -= 2 * Math.PI * Math.round(delta / (2 * Math.PI));
+        const middle = a0 + delta / 2, sign = c.concave ? -1 : 1;
+        const n = [sign * Math.cos(middle), sign * Math.sin(middle)], run = [-Math.sin(middle) * delta, Math.cos(middle) * delta];
+        if (run[0] * n[1] - run[1] * n[0] < 0) { a0 += delta; delta = -delta; }
+        return { a0, delta };
+    };
+    // die Stelle bei f (0 bis 1, auch darüber hinaus) auf dem Bogen, off Meter vor der Wand (in den Raum), in Feldern
+    const arcPoint = (c, { a0, delta }, f, off = 0) => {
+        const angle = a0 + delta * f, radius = c.r + (c.concave ? -off : off) / cell;
+        return [c.centre[0] + Math.cos(angle) * radius, c.centre[1] + Math.sin(angle) * radius];
+    };
+    // die Richtung in den Raum: innen zur Mitte hin, außen von ihr weg
+    const arcInward = (c, { a0, delta }, f) => {
+        const angle = a0 + delta * f, sign = c.concave ? -1 : 1;
+        return [sign * Math.cos(angle), sign * Math.sin(angle)];
+    };
+    // Ein Vieleck (in Feldern) ohne den Zwickel der inneren runden Ecke c:
+    // Wo sein Rand in den Zwickel geht, läuft er den Kreis entlang, über
+    // dieselben Punkte wie die Wand dort, bis er wieder herauskommt.
+    const withoutSliver = (polygon, c) => {
+        const arc = arcOf(c), [bx0, bx1, bz0, bz1] = c.box;
+        const inside = (q) => q[0] > bx0 - 1e-9 && q[0] < bx1 + 1e-9 && q[1] > bz0 - 1e-9 && q[1] < bz1 + 1e-9
+            && (q[0] - c.centre[0]) ** 2 + (q[1] - c.centre[1]) ** 2 > c.r * c.r + 1e-9;
+        const mix = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+        // jede Kante in Stücke: geteilt, wo sie den Kreis oder eine Seite des Quadrats kreuzt
+        const pieces = [];
+        polygon.forEach((a, i) => {
+            const b = polygon[(i + 1) % polygon.length], d = [b[0] - a[0], b[1] - a[1]];
+            const o = [a[0] - c.centre[0], a[1] - c.centre[1]];
+            const A = d[0] ** 2 + d[1] ** 2, B = 2 * (o[0] * d[0] + o[1] * d[1]), C = o[0] ** 2 + o[1] ** 2 - c.r * c.r;
+            const ts = [0, 1];
+            if (A > 1e-12 && B * B - 4 * A * C >= 0) ts.push((-B - Math.sqrt(B * B - 4 * A * C)) / (2 * A), (-B + Math.sqrt(B * B - 4 * A * C)) / (2 * A));
+            for (const [k, v] of [[0, bx0], [0, bx1], [1, bz0], [1, bz1]]) if (Math.abs(d[k]) > 1e-12) ts.push((v - a[k]) / d[k]);
+            const cuts = [...new Set(ts.filter((t) => t >= 0 && t <= 1))].sort((x, y) => x - y);
+            for (let j = 0; j + 1 < cuts.length; j++) {
+                if (cuts[j + 1] - cuts[j] < 1e-9) continue;
+                pieces.push({ a: mix(a, b, cuts[j]), b: mix(a, b, cuts[j + 1]), inside: inside(mix(a, b, (cuts[j] + cuts[j + 1]) / 2)) });
+            }
+        });
+        const first = pieces.findIndex((piece) => !piece.inside);
+        if (first < 0) return [];
+        const order = [...pieces.slice(first), ...pieces.slice(0, first)];
+        const fraction = (q) => {
+            let angle = Math.atan2(q[1] - c.centre[1], q[0] - c.centre[0]) - arc.a0;
+            angle -= 2 * Math.PI * Math.round(angle / (2 * Math.PI));
+            return angle / arc.delta;
+        };
+        // die Punkte des Bogens zwischen zwei Stellen auf ihm
+        const between = (from, to) => {
+            const f0 = fraction(from), f1 = fraction(to), list = [];
+            for (let k = 1; k < ROUND_STEPS; k++) if ((k / ROUND_STEPS - f0) * (k / ROUND_STEPS - f1) < -1e-12) list.push(k / ROUND_STEPS);
+            if (f1 < f0) list.reverse();
+            return list.map((f) => arcPoint(c, arc, f));
+        };
+        const result = [];
+        let entered = null;
+        for (const piece of order) {
+            if (piece.inside) { entered = entered ?? piece.a; continue; }
+            if (entered) { result.push(entered, ...between(entered, piece.a)); entered = null; }
+            result.push(piece.a);
+        }
+        if (entered) result.push(entered, ...between(entered, order[0].a));
+        return result.filter((q, i) => {
+            const next = result[(i + 1) % result.length];
+            return Math.hypot(q[0] - next[0], q[1] - next[1]) > 1e-9;
+        });
+    };
+    // Der Umriss eines Rechtecks aus Boden oder Decke (in Feldern) ohne die
+    // Zwickel der inneren runden Ecken des Raums; null: keine berührt es
+    const roundOutline = (room, [x0, x1, z0, z1]) => {
+        const touching = level.corners.filter((c) => c.room === room && c.concave
+            && c.box[0] < x1 - 1e-9 && c.box[1] > x0 + 1e-9 && c.box[2] < z1 - 1e-9 && c.box[3] > z0 + 1e-9);
+        if (!touching.length) return null;
+        return touching.reduce((polygon, c) => (polygon.length ? withoutSliver(polygon, c) : polygon), [[x0, z0], [x1, z0], [x1, z1], [x0, z1]]);
+    };
+
     level.rooms.forEach((room) => {
         const r = room.index;
         const h = (cx, cz) => ceiling(cx, cz, r);
@@ -316,15 +483,24 @@ export function buildGeometry(level, modelBoxes = []) {
         // eine Rampe nach Osten oder Westen ändert sich entlang x: Streifen entlang z
         const ramp = room.settings.ramp ? (['east', 'west'].includes(room.settings.ramp.direction) ? 'z' : 'x') : null;
         const both = gable && ramp && gable !== ramp ? 'cell' : gable ?? ramp;
-        for (const { x, z, w, d, door } of rectangles(r, ramp)) {
-            const x0 = x * cell, x1 = (x + w) * cell, z0 = z * cell, z1 = (z + d) * cell;
-            add('floor', r, [[x0, f(x, z + d), z1], [x1, f(x + w, z + d), z1], [x1, f(x + w, z), z0], [x0, f(x, z), z0]],
-                texels(w * cell), texels(d * cell), door ? DOOR_GRID : 1);
+        // ohne die Zwickel innerer runder Ecken (polygon); Boden und Decke des
+        // Raums teilen sich je ein Stück Lichtkarte (chart, unten)
+        const piece = (kind, rect, corners) => {
+            const { x, z, w, d, door } = rect;
+            const outline = door ? null : roundOutline(r, [x, x + w, z, z + d]);
+            if (outline && outline.length < 3) return;
+            const face = add(kind, r, corners, texels(w * cell), texels(d * cell), door ? DOOR_GRID : 1);
+            if (!face || door) return;
+            face.chart = kind;
+            if (outline) face.polygon = outline;
+        };
+        for (const rect of rectangles(r, ramp)) {
+            const { x, z, w, d } = rect, x0 = x * cell, x1 = (x + w) * cell, z0 = z * cell, z1 = (z + d) * cell;
+            piece('floor', rect, [[x0, f(x, z + d), z1], [x1, f(x + w, z + d), z1], [x1, f(x + w, z), z0], [x0, f(x, z), z0]]);
         }
-        for (const { x, z, w, d, door } of rectangles(r, both, true)) {
-            const x0 = x * cell, x1 = (x + w) * cell, z0 = z * cell, z1 = (z + d) * cell;
-            add('ceiling', r, [[x0, h(x, z), z0], [x1, h(x + w, z), z0], [x1, h(x + w, z + d), z1], [x0, h(x, z + d), z1]],
-                texels(w * cell), texels(d * cell), door ? DOOR_GRID : 1);
+        for (const rect of rectangles(r, both, true)) {
+            const { x, z, w, d } = rect, x0 = x * cell, x1 = (x + w) * cell, z0 = z * cell, z1 = (z + d) * cell;
+            piece('ceiling', rect, [[x0, h(x, z), z0], [x1, h(x + w, z), z0], [x1, h(x + w, z + d), z1], [x0, h(x, z + d), z1]]);
         }
         // die Durchgänge dieses Raums: unten eine Schwelle über die ganze
         // Tiefe der Tür, oben der Sturz aus Putz, beide für die zwei Räume gleich
@@ -383,57 +559,105 @@ export function buildGeometry(level, modelBoxes = []) {
         return arch.center - arch.radius * Math.cos(a + (b - a) * s);
     };
     const arcSteps = (arch, uS, uE) => Math.max(8, Math.ceil(ARCH_STEPS * Math.abs(angleOf(arch, uE) - angleOf(arch, uS)) / Math.PI));
+    // extra.cuts: die Stellen der Stücke in s, wenn sie nicht gleich lang
+    // sind (ein Weg aus Geraden und Bögen), extra.normal: die Richtung der
+    // Fläche, wenn ihr Anfang und ihr Ende zusammenfallen (ein Weg ringsum)
     const curved = (kind, room, shape, steps, metersS, metersT, uvAt = null, extra = {}) => {
-        const samples = [...Array(steps + 1).keys()].flatMap((i) => [shape(i / steps, 0), shape(i / steps, 1)]);
+        const cuts = extra.cuts ?? [...Array(steps + 1).keys()].map((i) => i / steps);
+        const samples = cuts.flatMap((s) => [shape(s, 0), shape(s, 1)]);
         const corners = [shape(0, 0), shape(1, 0), shape(1, 1), shape(0, 1)];
-        const normal = faceNormal([shape(0.45, 0), shape(0.55, 0), shape(0.55, 1), shape(0.45, 1)]);
+        const normal = extra.normal ?? faceNormal([shape(0.45, 0), shape(0.55, 0), shape(0.55, 1), shape(0.45, 1)]);
         if (normal.every((v) => v === 0)) return;
-        faces.push({ kind, room, corners, normal, w: texels(metersS), h: texels(metersT), shape, steps, uvAt, samples, ...extra });
+        faces.push({ kind, room, corners, normal, w: texels(metersS), h: texels(metersT), shape, uvAt, samples, ...extra, steps: cuts.length - 1, cuts });
+    };
+    // Wie eine Leiste an einem Ende ihrer Wand weitergeht: p das Ende (in
+    // Feldern), out die Richtung über das Ende hinaus, n die in den Raum, y
+    // die Höhe der Leiste (Meter). inner: Vor ihr steht eine Wand (eine
+    // innere Ecke). outer: Die Wand biegt weg, und um die Ecke geht dieselbe
+    // Leiste weiter (eine äußere Ecke, eine Tür des Raums ohne Rahmen).
+    // open: Die Wand biegt weg, aber um die Ecke ist ein anderer Raum (seine
+    // Tür): Die Leiste endet mit einer Stirnseite. straight: Die Wand geht
+    // weiter, oder die Leiste endet unter der Bekleidung einer Tür mit Rahmen.
+    const endOf = (room, p, out, n, y) => {
+        const layer = level.rooms[room].layer;
+        // gleich hinter dem Ende: vor der Wandlinie (side 1) und hinter ihr (-1)
+        const air = (side) => level.openAt((p[0] + out[0] * 0.05 + n[0] * 0.05 * side) * cell, y, (p[1] + out[1] * 0.05 + n[2] * 0.05 * side) * cell, -0.002);
+        if (!air(1)) return 'inner';
+        if (!air(-1)) return 'straight';
+        const behind = [Math.floor(p[0] + out[0] * 0.5 - n[0] * 0.5), Math.floor(p[1] + out[1] * 0.5 - n[2] * 0.5)];
+        if (level.framedDoorAt(...behind, layer) && passage(...behind, layer)) return 'straight';
+        return roomOf(...behind, layer) === room ? 'outer' : 'open';
+    };
+    const facing = (corners, want) => (faceNormal(corners).reduce((sum, v, k) => sum + v * want[k], 0) < 0 ? [corners[0], corners[3], corners[2], corners[1]] : corners);
+    const strip = (room, color, corners, w, h) => {
+        const normal = faceNormal(corners);
+        if (normal.some((v) => v !== 0)) faces.push({ kind: 'baseboard', color, room, corners, normal, w: texels(w), h: texels(h) });
+    };
+    // Eine Leiste mit rechteckigem Querschnitt vor der Wand von p nach q (in
+    // Feldern, so herum wie wallEnds), n die Richtung in den Raum: unten bei
+    // y0 (an p und an q), height hoch, depth vor der Wand, ends wie bei
+    // endOf, bottom: auch unten eine Fläche. An einer äußeren Ecke laufen
+    // beide Leisten um ihre Tiefe weiter, bis ihre Vorderseiten sich treffen;
+    // an einer inneren hört die entlang z vor der Vorderseite der anderen auf.
+    // Das Quadrat in der Ecke deckt oben und unten nur die Leiste entlang x,
+    // sonst lägen zwei Flächen aufeinander.
+    const boxStrip = (room, color, p, q, n, y0, height, depth, ends, bottom = false) => {
+        const lengthCells = Math.hypot(q[0] - p[0], q[1] - p[1]);
+        if (lengthCells < 1e-9) return;
+        const d = [(q[0] - p[0]) / lengthCells, (q[1] - p[1]) / lengthCells];
+        const alongX = Math.abs(d[0]) > 0.5;
+        const reach = (kind) => ({ outer: [depth, alongX ? depth : 0], inner: [alongX ? 0 : -depth, alongX ? 0 : -depth] })[kind] ?? [0, 0];
+        const [frontP, sideP] = reach(ends[0]), [frontQ, sideQ] = reach(ends[1]);
+        // das Ende e (p oder q), um extra Meter nach außen verlängert (sign), offset vor der Wand, auf Höhe y
+        const at = (e, extra, sign, offset, y) => [e[0] * cell + sign * d[0] * extra + n[0] * offset, y, e[1] * cell + sign * d[1] * extra + n[2] * offset];
+        const [yp, yq] = y0, length = lengthCells * cell;
+        strip(room, color, facing([at(p, frontP, -1, depth, yp), at(q, frontQ, 1, depth, yq), at(q, frontQ, 1, depth, yq + height), at(p, frontP, -1, depth, yp + height)], n), length + frontP + frontQ, height);
+        const flat = (dy, want) => strip(room, color, facing([at(p, sideP, -1, 0, yp + dy), at(q, sideQ, 1, 0, yq + dy), at(q, sideQ, 1, depth, yq + dy), at(p, sideP, -1, depth, yp + dy)], want),
+            length + sideP + sideQ, Math.max(depth, 0.2));
+        flat(height, [0, 1, 0]);
+        if (bottom) flat(0, [0, -1, 0]);
+        ends.forEach((kind, i) => {
+            if (kind !== 'open') return;
+            const [e, y, sign] = i ? [q, yq, 1] : [p, yp, -1];
+            strip(room, color, facing([at(e, 0, sign, 0, y), at(e, 0, sign, depth, y), at(e, 0, sign, depth, y + height), at(e, 0, sign, 0, y + height)], [sign * d[0], 0, sign * d[1]]), depth, height);
+        });
     };
     // Eine Sockelleiste vor einem Stück Wand von p nach q (in Feldern), auf
-    // dem Boden bei y: vorne und oben, 1,5 cm vor der Wand
-    const skirting = (room, direction, p, q, y0) => {
+    // dem Boden bei y0 (an p und an q): vorne und oben, 1,5 cm vor der Wand
+    const skirting = (room, direction, p, q, y0, ends = ['straight', 'straight']) => {
         const board = level.rooms[room].settings.baseboard;
         if (!board) return;
-        const n = INWARD[direction], y = y0 + board.height, o = 0.015;
-        const length = Math.hypot(q[0] - p[0], q[1] - p[1]) * cell;
-        const front = [[p[0] * cell + n[0] * o, y0, p[1] * cell + n[2] * o], [q[0] * cell + n[0] * o, y0, q[1] * cell + n[2] * o],
-            [q[0] * cell + n[0] * o, y, q[1] * cell + n[2] * o], [p[0] * cell + n[0] * o, y, p[1] * cell + n[2] * o]];
-        const upper = [[p[0] * cell, y, p[1] * cell], [q[0] * cell, y, q[1] * cell], [q[0] * cell + n[0] * o, y, q[1] * cell + n[2] * o], [p[0] * cell + n[0] * o, y, p[1] * cell + n[2] * o]];
-        for (const [face, want, sw, sh] of [[front, n, length, board.height], [upper, [0, 1, 0], length, 0.2]]) {
-            let c = face;
-            if (faceNormal(c).reduce((sum, v, k) => sum + v * want[k], 0) < 0) c = [c[0], c[3], c[2], c[1]];
-            faces.push({ kind: 'baseboard', color: board.color, room, corners: c, normal: faceNormal(c), w: texels(sw), h: texels(sh) });
-        }
+        boxStrip(room, board.color, p, q, INWARD[direction], [y0, y0].flat().slice(0, 2), board.height, 0.015, ends);
     };
     // Eine Leiste oben (cornice), wo die Wand von p nach q (in Feldern) an die
-    // Decke stößt (bei topP und topQ): ein Streifen schräg, 45° zwischen Wand und Decke
-    const crown = (room, direction, p, q, topP, topQ) => {
+    // Decke stößt (bei topP und topQ): ein Streifen schräg, 45° zwischen Wand
+    // und Decke, seine obere Kante dort, wo die Decke ist. ends wie bei
+    // endOf: An einer äußeren Ecke läuft die obere Kante um die Breite der
+    // Leiste weiter, an einer inneren hört sie um sie früher auf: Zwei
+    // Leisten treffen sich auf der Diagonalen der Ecke (auf Gehrung).
+    const crown = (room, direction, p, q, topP, topQ, ends = null) => {
         const cornice = level.rooms[room].settings.cornice;
         if (!cornice) return;
         const n = INWARD[direction], hgt = cornice.height;
-        const length = Math.hypot(q[0] - p[0], q[1] - p[1]) * cell;
-        // An einer Außenecke (die Wand biegt vom Raum weg, etwa an der Kante
-        // einer Türöffnung bis unter die Decke) reicht die Leiste oben um ihre
-        // Höhe weiter: Die Leisten beider Wände treffen sich dort auf Gehrung,
-        // sonst bliebe ein dreieckiges Loch. Außenecke: hinter dem Ende ist auf
-        // beiden Seiten der Wand Boden.
-        const d = [(q[0] - p[0]) / (length / cell), (q[1] - p[1]) / (length / cell)];
-        const k = level.rooms[room].layer;
-        const open = (x, z) => at(Math.floor(x), Math.floor(z), k) === 'floor';
-        const outside = (e, sign) => {
-            const x = e[0] + sign * d[0] * 0.5, z = e[1] + sign * d[1] * 0.5;
-            return open(x + n[0] * 0.5, z + n[2] * 0.5) && open(x - n[0] * 0.5, z - n[2] * 0.5);
+        const lengthCells = Math.hypot(q[0] - p[0], q[1] - p[1]);
+        if (lengthCells < 1e-9) return;
+        const d = [(q[0] - p[0]) / lengthCells, (q[1] - p[1]) / lengthCells];
+        // ohne Angabe sieht sie selbst nach, wie die Wand an ihren Enden weitergeht
+        ends = ends ?? [endOf(room, p, [-d[0], -d[1]], n, topP - hgt / 2), endOf(room, q, d, n, topQ - hgt / 2)];
+        const ext = (kind) => (kind === 'outer' ? hgt : kind === 'inner' ? -hgt : 0);
+        const upper = (e, extra, sign) => {
+            const x = e[0] * cell + sign * d[0] * extra + n[0] * hgt, z = e[1] * cell + sign * d[1] * extra + n[2] * hgt;
+            return [x, ceiling(x / cell, z / cell, room), z];
         };
-        const ep = outside(p, -1) ? hgt : 0, eq = outside(q, 1) ? hgt : 0;
-        let c = [[p[0] * cell, topP - hgt, p[1] * cell], [q[0] * cell, topQ - hgt, q[1] * cell],
-            [q[0] * cell + n[0] * hgt + d[0] * eq, topQ, q[1] * cell + n[2] * hgt + d[1] * eq],
-            [p[0] * cell + n[0] * hgt - d[0] * ep, topP, p[1] * cell + n[2] * hgt - d[1] * ep]];
-        // zeigt schräg nach unten in den Raum
-        const want = [n[0], -1, n[2]];
-        if (faceNormal(c).reduce((sum, v, k) => sum + v * want[k], 0) < 0) c = [c[0], c[3], c[2], c[1]];
-        const normal = faceNormal(c);
-        if (normal.some((v) => v !== 0)) faces.push({ kind: 'baseboard', color: cornice.color, room, corners: c, normal, w: texels(length), h: texels(hgt * 1.42) });
+        const want = [n[0], -1, n[2]];   // schräg nach unten in den Raum
+        const wallP = [p[0] * cell, topP - hgt, p[1] * cell], wallQ = [q[0] * cell, topQ - hgt, q[1] * cell];
+        strip(room, cornice.color, facing([wallP, wallQ, upper(q, ext(ends[1]), 1), upper(p, ext(ends[0]), -1)], want), lengthCells * cell, hgt * 1.42);
+        ends.forEach((kind, i) => {
+            if (kind !== 'open') return;
+            const [e, wall, top, sign] = i ? [q, wallQ, topQ, 1] : [p, wallP, topP, -1];
+            const tip = upper(e, 0, sign);
+            strip(room, cornice.color, facing([wall, tip, tip, [e[0] * cell, top, e[1] * cell]], [sign * d[0], 0, sign * d[1]]), hgt, hgt);
+        });
     };
     // Die Wand vor einer runden Tür, auf der Seite des Raums room (die Kante
     // direction/line/along, top: die Decke dort): neben dem Bogen ganz Wand,
@@ -585,6 +809,23 @@ export function buildGeometry(level, modelBoxes = []) {
             }
         }
     }
+    // Die Seiten des Quadrats einer runden Ecke (level.js) auf einer
+    // Wandlinie: Dort ist die Wand ein Viertelkreis (cornerFaces), keine
+    // gerade Wand. [von, bis] entlang der Linie, in Feldern.
+    const roundGaps = (room, direction, line) => {
+        const n = INWARD[direction], alongX = direction === 'north' || direction === 'south';
+        return level.corners.filter((c) => c.room === room).flatMap((c) => {
+            // innen liegt das Quadrat vor der Wand (im Raum), außen hinter ihr (in der Wand)
+            const ahead = alongX ? n[2] * c.q[1] : n[0] * c.q[0];
+            if ((c.concave ? ahead : -ahead) <= 0 || (alongX ? c.vertex[1] : c.vertex[0]) !== line) return [];
+            return [alongX ? [c.box[0], c.box[1]] : [c.box[2], c.box[3]]];
+        });
+    };
+    // die Berührpunkte der runden Ecken mit den geraden Wänden, und die
+    // Stücke Wand, die dort anschließen
+    const pointKey = (q) => `${Math.round(q[0] * 1e6)},${Math.round(q[1] * 1e6)}`;
+    const tangents = new Set(level.corners.flatMap((c) => [[c.centre[0], c.vertex[1]], [c.vertex[0], c.centre[1]]].map((q) => `${c.room}:${pointKey(q)}`)));
+    const pathParts = [];
     for (const { room, direction, line, pool, list } of pieces.values()) {
         list.sort((p, q) => p - q);
         const h = (cx, cz) => ceiling(cx, cz, room);
@@ -601,66 +842,208 @@ export function buildGeometry(level, modelBoxes = []) {
             }
             return true;
         };
+        const gapsHere = roundGaps(room, direction, line);
+        const n = INWARD[direction];
         let start = 0;
         while (start < list.length) {
             let end = start;
             while (end + 1 < list.length && list[end + 1] === list[end] + 1 && straight(list[start], list[end + 1] + 1)) end += 1;
-            const [a, b] = wallEnds(direction, line, list[start], list[end] + 1);
-            const ha = h(a[0], a[1]), hb = h(b[0], b[1]);
-            const fa0 = f(a[0], a[1]), fb0 = f(b[0], b[1]);
-            const length = (list[end] + 1 - list[start]) * cell;
-            add('wall', room, [[a[0] * cell, fa0, a[1] * cell], [b[0] * cell, fb0, b[1] * cell],
-                [b[0] * cell, hb, b[1] * cell], [a[0] * cell, ha, a[1] * cell]],
-                texels(length), texels(Math.max(ha - fa0, hb - fb0)));
-            // Sockelleiste: vorne und oben, 1,5 cm vor der Wand
-            crown(room, direction, a, b, ha, hb);
-            // auch an einer Rampe: Dort läuft sie schräg mit dem Boden
-            const board = pool ? null : level.rooms[room].settings.baseboard;
-            if (board) {
-                const n = INWARD[direction], depthOut = 0.015, y = board.height;
-                // Die Enden: An einer äußeren Ecke (die Wand biegt weg, wie an
-                // einer Tür) laufen beide Leisten um ihre Dicke weiter, bis ihre
-                // Vorderseiten sich treffen; an einer inneren Ecke hört die Leiste
-                // entlang z vor der Vorderseite der anderen auf. Das Quadrat in
-                // der Ecke deckt oben nur die Leiste entlang x, sonst lägen zwei
-                // Flächen aufeinander. Wo eine Wand nur geteilt ist (schräge
-                // Decke, anderer Raum), bleibt alles, wie es ist.
-                const lengthCells = Math.abs(b[0] - a[0]) + Math.abs(b[1] - a[1]);
-                const d = [(b[0] - a[0]) / lengthCells, (b[1] - a[1]) / lengthCells];
-                const alongX = direction === 'north' || direction === 'south';
-                const layer = level.rooms[room].layer;
-                const corner = (p, out) => {
-                    const cellAt = (side) => [Math.floor(p[0] + out[0] * 0.5 + n[0] * 0.5 * side), Math.floor(p[1] + out[1] * 0.5 + n[2] * 0.5 * side)];
-                    const probe = (side) => at(...cellAt(side), layer);
-                    // an einer Tür mit Bekleidung endet sie unter ihr
-                    if (probe(-1) === 'floor' && passage(...cellAt(-1), layer) && level.framedDoorAt(...cellAt(-1), layer)) return 'straight';
-                    if (probe(-1) === 'floor') return 'outer';
-                    if (probe(1) !== 'floor') return 'inner';
-                    return 'straight';
-                };
-                // um wie viel Meter Vorderseite und Oberseite an einem Ende weiterlaufen
-                const reach = (kind) => ({
-                    outer: [depthOut, alongX ? depthOut : 0],
-                    inner: [alongX ? 0 : -depthOut, alongX ? 0 : -depthOut],
-                    straight: [0, 0],
-                })[kind];
-                const [frontStart, topStart] = reach(corner(a, [-d[0], -d[1]]));
-                const [frontEnd, topEnd] = reach(corner(b, d));
-                const along = (p, extra, sign, offset) => [
-                    p[0] * cell + sign * d[0] * extra + n[0] * offset, p[1] * cell + sign * d[1] * extra + n[2] * offset];
-                const fa = along(a, frontStart, -1, depthOut), fb = along(b, frontEnd, 1, depthOut);
-                const ta = along(a, topStart, -1, 0), tb = along(b, topEnd, 1, 0);
-                const tfa = along(a, topStart, -1, depthOut), tfb = along(b, topEnd, 1, depthOut);
-                const put = (corners, sw, sh, want) => {
-                    let face = corners;
-                    if (faceNormal(face).reduce((sum, v, i) => sum + v * want[i], 0) < 0) face = [face[0], face[3], face[2], face[1]];
-                    faces.push({ kind: 'baseboard', color: board.color, room, corners: face, normal: faceNormal(face), w: texels(sw), h: texels(sh) });
-                };
-                // die Leiste folgt dem Boden; über ihre kurzen Verlängerungen an den Ecken genügt die Höhe an ihren Enden
-                put([[fa[0], fa0, fa[1]], [fb[0], fb0, fb[1]], [fb[0], fb0 + y, fb[1]], [fa[0], fa0 + y, fa[1]]], length + frontStart + frontEnd, y, n);
-                put([[ta[0], fa0 + y, ta[1]], [tb[0], fb0 + y, tb[1]], [tfb[0], fb0 + y, tfb[1]], [tfa[0], fa0 + y, tfa[1]]], length + topStart + topEnd, Math.max(depthOut, 0.2), [0, 1, 0]);
+            // ohne die Stücke, an denen eine runde Ecke anschließt
+            let spans = [[list[start], list[end] + 1]];
+            for (const [g0, g1] of gapsHere) {
+                spans = spans.flatMap(([s0, s1]) => [[s0, Math.min(s1, g0)], [Math.max(s0, g1), s1]].filter(([u0, u1]) => u1 - u0 > 1e-9));
+            }
+            for (const [s0, s1] of spans) {
+                const [a, b] = wallEnds(direction, line, s0, s1);
+                // an einer runden Ecke: ein Stück ihres Wegs (unten)
+                if (tangents.has(`${room}:${pointKey(a)}`) || tangents.has(`${room}:${pointKey(b)}`)) {
+                    pathParts.push({ room, a, b });
+                    continue;
+                }
+                const ha = h(a[0], a[1]), hb = h(b[0], b[1]);
+                const fa0 = f(a[0], a[1]), fb0 = f(b[0], b[1]);
+                const length = (s1 - s0) * cell;
+                add('wall', room, [[a[0] * cell, fa0, a[1] * cell], [b[0] * cell, fb0, b[1] * cell],
+                    [b[0] * cell, hb, b[1] * cell], [a[0] * cell, ha, a[1] * cell]],
+                    texels(length), texels(Math.max(ha - fa0, hb - fb0)));
+                // wie die Leisten an den Enden weitergehen, auf ihrer Höhe
+                const d = [(b[0] - a[0]) / (s1 - s0), (b[1] - a[1]) / (s1 - s0)];
+                const ends = (y) => [endOf(room, a, [-d[0], -d[1]], n, y(a)), endOf(room, b, d, n, y(b))];
+                const cornice = level.rooms[room].settings.cornice;
+                if (cornice) crown(room, direction, a, b, ha, hb, ends((e) => h(...e) - cornice.height / 2));
+                // Sockelleiste: auch an einer Rampe, dort läuft sie schräg mit dem Boden
+                const board = pool ? null : level.rooms[room].settings.baseboard;
+                if (board) skirting(room, direction, a, b, [fa0, fb0], ends((e) => f(...e) + board.height / 2));
             }
             start = end + 1;
+        }
+    }
+    // Runde Ecken, die Wände: Eine Wand, die gerade auf eine runde Ecke
+    // zuläuft, um sie herum und gerade weiter, ist ein Weg aus geraden
+    // Stücken und Viertelkreisen ohne Knick, und darauf eine einzige Fläche
+    // mit einem Stück Lichtkarte: So ist keine Naht, wo die Gerade in den
+    // Kreis übergeht. Ebenso Lambris, Leisten und Gesims. Läuft der Weg ganz
+    // herum, schließt er sich: Dann sieht sein Anfang beim Backen über sein
+    // Ende hinaus und umgekehrt.
+    const elements = pathParts.map(({ room, a, b }) => {
+        const length = Math.hypot(b[0] - a[0], b[1] - a[1]);
+        return { room, from: a, to: b, length: length * cell, d: [(b[0] - a[0]) / length, (b[1] - a[1]) / length] };
+    });
+    for (const c of level.corners) {
+        const arc = arcOf(c);
+        elements.push({ room: c.room, from: arcPoint(c, arc, 0), to: arcPoint(c, arc, 1), length: Math.abs(arc.delta) * c.r * cell, corner: c, arc });
+    }
+    const startsAt = new Map(elements.map((e) => [`${e.room}:${pointKey(e.from)}`, e]));
+    const endsAt = new Set(elements.map((e) => `${e.room}:${pointKey(e.to)}`));
+    const used = new Set(), chains = [];
+    const follow = (first) => {
+        const list = [];
+        for (let e = first; e && !used.has(e) && list.length < 100000; e = startsAt.get(`${e.room}:${pointKey(e.to)}`)) {
+            used.add(e);
+            list.push(e);
+        }
+        chains.push({ room: first.room, list, closed: pointKey(list[list.length - 1].to) === pointKey(list[0].from) });
+    };
+    for (const e of elements) if (!endsAt.has(`${e.room}:${pointKey(e.from)}`)) follow(e);
+    for (const e of elements) if (!used.has(e)) follow(e);
+
+    for (const { room, list, closed } of chains) {
+        const roomSettings = level.rooms[room].settings;
+        const total = list.reduce((sum, e) => sum + e.length, 0);
+        const starts = [];
+        list.reduce((sum, e) => { starts.push(sum); return sum + e.length; }, 0);
+        // welches Stück bei s (0 bis 1 über den ganzen Weg; geschlossen: ringsum), und wie weit darin
+        const locate = (s) => {
+            const u = (closed ? s - Math.floor(s) : clamp01(s)) * total;
+            let i = list.length - 1;
+            while (i > 0 && starts[i] > u) i -= 1;
+            return [list[i], (u - starts[i]) / list[i].length];
+        };
+        // die Stelle bei s, off Meter vor der Wand, in Feldern; die Richtung in den Raum; die Richtung des Wegs
+        const pointAt = (s, off = 0) => {
+            const [e, f] = locate(s);
+            if (e.corner) return arcPoint(e.corner, e.arc, f, off);
+            return [e.from[0] + e.d[0] * f * e.length / cell - e.d[1] * off / cell, e.from[1] + e.d[1] * f * e.length / cell + e.d[0] * off / cell];
+        };
+        const inwardAt = (s) => {
+            const [e, f] = locate(s);
+            return e.corner ? arcInward(e.corner, e.arc, f) : [-e.d[1], e.d[0]];
+        };
+        const runAt = (s) => {
+            const n = inwardAt(s);
+            return [n[1], -n[0]];
+        };
+        const cuts = [...list.flatMap((e, i) => (e.corner ? [...Array(ROUND_STEPS).keys()].map((k) => (starts[i] + e.length * k / ROUND_STEPS) / total) : [starts[i] / total])), 1];
+        const floorY = (q) => floorAt(q[0], q[1], room), ceilY = (q) => ceiling(q[0], q[1], room);
+        const world = (q, y) => [q[0] * cell, y, q[1] * cell];
+        const flat3 = (n) => [n[0], 0, n[1]];
+        // die beiden Enden eines offenen Wegs, und wie die Leisten dort weitergehen (endOf)
+        const ends = closed ? null : [0, 1].map((s) => ({ q: pointAt(s), run: runAt(s), n: flat3(inwardAt(s)) }));
+        const kinds = (y) => (closed ? null : ends.map((e, i) => endOf(room, e.q, i ? e.run : [-e.run[0], -e.run[1]], e.n, y(e.q))));
+        // eine Stelle bei s, off Meter vor der Wand; an den Enden eines offenen Wegs um ext(i) Meter darüber hinaus
+        const place = (s, off, ext) => {
+            const q = pointAt(s, off);
+            if (closed || !ext) return q;
+            const i = s <= 0 ? 0 : s >= 1 ? 1 : null;
+            if (i === null) return q;
+            const e = ext(i), sign = i ? 1 : -1;
+            return [q[0] + sign * ends[i].run[0] * e / cell, q[1] + sign * ends[i].run[1] * e / cell];
+        };
+        // eine Fläche auf dem Weg, so herum, dass sie zu want zeigt
+        const pathFace = (kind, extra, shape, want, metersT, uvAt = null, normalAt = null) => {
+            const m = cuts[1] / 2, e = Math.min(0.002, m / 2);
+            const normal = faceNormal([shape(m - e, 0), shape(m + e, 0), shape(m + e, 1), shape(m - e, 1)]), w = want(m);
+            const turn = normal[0] * w[0] + normal[1] * w[1] + normal[2] * w[2] < 0;
+            const flip = (fn) => fn && (turn ? (s, t) => fn(1 - s, t) : fn);
+            curved(kind, room, flip(shape), 0, total, Math.max(metersT, 0.05), flip(uvAt),
+                { ...extra, normalAt: flip(normalAt), normal: w, cuts: turn ? cuts.map((c) => 1 - c).reverse() : cuts });
+        };
+        // ein senkrechtes Band off Meter vor der Wand, von y0(q) bis y1(q)
+        const band = (kind, extra, off, y0, y1, textured, ext = null) => {
+            const shape = (s, t) => {
+                const q = place(s, off, ext), lo = y0(q), hi = y1(q);
+                return world(q, lo + (hi - lo) * t);
+            };
+            const tall = Math.max(...cuts.map((s) => y1(pointAt(s)) - y0(pointAt(s))));
+            pathFace(kind, extra, shape, (s) => flat3(inwardAt(s)), tall, textured ? (s, t) => [s * total, shape(s, t)[1]] : null, (s) => flat3(inwardAt(s)));
+        };
+        // ein waagerechter Streifen zwischen o0 und o1 Metern vor der Wand, auf Höhe y(q)
+        const ring = (kind, extra, o0, o1, y, want, ext = null) => pathFace(kind, extra, (s, t) => {
+            const q = place(s, o0 + (o1 - o0) * t, ext);
+            return world(q, y(q));
+        }, () => want, Math.abs(o1 - o0));
+        // eine Stirnseite am offenen Ende i: von der Wand bis depth davor, von y0 bis y0 + height
+        const cap = (color, i, y0, height, depth) => {
+            const { q, n, run } = ends[i], sign = i ? 1 : -1, y = y0(q);
+            const at = (off, h) => world([q[0] + n[0] * off / cell, q[1] + n[2] * off / cell], h);
+            strip(room, color, facing([at(0, y), at(depth, y), at(depth, y + height), at(0, y + height)], [sign * run[0], 0, sign * run[1]]), depth, height);
+        };
+        // wie weit eine Leiste mit rechteckigem Querschnitt an einem Ende weiterläuft (wie boxStrip): vorn, oben/unten
+        const reach = (kind, i, depth) => {
+            const alongX = Math.abs(ends[i].run[0]) > 0.5;
+            return ({ outer: [depth, alongX ? depth : 0], inner: [alongX ? 0 : -depth, alongX ? 0 : -depth] })[kind] ?? [0, 0];
+        };
+        const boxAlong = (color, y0, height, depth, endKinds, bottom) => {
+            const front = endKinds && ((i) => reach(endKinds[i], i, depth)[0]), side = endKinds && ((i) => reach(endKinds[i], i, depth)[1]);
+            band('baseboard', { color }, depth, y0, (q) => y0(q) + height, false, front);
+            ring('baseboard', { color }, 0, depth, (q) => y0(q) + height, [0, 1, 0], side);
+            if (bottom) ring('baseboard', { color }, 0, depth, y0, [0, -1, 0], side);
+            endKinds?.forEach((kind, i) => { if (kind === 'open') cap(color, i, y0, height, depth); });
+        };
+
+        const lowest = Math.min(...cuts.map((s) => ceilY(pointAt(s)) - floorY(pointAt(s))));
+        const dado = roomSettings.dado;
+        if (dado && lowest > dado.height + 0.02) {
+            band('block', { color: dado.color, material: dado.material }, 0, floorY, (q) => floorY(q) + dado.height, true);
+            band('wall', {}, 0, (q) => floorY(q) + dado.height, ceilY, true);
+        } else {
+            band('wall', {}, 0, floorY, ceilY, true);
+        }
+        const board = roomSettings.baseboard;
+        if (board) boxAlong(board.color, floorY, board.height, 0.015, kinds((q) => floorY(q) + board.height / 2), false);
+        const rail = dado && roomSettings.dado_rail;
+        if (rail && lowest > dado.height + 0.02) {
+            const y0 = (q) => floorY(q) + dado.height - rail.height / 2;
+            boxAlong(rail.color, y0, rail.height, 0.02, kinds((q) => floorY(q) + dado.height), true);
+        }
+        const cornice = roomSettings.cornice;
+        if (cornice) {
+            const hgt = cornice.height, endKinds = kinds((q) => ceilY(q) - hgt / 2);
+            const ext = endKinds && ((i) => ({ outer: hgt, inner: -hgt })[endKinds[i]] ?? 0);
+            // schräg nach unten in den Raum, 45°
+            const slant = (s) => {
+                const n = inwardAt(s);
+                return [n[0] * Math.SQRT1_2, -Math.SQRT1_2, n[1] * Math.SQRT1_2];
+            };
+            pathFace('baseboard', { color: cornice.color }, (s, t) => {
+                const low = ceilY(place(s, 0, null)) - hgt, top = place(s, hgt, ext), high = ceilY(top);
+                const q = place(s, hgt * t, ext && ((i) => ext(i) * t));
+                return world(q, low + (high - low) * t);
+            }, slant, hgt * 1.42, null, slant);
+            endKinds?.forEach((kind, i) => {
+                if (kind !== 'open') return;
+                const { q, n, run } = ends[i], sign = i ? 1 : -1, top = ceilY(q);
+                const tip = [q[0] + n[0] * hgt / cell, q[1] + n[2] * hgt / cell];
+                strip(room, cornice.color, facing([world(q, top - hgt), world(tip, ceilY(tip)), world(tip, ceilY(tip)), world(q, top)], [sign * run[0], 0, sign * run[1]]), hgt, hgt);
+            });
+        }
+    }
+    // Boden und Decke an einer äußeren runden Ecke: der Zwickel zwischen Kreis
+    // und Ecke, von jeder Stelle des Kreises gerade zur Ecke; im selben Stück
+    // Lichtkarte wie der übrige Boden des Raums (chart). Über die Ecke hinaus
+    // (beim Backen) bleibt er auf ihr, in den Kreis hinein geht er weiter: Dort
+    // rückt ihn das Backen auf den Kreis (outOfCorners in bake.js).
+    for (const c of level.corners) {
+        if (c.concave) continue;
+        const arc = arcOf(c), length = Math.abs(arc.delta) * c.r * cell;
+        for (const [kind, height, want] of [['floor', floorAt, [0, 1, 0]], ['ceiling', ceiling, [0, -1, 0]]]) {
+            const shape0 = (s, t) => {
+                const q = arcPoint(c, arc, clamp01(s)), p = [q[0] + (c.vertex[0] - q[0]) * t, q[1] + (c.vertex[1] - q[1]) * t];
+                return [p[0] * cell, height(p[0], p[1], c.room), p[1] * cell];
+            };
+            const normal = faceNormal([shape0(0.45, 0), shape0(0.55, 0), shape0(0.55, 1), shape0(0.45, 1)]);
+            const turn = normal[0] * want[0] + normal[1] * want[1] + normal[2] * want[2] < 0;
+            curved(kind, c.room, turn ? (s, t) => shape0(1 - s, t) : shape0, ROUND_STEPS, length, c.r * cell, null, { chart: kind });
         }
     }
 
@@ -1020,6 +1403,7 @@ export function buildGeometry(level, modelBoxes = []) {
     // Zweifarbige Wände (dado = höhe, farbe): jede Wand, die auf dem Boden
     // steht, wird in dieser Höhe geteilt, unten in der Farbe und dem
     // Material von dado
+    const rails = [];
     faces = faces.flatMap((face) => {
         const dado = level.rooms[face.room]?.settings.dado;
         if (!dado || face.kind !== 'wall' || face.shape || Math.abs(face.normal[1]) > 0.1) return [face];
@@ -1031,22 +1415,103 @@ export function buildGeometry(level, modelBoxes = []) {
         const lower = { ...face, kind: 'block', color: dado.color, material: dado.material, corners: [c0, c1, lift(c1), lift(c0)], w: texels(length), h: texels(dado.height) };
         const upper = { ...face, corners: [lift(c0), lift(c1), c2, c3], h: texels(Math.max(c3[1] - c0[1], c2[1] - c1[1]) - dado.height) };
         const rail = level.rooms[face.room].settings.dado_rail;
-        if (!rail) return [lower, upper];
-        // die Leiste auf der Kante: vorn, oben und unten, 2 cm vor der Wand
-        const n = face.normal, o = 0.02, half = rail.height / 2;
-        const at = (c, dy, out) => [c[0] + n[0] * out, c[1] + dado.height + dy, c[2] + n[2] * out];
-        const strip = (corners, want, sh) => {
-            let c = corners;
-            if (faceNormal(c).reduce((sum, v, k) => sum + v * want[k], 0) < 0) c = [c[0], c[3], c[2], c[1]];
-            return { kind: 'baseboard', color: rail.color, material: null, room: face.room, corners: c, normal: faceNormal(c), w: texels(length), h: texels(sh) };
-        };
-        return [lower, upper,
-            strip([at(c0, -half, o), at(c1, -half, o), at(c1, half, o), at(c0, half, o)], n, rail.height),
-            strip([at(c0, half, 0), at(c1, half, 0), at(c1, half, o), at(c0, half, o)], [0, 1, 0], 0.2),
-            strip([at(c0, -half, 0), at(c1, -half, 0), at(c1, -half, o), at(c0, -half, o)], [0, -1, 0], 0.2)];
+        // die Leiste auf der Kante: vorn, oben und unten, 2 cm vor der Wand (unten, boxStrip)
+        if (rail) rails.push({ room: face.room, c0, c1, n: face.normal, y: [c0[1] + dado.height, c1[1] + dado.height], rail });
+        return [lower, upper];
     });
+    for (const { room, c0, c1, n, y, rail } of rails) {
+        const p = [c0[0] / cell, c0[2] / cell], q = [c1[0] / cell, c1[2] / cell];
+        const length = Math.hypot(q[0] - p[0], q[1] - p[1]), d = [(q[0] - p[0]) / length, (q[1] - p[1]) / length];
+        const ends = [endOf(room, p, [-d[0], -d[1]], n, y[0]), endOf(room, q, d, n, y[1])];
+        boxStrip(room, rail.color, p, q, n, [y[0] - rail.height / 2, y[1] - rail.height / 2], rail.height, 0.02, ends, true);
+    }
     faces = addDetail(faces, [...modelBoxes, ...blockBoxes]);
-    const atlasSize = packRectangles(faces);
+    // Boden und Decke eines Raums teilen sich je ein Stück Lichtkarte (chart),
+    // im Grundriss gerade aufgelegt, so dicht wie jede Fläche: Wo zwei ihrer
+    // Flächen aneinanderstoßen (Rechtecke, Stücke um ein Modell, der Zwickel
+    // einer runden Ecke), liegen dieselben Punkte, und es gibt keine Naht.
+    // Je Ebene eins (ein Satteldach hat zwei), und nur, solange die Flächen
+    // ihr Stück gut füllen: Ein Raum wie ein L bekommt zwei.
+    const charts = [];
+    {
+        const byKey = new Map();
+        for (const face of faces) {
+            if (!face.chart) continue;
+            const key = `${face.chart}:${face.room}:${face.normal.map((v) => v.toFixed(3)).join(',')}`;
+            if (!byKey.has(key)) byKey.set(key, []);
+            byKey.get(key).push(face);
+        }
+        const boxOf = (face) => {
+            const points = face.samples ?? face.corners;
+            return [Math.min(...points.map((q) => q[0])), Math.max(...points.map((q) => q[0])), Math.min(...points.map((q) => q[2])), Math.max(...points.map((q) => q[2]))];
+        };
+        const areaOf = (box) => Math.max(box[1] - box[0], 1e-6) * Math.max(box[3] - box[2], 1e-6);
+        for (const list of byKey.values()) {
+            let groups = list.map((face) => ({ faces: [face], box: boxOf(face), area: areaOf(boxOf(face)) }));
+            for (let merged = true; merged && groups.length > 1;) {
+                merged = false;
+                for (let i = 0; i < groups.length && !merged; i++) {
+                    for (let j = i + 1; j < groups.length && !merged; j++) {
+                        const a = groups[i].box, b = groups[j].box;
+                        if (a[0] > b[1] + 1e-6 || b[0] > a[1] + 1e-6 || a[2] > b[3] + 1e-6 || b[2] > a[3] + 1e-6) continue;
+                        const box = [Math.min(a[0], b[0]), Math.max(a[1], b[1]), Math.min(a[2], b[2]), Math.max(a[3], b[3])];
+                        if (areaOf(box) > (groups[i].area + groups[j].area) * 1.3) continue;
+                        groups[i] = { faces: [...groups[i].faces, ...groups[j].faces], box, area: groups[i].area + groups[j].area };
+                        groups.splice(j, 1);
+                        merged = true;
+                    }
+                }
+            }
+            for (const { faces: members, box: loose } of groups) {
+                // auf das Raster der Lichtkarte gerundet, so liegen die Kanten der Felder auf Grenzen zwischen ihren Punkten
+                const step = 1 / settings.detail;
+                const box = [Math.floor(loose[0] / step + 1e-6) * step, Math.ceil(loose[1] / step - 1e-6) * step, Math.floor(loose[2] / step + 1e-6) * step, Math.ceil(loose[3] / step - 1e-6) * step];
+                const chart = { box, w: Math.max(2, Math.round((box[1] - box[0]) / step)), h: Math.max(2, Math.round((box[3] - box[2]) / step)), faces: members };
+                charts.push(chart);
+                for (const face of members) face.chartRect = chart;
+            }
+        }
+        // Beim Backen zeichnet jede Fläche eines gemeinsamen Stücks nur ihre
+        // eigenen Punkte (ein Punkt, den zwei zeichneten, zählte doppelt).
+        // Um alles, was sie zusammen bedecken, kommt ein Punkt breit Rand, der
+        // das Licht seines Nachbarn bekommt: Beim Zeichnen mischt sich der
+        // Rand einer Fläche mit ihm, und dort soll nicht Schwarz sein.
+        const inside = (polygon, x, z) => {
+            let odd = false;
+            for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+                const [xi, zi] = polygon[i], [xj, zj] = polygon[j];
+                if ((zi > z) !== (zj > z) && x < (xj - xi) * (z - zi) / (zj - zi) + xi) odd = !odd;
+            }
+            return odd;
+        };
+        for (const chart of charts) {
+            const { box, w, h } = chart, sx = (box[1] - box[0]) / w, sz = (box[3] - box[2]) / h;
+            const owner = new Array((w + 2) * (h + 2)).fill(null), at = (i, j) => (i + 1) + (j + 1) * (w + 2);
+            for (const face of chart.faces) {
+                // was die Fläche beim Backen bedeckt: ein Rechteck ganz (auch ein Zwickel darin), ein Zwickel außen sein Umriss
+                const outline = face.shape ? [...face.cuts.map((c) => face.shape(c, 0)), face.shape(0, 1)].map((q) => [q[0], q[2]]) : face.corners.map((q) => [q[0], q[2]]);
+                const xs = outline.map((q) => q[0]), zs = outline.map((q) => q[1]);
+                const i0 = Math.max(0, Math.floor((Math.min(...xs) - box[0]) / sx)), i1 = Math.min(w - 1, Math.ceil((Math.max(...xs) - box[0]) / sx));
+                const j0 = Math.max(0, Math.floor((Math.min(...zs) - box[2]) / sz)), j1 = Math.min(h - 1, Math.ceil((Math.max(...zs) - box[2]) / sz));
+                for (let j = j0; j <= j1; j++) {
+                    for (let i = i0; i <= i1; i++) {
+                        if (!owner[at(i, j)] && inside(outline, box[0] + (i + 0.5) * sx, box[2] + (j + 0.5) * sz)) owner[at(i, j)] = face;
+                    }
+                }
+            }
+            chart.rim = [];
+            for (let j = -1; j <= h; j++) {
+                for (let i = -1; i <= w; i++) {
+                    if (owner[at(i, j)]) continue;
+                    const next = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]
+                        .map(([di, dj]) => [i + di, j + dj]).find(([a, b]) => a >= 0 && b >= 0 && a < w && b < h && owner[at(a, b)]);
+                    if (!next) continue;
+                    chart.rim.push({ i, j, face: owner[at(...next)], x: box[0] + (next[0] + 0.5) * sx, z: box[2] + (next[1] + 0.5) * sz });
+                }
+            }
+        }
+    }
+    const atlasSize = packRectangles([...faces.filter((f) => !f.chartRect), ...charts]);
 
     // Eine Geometrie für jede Sorte Fläche in jedem Raum (eigene Tapete, eigener Teppich)
     const groups = new Map();
@@ -1074,17 +1539,31 @@ export function buildGeometry(level, modelBoxes = []) {
         let base = 0, bakeBase = 0;
         for (const face of list) {
             const [c0, c1, c2, c3] = face.corners;
-            const u0 = face.ax / atlasSize, u1 = (face.ax + face.w) / atlasSize;
-            const v0 = face.ay / atlasSize, v1 = (face.ay + face.h) / atlasSize;
-            const du = u1 - u0, dv = v1 - v0;
             // die Stelle auf der Fläche, bilinear zwischen den vier Ecken
             // eine gebogene Fläche (curved) hat ihre eigene Form
             const world = face.shape ?? ((s, t) => lerp(lerp(c0, c1, s), lerp(c3, c2, s), t));
+            // In einem gemeinsamen Stück (chart) liegt jede Stelle dort, wo sie
+            // im Grundriss ist; der Rand beim Backen ist auch dort einen Punkt breit
+            const chart = face.chartRect;
+            const inChart = chart && ((q) => [
+                (chart.ax + (q[0] - chart.box[0]) / Math.max(chart.box[1] - chart.box[0], 1e-6) * chart.w) / atlasSize,
+                (chart.ay + (q[2] - chart.box[2]) / Math.max(chart.box[3] - chart.box[2], 1e-6) * chart.h) / atlasSize]);
+            if (chart) {
+                const extent = (a, b) => Math.hypot(b[0] - a[0], b[2] - a[2]);
+                const [px, pz] = [chart.w / Math.max(chart.box[1] - chart.box[0], 1e-6), chart.h / Math.max(chart.box[3] - chart.box[2], 1e-6)];
+                face.ax = 0; face.ay = 0;
+                face.w = Math.max(extent(world(0, 0), world(1, 0)) * Math.max(px, pz), 1e-3);
+                face.h = Math.max(extent(world(0, 0), world(0, 1)) * Math.max(px, pz), 1e-3);
+            }
+            const u0 = face.ax / atlasSize, u1 = (face.ax + face.w) / atlasSize;
+            const v0 = face.ay / atlasSize, v1 = (face.ay + face.h) / atlasSize;
+            const du = u1 - u0, dv = v1 - v0;
             const points = face.samples ?? [c0, c1, c2, c3];
             const min = [0, 1, 2].map((i) => Math.min(...points.map((c) => c[i])));
             const max = [0, 1, 2].map((i) => Math.max(...points.map((c) => c[i])));
             const n = face.subdivide ?? 1;
             const nS = face.steps ?? n, nT = face.shape ? 1 : n;   // gebogen: Stücke nur entlang s
+            const S = face.cuts ?? [...Array(nS + 1).keys()].map((k) => k / nS);   // wo die Stücke entlang s anfangen
 
             // Backen: die Fläche in ihr Rechteck der Lichtkarte, um einen Texel
             // größer (der Rand); die Stelle in der Welt wird dabei über die
@@ -1095,15 +1574,16 @@ export function buildGeometry(level, modelBoxes = []) {
             const edge = (value, outside) => (value === 0 ? outside : value === 1 ? 1 - outside : value);
             for (let i = 0; i < nS; i++) {
                 for (let j = 0; j < nT; j++) {
-                    const quad = [[i / nS, j / nT], [(i + 1) / nS, j / nT], [(i + 1) / nS, (j + 1) / nT], [i / nS, (j + 1) / nT]];
+                    const quad = [[S[i], j / nT], [S[i + 1], j / nT], [S[i + 1], (j + 1) / nT], [S[i], (j + 1) / nT]];
                     const normal = nS > 1 || nT > 1 ? faceNormal(quad.map(([s, t]) => world(s, t))) : face.normal;
                     quad.forEach(([s, t], corner) => {
-                        const bs = edge(s, tu), bt = edge(t, tv);
+                        const bs = chart ? s : edge(s, tu), bt = chart ? t : edge(t, tv);
                         // texelAt: wo die Stelle s in ihrem Stück Lichtkarte liegt (ohne: dort, wo s sagt)
-                        bakePositions.push(u0 + (face.texelAt && s > 0 && s < 1 ? face.texelAt(s) : bs) * du, v0 + bt * dv, 0);
+                        if (chart) bakePositions.push(...inChart(world(bs, bt)), 0);
+                        else bakePositions.push(u0 + (face.texelAt && s > 0 && s < 1 ? face.texelAt(s) : bs) * du, v0 + bt * dv, 0);
                         bakeWorld.push(...world(bs, bt));
                         // eine runde Säule: die Richtung an jeder Ecke, dazwischen gemischt
-                        bakeNormal.push(...(face.normals && n === 1 ? face.normals[corner] : normal));
+                        bakeNormal.push(...(face.normalAt ? face.normalAt(bs, bt) : face.normals && n === 1 ? face.normals[corner] : normal));
                         bakeMin.push(...min);
                         bakeMax.push(...max);
                         bakeAmbient.push(ambient);
@@ -1111,6 +1591,26 @@ export function buildGeometry(level, modelBoxes = []) {
                         else bakeAlbedo.push(albedo.r, albedo.g, albedo.b);
                         bakeDensity.push(face.density ?? 1);
                     });
+                    bakeIndices.push(bakeBase, bakeBase + 1, bakeBase + 2, bakeBase, bakeBase + 2, bakeBase + 3);
+                    bakeBase += 4;
+                }
+            }
+            // der Rand des gemeinsamen Stücks neben dieser Fläche: je ein Punkt
+            // mit dem Licht ihres Punkts daneben (wirft selbst kein Licht zurück)
+            if (chart) {
+                for (const { i, j, x, z } of chart.rim.filter((r) => r.face === face)) {
+                    const y = face.kind === 'floor' ? floorAt(x / cell, z / cell, face.room) : ceiling(x / cell, z / cell, face.room);
+                    const corners = [[i, j], [i + 1, j], [i + 1, j + 1], [i, j + 1]];
+                    for (const [ci, cj] of corners) {
+                        bakePositions.push((chart.ax + ci) / atlasSize, (chart.ay + cj) / atlasSize, 0);
+                        bakeWorld.push(x, y, z);
+                        bakeNormal.push(...face.normal);
+                        bakeMin.push(x, y, z);
+                        bakeMax.push(x, y, z);
+                        bakeAmbient.push(ambient);
+                        bakeAlbedo.push(-1, -1, -1);
+                        bakeDensity.push(1);
+                    }
                     bakeIndices.push(bakeBase, bakeBase + 1, bakeBase + 2, bakeBase, bakeBase + 2, bakeBase + 3);
                     bakeBase += 4;
                 }
@@ -1126,7 +1626,7 @@ export function buildGeometry(level, modelBoxes = []) {
             // Detailstück an dessen Rändern geteilt, damit es dort ausblenden kann
             const detail = face.detail;
             let cutsS = [0, 1], cutsT = [0, 1];
-            if (face.shape) cutsS = [...Array(nS + 1).keys()].map((k) => k / nS);
+            if (face.shape) cutsS = S;
             else if (n > 1) cutsS = cutsT = [...Array(n + 1).keys()].map((k) => k / n);
             else if (detail) {
                 cutsS = unique([0, detail.s0, detail.s0 + detail.fadeS[0], detail.s1 - detail.fadeS[1], detail.s1, 1]);
@@ -1141,31 +1641,53 @@ export function buildGeometry(level, modelBoxes = []) {
                 return Math.min(1, Math.max(0, w));
             };
             const target = detail?.target;
+            // Ein Boden oder eine Decke ohne die Zwickel runder Ecken (polygon,
+            // in Feldern): in s und t der Fläche, in jedem Stück auf dieses
+            // zugeschnitten und in Dreiecke geteilt
+            const along2 = (q, a, b) => ((q[0] - a[0]) * (b[0] - a[0]) + (q[2] - a[2]) * (b[2] - a[2])) / Math.max((b[0] - a[0]) ** 2 + (b[2] - a[2]) ** 2, 1e-12);
+            const outline = face.polygon?.map(([x, z]) => [along2([x * cell, 0, z * cell], c0, c1), along2([x * cell, 0, z * cell], c0, c3)]);
             for (let i = 0; i + 1 < cutsS.length; i++) {
                 for (let j = 0; j + 1 < cutsT.length; j++) {
+                    if (outline) {
+                        const piece = clipRectangle(outline, cutsS[i], cutsS[i + 1], cutsT[j], cutsT[j + 1]);
+                        if (piece.length < 3) continue;
+                        for (const triangle of THREE.ShapeUtils.triangulateShape(piece.map(([s, t]) => new THREE.Vector2(s, t)), [])) {
+                            let three = triangle.map((k) => piece[k]);
+                            const normal = faceNormal(three.map(([s, t]) => world(s, t)));
+                            if (normal[0] * face.normal[0] + normal[1] * face.normal[1] + normal[2] * face.normal[2] < 0) three = [three[0], three[2], three[1]];
+                            three.forEach(([s, t]) => emit(s, t, world(s, t), face.normal));
+                            indices.push(base, base + 1, base + 2);
+                            base += 3;
+                        }
+                        continue;
+                    }
                     const quad = [[cutsS[i], cutsT[j]], [cutsS[i + 1], cutsT[j]], [cutsS[i + 1], cutsT[j + 1]], [cutsS[i], cutsT[j + 1]]];
                     const points = quad.map(([s, t]) => world(s, t));
                     const normal = n > 1 || face.shape ? faceNormal(points) : face.normal;
-                    quad.forEach(([s, t], k) => {
-                        positions.push(...points[k]);
-                        normals.push(...normal);
-                        // eigene Texturkoordinaten an den vier Ecken (ein Bogen): dazwischen gemischt
-                        const uv4 = face.uv4 && ((a, b) => a.map((v, i) => v + (b[i] - v) * t))(
-                            face.uv4[0].map((v, i) => v + (face.uv4[1][i] - v) * s), face.uv4[3].map((v, i) => v + (face.uv4[2][i] - v) * s));
-                        uvs.push(...(face.uvAt ? face.uvAt(s, t) : uv4 ?? (face.arc ? [face.arc[0] + (face.arc[1] - face.arc[0]) * s, points[k][1]] : along(points[k]))));
-                        uv1s.push(u0 + (face.texelAt ? face.texelAt(s) : s) * du, v0 + t * dv);
-                        if (target) {
-                            const ds = Math.min(1, Math.max(0, (s - detail.s0) / (detail.s1 - detail.s0)));
-                            const dt = Math.min(1, Math.max(0, (t - detail.t0) / (detail.t1 - detail.t0)));
-                            detailUvs.push((target.ax + ds * target.w) / atlasSize, (target.ay + dt * target.h) / atlasSize);
-                            detailWeights.push(ramp(s, detail.s0, detail.s1, detail.fadeS) * ramp(t, detail.t0, detail.t1, detail.fadeT));
-                        } else {
-                            detailUvs.push(0, 0);
-                            detailWeights.push(0);
-                        }
-                    });
+                    quad.forEach(([s, t], k) => emit(s, t, points[k], normal));
                     indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
                     base += 4;
+                }
+            }
+            // eine Ecke im Mesh: Stelle, Richtung, Textur, Lichtkarte und Detailstück
+            function emit(s, t, point, normal) {
+                positions.push(...point);
+                // eine gebogene Fläche einer runden Ecke: ihre Richtung an jeder Stelle, dazwischen gemischt
+                normals.push(...(face.normalAt ? face.normalAt(s, t) : normal));
+                // eigene Texturkoordinaten an den vier Ecken (ein Bogen): dazwischen gemischt
+                const uv4 = face.uv4 && ((a, b) => a.map((v, i) => v + (b[i] - v) * t))(
+                    face.uv4[0].map((v, i) => v + (face.uv4[1][i] - v) * s), face.uv4[3].map((v, i) => v + (face.uv4[2][i] - v) * s));
+                uvs.push(...(face.uvAt ? face.uvAt(s, t) : uv4 ?? (face.arc ? [face.arc[0] + (face.arc[1] - face.arc[0]) * s, point[1]] : along(point))));
+                if (chart) uv1s.push(...inChart(point));
+                else uv1s.push(u0 + (face.texelAt ? face.texelAt(s) : s) * du, v0 + t * dv);
+                if (target) {
+                    const ds = Math.min(1, Math.max(0, (s - detail.s0) / (detail.s1 - detail.s0)));
+                    const dt = Math.min(1, Math.max(0, (t - detail.t0) / (detail.t1 - detail.t0)));
+                    detailUvs.push((target.ax + ds * target.w) / atlasSize, (target.ay + dt * target.h) / atlasSize);
+                    detailWeights.push(ramp(s, detail.s0, detail.s1, detail.fadeS) * ramp(t, detail.t0, detail.t1, detail.fadeT));
+                } else {
+                    detailUvs.push(0, 0);
+                    detailWeights.push(0);
                 }
             }
         }
@@ -1194,7 +1716,7 @@ export function buildGeometry(level, modelBoxes = []) {
     const minHeight = Math.min(...faces.map((f) => Math.min(...f.corners.map((c) => c[1]))));
     // wo jede Fläche in der Lightmap liegt, in Punkten (für ?show=atlas&face=…)
     const rects = faces.filter((f) => !f.detailOnly).map((f) => ({
-        kind: f.kind, room: f.room, x: f.ax, y: f.ay, w: f.w, h: f.h,
+        kind: f.kind, room: f.room, x: f.chartRect ? f.chartRect.ax : f.ax, y: f.chartRect ? f.chartRect.ay : f.ay, w: f.chartRect ? f.chartRect.w : f.w, h: f.chartRect ? f.chartRect.h : f.h,
         fine: f.detail ? { x: f.detail.target.ax, y: f.detail.target.ay, w: f.detail.target.w, h: f.detail.target.h } : null,
     }));
     return { meshes, atlasSize, faceCount: faces.length, maxHeight, minHeight, rects };

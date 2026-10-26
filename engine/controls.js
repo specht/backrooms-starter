@@ -194,12 +194,14 @@ export class Walker {
         const { settings } = this.level;
         const cx = Math.floor(x / settings.cell), cz = Math.floor(z / settings.cell);
         const y = this.player.position.y;
-        return !this.level.slabs(cx, cz).some(({ room, layer }) => {
+        // mit den runden Ecken: im Zwickel einer inneren Wand, einer äußeren Boden
+        return !this.level.slabsAt(x / settings.cell, z / settings.cell).some((slab) => {
+            const { room, layer } = slab;
             // ins Wasser geht man nicht; in ein leeres Becken fällt man hinein
             const pool = this.level.poolAt(cx, cz, layer);
             if (pool && pool.surface !== null) return false;
             const floor = this.level.floorAt(x / settings.cell, z / settings.cell, room) - this.level.sunk(cx, cz, layer) + this.level.lift(cx, cz, layer, x / settings.cell, z / settings.cell);
-            const ceiling = this.level.ceilingOfCell(cx, cz, layer)(x / settings.cell, z / settings.cell);
+            const ceiling = this.level.ceilingOfSlab(slab, cx, cz)(x / settings.cell, z / settings.cell);
             return floor <= y + 0.45 && ceiling > Math.max(floor, y) + 1.0;
         });
     }

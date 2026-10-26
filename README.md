@@ -177,7 +177,7 @@ In `[map]`, every character is one metre:
 <tr><td><code>.</code></td><td>floor</td></tr>
 <tr><td><code>@</code></td><td>you start here (once in the whole level)</td></tr>
 <tr><td>space</td><td>nothing, outside the room</td></tr>
-<tr><td>a letter</td><td>a lamp, a block, a model, a pool, stairs or a platform, described in a section <code>[letter]</code></td></tr>
+<tr><td>a letter</td><td>a lamp, a block, a model, a pool, stairs or a platform, described in a section <code>[letter]</code>; instead of a <code>#</code>, a wall with round corners (<code>round</code>)</td></tr>
 <tr><td>a digit</td><td>a door, described in a section <code>[digit]</code>; the same digit side by side (<code>111</code>) or one below the other is one wide door</td></tr>
 <tr><td><code>_</code></td><td>a hole in the floor: below it lies another room, described in <code>[_]</code></td></tr>
 <tr><td><code>^</code></td><td>a hole in the ceiling: the room above has its <code>_</code> here</td></tr>
@@ -268,6 +268,34 @@ room's wallpaper). `material` makes it of `marble`, `wood`, `tiles`, `velvet`,
 oval one when width and depth differ). `rotation = 8` turns it by 8° around the vertical axis,
 about its middle, such as a box that doesn't stand quite straight; a block
 only turns around that axis. Turned, it had best stay inside its field.
+
+### Round corners
+
+A letter instead of a `#` makes the corners of that wall field round:
+
+```ini
+[map]
+r#####r
+#.....#
+#..o..#
+#..#..1
+r#####r
+
+[r]
+round = 1.5        # a corner of the room: a quarter circle with 1.5 m radius
+
+[o]
+round = 0.5        # the end of a wall: both corners round, a half circle
+```
+
+Where two walls of the room meet at the field (a `#` in a corner of the
+room), the corner of the room becomes a quarter circle with this radius, and
+floor and ceiling follow it. Where the wall juts into the room (the end of a
+wall, the corner of a pillar), its edge becomes round. Skirting board, dado,
+dado rail and cornice run round the curve, and you walk along it. The radius
+has to fit: on both walls up to the next door or corner, inside the room, and
+at the end of a wall at most as thick as the wall (0.5 for both corners of a
+wall one field thick). What does not fit is reported with the file and the line.
 
 ### A model: a statue, furniture, a lamp
 
