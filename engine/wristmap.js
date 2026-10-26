@@ -7,7 +7,7 @@
 // du die Hand hältst. Du bist ein Ring auf ihrem Boden, der sich langsam dreht.
 // Am Rechner zum Ausprobieren: ?wristmap zeigt sie unten rechts vor dir.
 import * as THREE from 'three';
-import { EDGE_ANGLE } from './geometry.js';
+import { outlineEdges } from './geometry.js';
 import { LINE_COLOR } from './automap.js';
 import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
@@ -42,7 +42,7 @@ export class WristMap {
         for (const { kind, geometry: mesh } of geometry.meshes) {
             if (kind === 'ceiling') continue;   // von oben nur im Weg
             const tint = kind === 'floor' ? 0.55 : 1;
-            const lines = new THREE.EdgesGeometry(mesh, EDGE_ANGLE).attributes.position.array;
+            const lines = outlineEdges(mesh).attributes.position.array;
             for (let i = 0; i < lines.length; i += 6) {
                 edges.push(lines[i], lines[i + 1], lines[i + 2], lines[i + 3], lines[i + 4], lines[i + 5]);
                 tints.push(tint);
