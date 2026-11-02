@@ -31,8 +31,8 @@ const ROOM_DEFAULTS = {
     wallpaper: '#c9b458', // Tapete
     carpet: '#8c7a45',    // Teppich
     ceiling: '#d8d0a8',   // Deckenplatten
-    walls: 'wallpaper',   // Wände: wallpaper, marble, wood (Holz), tiles (Fliesen), velvet (Samt) oder plain (einfarbig), in der Farbe von wallpaper
-    floor: 'carpet',      // Boden: carpet, marble, wood, tiles oder plain, in der Farbe von carpet
+    walls: 'wallpaper',   // Wände: wallpaper, marble, wood, tiles, velvet, plain, concrete, brick oder terrazzo, in der Farbe von wallpaper
+    floor: 'carpet',      // Boden: carpet, marble, wood, tiles, plain, concrete, brick, terrazzo, carpet_tiles, checker oder parquet, in der Farbe von carpet
     baseboard: 'auto',    // Sockelleiste: höhe, farbe, zum Beispiel 0.08, #5a4626; ohne: 8 cm, dunkler als die Wand; none: keine
     dado: null,           // die Wand unten anders: höhe, farbe, zum Beispiel 1.2, #1a1a1a (dado_material: woraus, ohne: wie die Wände)
     dado_material: null,
